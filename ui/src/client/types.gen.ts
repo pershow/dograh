@@ -198,6 +198,24 @@ export type AppendTextChatMessageRequest = {
 };
 
 /**
+ * Assertion
+ */
+export type Assertion = {
+    /**
+     * Kind
+     */
+    kind: 'contains' | 'not_contains' | 'node_visited' | 'tool_called' | 'context_equals' | 'completed';
+    /**
+     * Value
+     */
+    value?: unknown;
+    /**
+     * Key
+     */
+    key?: string | null;
+};
+
+/**
  * AuthResponse
  */
 export type AuthResponse = {
@@ -300,6 +318,16 @@ export type BodyTranscribeAudioApiV1WorkflowRecordingsTranscribePost = {
      * Language
      */
     language?: string;
+};
+
+/**
+ * Body_workbench_upload_api_v1_agent_workbench_sessions__session_id__assets_post
+ */
+export type BodyWorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPost = {
+    /**
+     * File
+     */
+    file: Blob | File;
 };
 
 /**
@@ -1051,6 +1079,24 @@ export type CreateServiceKeyResponse = {
      * Expires At
      */
     expires_at?: string | null;
+};
+
+/**
+ * CreateSession
+ */
+export type CreateSession = {
+    /**
+     * Model Protocol
+     */
+    model_protocol?: 'chat' | 'responses';
+    /**
+     * Workflow Id
+     */
+    workflow_id?: number | null;
+    /**
+     * Name
+     */
+    name?: string;
 };
 
 /**
@@ -1962,6 +2008,24 @@ export type ErrorCondition = {
 };
 
 /**
+ * EvaluateRequest
+ */
+export type EvaluateRequest = {
+    /**
+     * Candidate Id
+     */
+    candidate_id: string;
+    /**
+     * Suite Id
+     */
+    suite_id: string;
+    /**
+     * Idempotency Key
+     */
+    idempotency_key: string;
+};
+
+/**
  * ExotelConfigurationRequest
  */
 export type ExotelConfigurationRequest = {
@@ -2457,6 +2521,28 @@ export type InitiateCallRequest = {
      * From Phone Number Id
      */
     from_phone_number_id?: number | null;
+};
+
+/**
+ * Instruction
+ */
+export type Instruction = {
+    /**
+     * Candidate Id
+     */
+    candidate_id?: string | null;
+    /**
+     * Text
+     */
+    text: string;
+    /**
+     * Asset Ids
+     */
+    asset_ids?: Array<string>;
+    /**
+     * Idempotency Key
+     */
+    idempotency_key: string;
 };
 
 /**
@@ -4441,6 +4527,16 @@ export type ServiceSelection = {
 };
 
 /**
+ * SessionSettings
+ */
+export type SessionSettings = {
+    /**
+     * Model Protocol
+     */
+    model_protocol: 'chat' | 'responses';
+};
+
+/**
  * SetupStep
  *
  * One thing the customer must do before a configuration can carry calls.
@@ -4488,6 +4584,58 @@ export type SignupRequest = {
      * Name
      */
     name?: string | null;
+};
+
+/**
+ * SimulationCase
+ */
+export type SimulationCase = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * User Messages
+     */
+    user_messages: Array<string>;
+    /**
+     * Initial Context
+     */
+    initial_context?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Fixtures
+     */
+    fixtures?: Array<ToolFixture>;
+    /**
+     * Pre Call Context
+     */
+    pre_call_context?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Knowledge Result
+     */
+    knowledge_result?: string | null;
+    /**
+     * Assertions
+     */
+    assertions: Array<Assertion>;
+};
+
+/**
+ * SimulationSuite
+ */
+export type SimulationSuite = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Cases
+     */
+    cases: Array<SimulationCase>;
 };
 
 /**
@@ -5213,6 +5361,40 @@ export type ToolDelayedTextMessage = {
 };
 
 /**
+ * ToolFixture
+ */
+export type ToolFixture = {
+    /**
+     * Tool Uuid
+     */
+    tool_uuid: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description?: string;
+    /**
+     * Parameters
+     */
+    parameters?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Arguments
+     */
+    arguments?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Result
+     */
+    result?: unknown;
+};
+
+/**
  * ToolParameter
  *
  * A parameter that the tool accepts from the model at call time.
@@ -5857,6 +6039,36 @@ export type TrunkUpdateRequest = {
 };
 
 /**
+ * TuneRequest
+ */
+export type TuneRequest = {
+    /**
+     * Candidate Id
+     */
+    candidate_id: string;
+    /**
+     * Suite Id
+     */
+    suite_id: string;
+    /**
+     * Idempotency Key
+     */
+    idempotency_key: string;
+    /**
+     * Asset Ids
+     */
+    asset_ids?: Array<string>;
+    /**
+     * Instruction
+     */
+    instruction?: string;
+    /**
+     * Max Rounds
+     */
+    max_rounds?: number;
+};
+
+/**
  * TurnCredentialsResponse
  *
  * Response model for TURN credentials.
@@ -6375,6 +6587,38 @@ export type VoiceInfo = {
 };
 
 /**
+ * VoiceToolRequest
+ */
+export type VoiceToolRequest = {
+    /**
+     * Candidate Id
+     */
+    candidate_id?: string | null;
+    /**
+     * Suite Id
+     */
+    suite_id?: string | null;
+    /**
+     * Call Id
+     */
+    call_id: string;
+    /**
+     * Name
+     */
+    name: 'submit_instruction' | 'get_status' | 'cancel_task' | 'run_tests' | 'tune_agent';
+    /**
+     * Arguments
+     */
+    arguments?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Asset Ids
+     */
+    asset_ids?: Array<string>;
+};
+
+/**
  * VoicesResponse
  */
 export type VoicesResponse = {
@@ -6572,6 +6816,20 @@ export type WidgetTexts = {
      * Voiceconnectionlostsubtext
      */
     voiceConnectionLostSubtext?: string;
+};
+
+/**
+ * WorkbenchResponse
+ *
+ * JSON envelope shared by the generated SDK; domain payloads are versioned.
+ */
+export type WorkbenchResponse = {
+    /**
+     * Data
+     */
+    data: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -15983,6 +16241,677 @@ export type GetNodeTypeApiV1NodeTypesNameGetResponses = {
 };
 
 export type GetNodeTypeApiV1NodeTypesNameGetResponse = GetNodeTypeApiV1NodeTypesNameGetResponses[keyof GetNodeTypeApiV1NodeTypesNameGetResponses];
+
+export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/agent-workbench/capabilities';
+};
+
+export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetError = WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetErrors[keyof WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetErrors];
+
+export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponse = WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses[keyof WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses];
+
+export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostData = {
+    body: CreateSession;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions';
+};
+
+export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostError = WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostErrors[keyof WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostErrors];
+
+export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostResponse = WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostResponses[keyof WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostResponses];
+
+export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}';
+};
+
+export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetError = WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetErrors[keyof WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetErrors];
+
+export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetResponse = WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetResponses[keyof WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetResponses];
+
+export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchData = {
+    body: SessionSettings;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}';
+};
+
+export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchError = WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchErrors[keyof WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchErrors];
+
+export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponse = WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses[keyof WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses];
+
+export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * After
+         */
+        after?: number;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/events';
+};
+
+export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetError = WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetErrors[keyof WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetErrors];
+
+export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetResponse = WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetResponses[keyof WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetResponses];
+
+export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostData = {
+    body: Instruction;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/instructions';
+};
+
+export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostError = WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostErrors[keyof WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostErrors];
+
+export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponse = WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses[keyof WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses];
+
+export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostData = {
+    body: BodyWorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPost;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/assets';
+};
+
+export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostError = WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostErrors[keyof WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostErrors];
+
+export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponse = WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponses[keyof WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponses];
+
+export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Asset Id
+         */
+        asset_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/assets/{asset_id}/retry';
+};
+
+export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostError = WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostErrors[keyof WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostErrors];
+
+export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostResponse = WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostResponses[keyof WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostResponses];
+
+export type WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/candidates/{candidate_id}';
+};
+
+export type WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetError = WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetErrors[keyof WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetErrors];
+
+export type WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetResponse = WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetResponses[keyof WorkbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGetResponses];
+
+export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostData = {
+    body: SimulationSuite;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/suites';
+};
+
+export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostError = WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostErrors[keyof WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostErrors];
+
+export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponse = WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponses[keyof WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponses];
+
+export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostData = {
+    body: EvaluateRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/evaluations';
+};
+
+export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostError = WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostErrors[keyof WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostErrors];
+
+export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostResponse = WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostResponses[keyof WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostResponses];
+
+export type WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostData = {
+    body: TuneRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/tune';
+};
+
+export type WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostError = WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostErrors[keyof WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostErrors];
+
+export type WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostResponse = WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostResponses[keyof WorkbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePostResponses];
+
+export type WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/jobs/{job_id}/cancel';
+};
+
+export type WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostError = WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostErrors[keyof WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostErrors];
+
+export type WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostResponse = WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostResponses[keyof WorkbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPostResponses];
+
+export type WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Candidate Id
+         */
+        candidate_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/candidates/{candidate_id}/adopt';
+};
+
+export type WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostError = WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostErrors[keyof WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostErrors];
+
+export type WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostResponse = WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostResponses[keyof WorkbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPostResponses];
+
+export type WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostData = {
+    body: VoiceToolRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/voice-tool';
+};
+
+export type WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostError = WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostErrors[keyof WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostErrors];
+
+export type WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostResponse = WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostResponses[keyof WorkbenchVoiceToolApiV1AgentWorkbenchSessionsSessionIdVoiceToolPostResponses];
 
 export type HealthApiV1HealthGetData = {
     body?: never;

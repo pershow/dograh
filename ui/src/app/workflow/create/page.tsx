@@ -1,9 +1,11 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
+import { workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet } from '@/client/sdk.gen';
 import { createWorkflowFromTemplateApiV1WorkflowCreateTemplatePost } from '@/client/sdk.gen';
+import { AgentWorkbench } from '@/components/agent-workbench/AgentWorkbench';
 import { PageShell } from '@/components/layout/PageShell';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,10 +21,30 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { detailFromError } from '@/lib/apiError';
 import { useAuth } from '@/lib/auth';
 import logger from '@/lib/logger';
 
 export default function CreateWorkflowPage() {
+    const {user,loading} = useAuth();
+    const [enabled,setEnabled] = useState<boolean>();
+    const [capabilityError,setCapabilityError] = useState('');
+    useEffect(()=>{
+        if (loading || !user) return;
+        let disposed=false;
+        workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet().then(response=>{
+            if (disposed) return;
+            if (response.error) setCapabilityError(detailFromError(response.error, "Unable to load Agent Builder configuration"));
+            else setEnabled(response.data?.data.enabled===true);
+        }).catch(()=>{if(!disposed)setCapabilityError("Unable to connect to Agent Builder");});
+        return()=>{disposed=true;};
+    },[loading,user]);
+    if (capabilityError) return <p role="alert" className="p-8">{capabilityError}</p>;
+    if (loading || enabled===undefined) return <p className="p-8 text-muted-foreground">Loading Agent Builder…</p>;
+    return enabled ? <AgentWorkbench/> : <LegacyAgentBuilder/>;
+}
+
+function LegacyAgentBuilder() {
     const router = useRouter();
     const { user, getAccessToken } = useAuth();
     const [isLoading, setIsLoading] = useState(false);

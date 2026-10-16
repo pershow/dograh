@@ -3,11 +3,12 @@
 import { ReactFlowInstance } from "@xyflow/react";
 import { AlertCircle, ArrowLeft, Bot, Clipboard, Copy, Download, Eye, History, LoaderCircle, Menu, MoreVertical, Pencil, Phone } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
     duplicateWorkflowEndpointApiV1WorkflowWorkflowIdDuplicatePost,
+    workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet,
 } from "@/client/sdk.gen";
 import { WorkflowError } from "@/client/types.gen";
 import { FlowEdge, FlowNode } from "@/components/flow/types";
@@ -27,6 +28,7 @@ import {
 } from "@/components/ui/popover";
 import { useSidebar } from "@/components/ui/sidebar";
 import { useUnsavedChangesContext } from "@/context/UnsavedChangesContext";
+import { useAuth } from "@/lib/auth";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 import { PublishWorkflowPopover } from "./PublishWorkflowPopover";
@@ -73,6 +75,17 @@ export const WorkflowEditorHeader = ({
     renameWorkflow,
 }: WorkflowEditorHeaderProps) => {
     const router = useRouter();
+    const { user: authUser, loading: authLoading } = useAuth();
+    const [workbenchEnabled, setWorkbenchEnabled] = useState(false);
+    useEffect(() => {
+        if (authLoading || !authUser) return;
+        let disposed = false;
+        workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet().then(response => {
+            if (!disposed && !response.error) setWorkbenchEnabled(response.data?.data.enabled === true);
+        }).catch(() => {});
+        return () => { disposed = true; };
+    }, [authLoading, authUser]);
+
     // Leaving the editor with unsaved settings asks first.
     const { confirmNavigate } = useUnsavedChangesContext();
     const { toggleSidebar } = useSidebar();
@@ -434,6 +447,14 @@ export const WorkflowEditorHeader = ({
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="bg-[#1a1a1a] border-[#3a3a3a]">
+                        {workbenchEnabled && (
+                            <DropdownMenuItem
+                                onClick={() => confirmNavigate(() => router.push(`/workflow/workbench?workflowId=${workflowId}`))}
+                                className="text-white hover:bg-[#2a2a2a] cursor-pointer"
+                            >
+                                <Bot className="w-4 h-4 mr-2" />Agent Workbench
+                            </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem
                             onClick={() => confirmNavigate(() => router.push(`/workflow/${workflowId}/runs`))}
                             className="text-white hover:bg-[#2a2a2a] cursor-pointer"

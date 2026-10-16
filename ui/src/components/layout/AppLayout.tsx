@@ -99,7 +99,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const shouldShowSidebar = pathname !== "/" && !pathname.startsWith("/handler") && !pathname.startsWith("/auth");
 
   // Only match the exact editor page /workflow/<id>, not sub-routes like /workflow/<id>/runs
-  const isWorkflowEditor = /^\/workflow\/\d+$/.test(pathname);
+  const isWorkflowEditor = /^\/workflow\/\d+$/.test(pathname) || pathname === "/workflow/workbench";
 
   // Always render SidebarProvider to keep the component tree shape consistent
   // across route changes (avoids React hooks ordering violations during navigation).
