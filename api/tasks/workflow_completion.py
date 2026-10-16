@@ -24,6 +24,11 @@ async def process_workflow_completion(
         _ctx: ARQ context (unused)
         workflow_run_id: The workflow run ID
     """
+    from api.db import db_client
+    run = await db_client.get_workflow_run_by_id(workflow_run_id)
+    if run is not None and getattr(run, "purpose", "normal") == "evaluation":
+        return
+
     run_id = str(workflow_run_id)
     set_current_run_id(run_id)
 

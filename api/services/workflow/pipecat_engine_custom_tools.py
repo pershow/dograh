@@ -144,6 +144,9 @@ class CustomToolManager:
         Returns:
             List of FunctionSchema objects for LLM
         """
+        policy = getattr(self._engine, "evaluation_policy", None)
+        if policy is not None:
+            return policy.schemas(tool_uuids, mcp_tool_filters)
         organization_id = await self.get_organization_id()
         if not organization_id:
             logger.warning("Cannot fetch custom tools: organization_id not available")
@@ -221,6 +224,10 @@ class CustomToolManager:
                 raw MCP tool names to expose. None (default) exposes all tools.
                 Empty dict or entry with [] suppresses all tools for that uuid.
         """
+        policy = getattr(self._engine, "evaluation_policy", None)
+        if policy is not None:
+            policy.register(self._agent, self._engine, tool_uuids, mcp_tool_filters)
+            return
         organization_id = await self.get_organization_id()
         if not organization_id:
             logger.warning(

@@ -963,7 +963,7 @@ class WorkflowClient(BaseDBClient):
         async with self.async_session() as session:
             result = await session.execute(
                 select(func.count(WorkflowRunModel.id)).where(
-                    WorkflowRunModel.workflow_id == workflow_id
+                    WorkflowRunModel.workflow_id == workflow_id, WorkflowRunModel.purpose == "normal"
                 )
             )
             return result.scalar() or 0
@@ -1016,7 +1016,7 @@ class WorkflowClient(BaseDBClient):
                     WorkflowRunModel.workflow_id,
                     func.count(WorkflowRunModel.id).label("run_count"),
                 )
-                .where(WorkflowRunModel.workflow_id.in_(workflow_ids))
+                .where(WorkflowRunModel.workflow_id.in_(workflow_ids), WorkflowRunModel.purpose == "normal")
                 .group_by(WorkflowRunModel.workflow_id)
             )
             rows = result.all()

@@ -489,6 +489,7 @@ async def execute_text_chat_pending_turn(
     session_data: dict[str, Any],
     checkpoint: dict[str, Any] | None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    evaluation_policy=None,
 ) -> TextChatTurnExecutionResult:
     turns = list(session_data.get("turns") or [])
     if not turns or turns[-1].get("status") != "pending":
@@ -503,6 +504,8 @@ async def execute_text_chat_pending_turn(
     workflow_run, _ = await db_client.get_workflow_run_with_context(workflow_run_id)
     if not workflow_run or workflow_run.workflow_id != workflow_id:
         raise ValueError("Workflow run not found for text chat execution")
+    if (getattr(workflow_run, "purpose", "normal") == "evaluation") != (evaluation_policy is not None):
+        raise ValueError("Evaluation runs require a server-owned effect policy")
     if workflow_run.definition is None:
         raise ValueError("Workflow run is missing a pinned definition")
     if workflow_run.workflow is None or workflow_run.workflow.user is None:
@@ -526,11 +529,15 @@ async def execute_text_chat_pending_turn(
         get_effective_ai_model_configuration_for_run,
     )
 
-    user_config = await get_effective_ai_model_configuration_for_run(
-        organization_id=workflow.organization_id,
-        workflow_configurations=run_configs,
-        workflow_run=workflow_run,
-    )
+    if evaluation_policy is not None:
+        user_config = evaluation_policy.model_configuration
+        evaluation_policy.validate(run_definition.workflow_json)
+    else:
+        user_config = await get_effective_ai_model_configuration_for_run(
+            organization_id=workflow.organization_id,
+            workflow_configurations=run_configs,
+            workflow_run=workflow_run,
+        )
     if user_config.llm is None:
         raise ValueError("Text chat requires an LLM configuration")
 
@@ -571,7 +578,8 @@ async def execute_text_chat_pending_turn(
     ) is None and not any(turn.get("status") == "completed" for turn in turns[:-1])
     start_node = workflow_graph.nodes.get(workflow_graph.start_node_id)
     if (
-        is_initial_node_opening
+        evaluation_policy is None
+        and is_initial_node_opening
         and start_node
         and start_node.should_run_pre_call_fetch(None)
         and start_node.pre_call_fetch_url
@@ -598,6 +606,9 @@ async def execute_text_chat_pending_turn(
                 )
                 or user_config
             )
+
+    if evaluation_policy is not None and is_initial_node_opening:
+        initial_context = merge_external_initial_context(initial_context, evaluation_policy.case.pre_call_context or {})
 
     llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
     inference_llm = llm
@@ -672,11 +683,12 @@ async def execute_text_chat_pending_turn(
         embeddings_endpoint = getattr(user_config.embeddings, "endpoint", None)
         embeddings_api_version = getattr(user_config.embeddings, "api_version", None)
 
-    has_recordings = await db_client.has_active_recordings(workflow.organization_id)
-    context_compaction_enabled = (workflow.workflow_configurations or {}).get(
+    has_recordings = False if evaluation_policy is not None else await db_client.has_active_recordings(workflow.organization_id)
+    context_compaction_enabled = run_configs.get(
         "context_compaction_enabled", False
     )
     engine = PipecatEngine(
+        evaluation_policy=evaluation_policy,
         llm=llm,
         inference_llm=inference_llm,
         variable_extraction_llm=variable_extraction_llm,
@@ -750,17 +762,23 @@ async def execute_text_chat_pending_turn(
         conversation_type="text",
         additional_span_attributes=trace_span_attributes,
     )
+    if evaluation_policy is not None:
+        @task.event_handler("on_pipeline_error")
+        async def evaluation_error(_worker, _frame):
+            evaluation_policy.errors.append("Text runtime reported a model or tool error")
+
     runner_task = asyncio.create_task(run_pipeline_worker(task))
 
     engine.call_worker = task
     engine.set_audio_config(audio_config)
     engine.set_transport_output(_TaskQueueProxy(task.queue_frame))
-    engine.set_fetch_recording_audio(
-        create_recording_audio_fetcher(
-            organization_id=workflow.organization_id,
-            pipeline_sample_rate=audio_config.pipeline_sample_rate,
+    if evaluation_policy is None:
+        engine.set_fetch_recording_audio(
+            create_recording_audio_fetcher(
+                organization_id=workflow.organization_id,
+                pipeline_sample_rate=audio_config.pipeline_sample_rate,
+            )
         )
-    )
 
     try:
         await wait_for_pipeline_worker_started(task, timeout=5.0, run_task=runner_task)

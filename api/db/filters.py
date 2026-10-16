@@ -97,6 +97,8 @@ def apply_workflow_run_filters(
         The query with filters applied
     """
 
+    base_query = base_query.where(WorkflowRunModel.purpose == "normal")
+
     if not filters:
         return base_query
 

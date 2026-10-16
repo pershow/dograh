@@ -44,7 +44,12 @@ async def _invoke(request: dict[str, Any]) -> dict[str, Any]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate(json.dumps(request).encode("utf-8"))
+    try:
+        stdout, stderr = await proc.communicate(json.dumps(request).encode("utf-8"))
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     if proc.returncode != 0 and not stdout:
         raise TsBridgeError(
             f"ts_validator exited {proc.returncode}: "

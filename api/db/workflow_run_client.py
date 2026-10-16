@@ -251,6 +251,7 @@ class WorkflowRunClient(BaseDBClient):
                 select(WorkflowRunModel)
                 .options(selectinload(WorkflowRunModel.definition))
                 .join(WorkflowRunModel.workflow)
+                .where(WorkflowRunModel.purpose == "normal")
             )
 
             if organization_id:
@@ -626,6 +627,7 @@ class WorkflowRunClient(BaseDBClient):
                     WorkflowRunModel.workflow_id == workflow_id,
                     WorkflowModel.organization_id == organization_id,
                     WorkflowRunModel.is_completed == True,
+                    WorkflowRunModel.purpose == "normal",
                     WorkflowRunModel.mode.in_(voice_modes),
                 )
             )

@@ -132,6 +132,7 @@ class PipecatEngine:
     def __init__(
         self,
         *,
+        evaluation_policy=None,
         task: Optional[PipelineWorker] = None,
         llm: Optional["LLMService"] = None,
         inference_llm: Optional["LLMService"] = None,
@@ -155,6 +156,7 @@ class PipecatEngine:
         run_transition_variable_extraction_in_background: bool = True,
         call_dispositions: Sequence[CallDispositionOption] | None = None,
     ):
+        self.evaluation_policy = evaluation_policy
         self._call_worker = task
         self._is_realtime = is_realtime
         # LLM used for out-of-band inference (variable extraction, context
@@ -587,6 +589,9 @@ class PipecatEngine:
             }
 
         async def retrieve_kb_func(function_call_params: FunctionCallParams) -> None:
+            if self.evaluation_policy is not None:
+                await function_call_params.result_callback(self.evaluation_policy.knowledge())
+                return
             logger.info("LLM Function Call EXECUTED: retrieve_from_knowledge_base")
             logger.info(f"Arguments: {function_call_params.arguments}")
 
@@ -2120,6 +2125,8 @@ class PipecatEngine:
             validate_mcp_definition,
         )
 
+        if self.evaluation_policy is not None:
+            return
         agent = agent or self.active_agent
         try:
             tool_uuids: set[str] = set()

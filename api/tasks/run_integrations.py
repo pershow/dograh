@@ -190,6 +190,8 @@ async def run_integrations_post_workflow_run(_ctx, workflow_run_id: int):
             workflow_run_id
         )
 
+        if workflow_run is not None and getattr(workflow_run, "purpose", "normal") == "evaluation":
+            return
         if not workflow_run or not workflow_run.workflow:
             logger.warning("Workflow run or workflow not found")
             return

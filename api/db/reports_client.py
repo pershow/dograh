@@ -108,6 +108,7 @@ class ReportsClient(BaseDBClient):
                 .where(
                     and_(
                         WorkflowModel.organization_id == organization_id,
+                        WorkflowRunModel.purpose == "normal",
                         WorkflowRunModel.created_at >= start_utc,
                         WorkflowRunModel.created_at <= end_utc,
                     )

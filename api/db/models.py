@@ -654,6 +654,7 @@ class WorkflowTemplates(Base):
 
 class WorkflowRunModel(Base):
     __tablename__ = "workflow_runs"
+    purpose = Column(String, nullable=False, default="normal", server_default="normal", index=True)
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
@@ -1591,3 +1592,91 @@ class KnowledgeBaseChunkModel(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
     )
+
+
+# Workbench state is separate from editable/published workflow versions.
+class WorkbenchSessionModel(Base):
+    __tablename__ = "workbench_sessions"
+    model_protocol = Column(String(16), nullable=False, default="chat", server_default="chat")
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    event_sequence = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchEventModel(Base):
+    __tablename__ = "workbench_events"
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), primary_key=True)
+    sequence = Column(Integer, primary_key=True)
+    type = Column(String(64), nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchJobModel(Base):
+    __tablename__ = "workbench_jobs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False, index=True)
+    kind = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False, default="queued", index=True)
+    idempotency_key = Column(String(128), nullable=False)
+    input = Column(JSON, nullable=False)
+    output = Column(JSON, nullable=False, default=dict)
+    lease_token = Column(String(36), nullable=True)
+    lease_until = Column(DateTime(timezone=True), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+    __table_args__ = (UniqueConstraint("session_id", "idempotency_key", name="uq_workbench_job_request"),)
+
+
+class WorkbenchAssetModel(Base):
+    __tablename__ = "workbench_assets"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    content_type = Column(String(100), nullable=False)
+    byte_size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    object_key = Column(String(500), nullable=False)
+    status = Column(String(32), nullable=False, default="uploaded")
+    parsed = Column(JSON, nullable=False, default=dict)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchCandidateModel(Base):
+    __tablename__ = "workbench_candidates"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False, index=True)
+    job_id = Column(String(36), ForeignKey("workbench_jobs.id"), nullable=False)
+    definition_id = Column(Integer, ForeignKey("workflow_definitions.id"), nullable=False)
+    code = Column(Text, nullable=False)
+    name = Column(String(120), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    base_fingerprint = Column(String(64), nullable=False)
+    summary = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchSuiteModel(Base):
+    __tablename__ = "workbench_suites"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False, index=True)
+    fingerprint = Column(String(64), nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchEvaluationModel(Base):
+    __tablename__ = "workbench_evaluations"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False, index=True)
+    job_id = Column(String(36), ForeignKey("workbench_jobs.id"), nullable=False)
+    candidate_id = Column(String(36), ForeignKey("workbench_candidates.id"), nullable=False)
+    suite_id = Column(String(36), ForeignKey("workbench_suites.id"), nullable=False)
+    status = Column(String(32), nullable=False, default="running")
+    results = Column(JSON, nullable=False, default=list)
+    summary = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)

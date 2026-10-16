@@ -1251,12 +1251,22 @@ def create_llm_service_from_provider(
                 ),
                 **kwargs,
             )
-        return OpenAILLMService(
+        model_host = urlparse(base_url or "").hostname or ""
+        is_dashscope_qwen = model.lower().startswith("qwen") and (
+            model_host == "dashscope.aliyuncs.com" or model_host.endswith(".dashscope.aliyuncs.com")
+        )
+        extra = {"extra_body": {"enable_thinking": False}} if is_dashscope_qwen else {}
+        service = OpenAILLMService(
             enable_direct_mode=enable_direct_mode,
             api_key=api_key,
-            settings=OpenAILLMSettings(model=model, **sampling_settings),
+            settings=OpenAILLMSettings(model=model, extra=extra, **sampling_settings),
             **kwargs,
         )
+        if is_dashscope_qwen:
+            # DashScope rejects developer-role messages emitted on tool changes
+            # and empty-turn recovery. Use Pipecat's existing message conversion.
+            service.supports_developer_role = False
+        return service
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             enable_direct_mode=enable_direct_mode,

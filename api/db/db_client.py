@@ -1,4 +1,5 @@
 from api.db.agent_trigger_client import AgentTriggerClient
+from api.db.agent_workbench_client import AgentWorkbenchClient
 from api.db.api_key_client import APIKeyClient
 from api.db.campaign_client import CampaignClient
 from api.db.embed_token_client import EmbedTokenClient
@@ -25,6 +26,7 @@ from api.db.workflow_template_client import WorkflowTemplateClient
 
 
 class DBClient(
+    AgentWorkbenchClient,
     ModelConnectionClient,
     WorkflowClient,
     WorkflowRunClient,
