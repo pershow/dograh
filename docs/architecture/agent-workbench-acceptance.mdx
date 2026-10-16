@@ -1,0 +1,77 @@
+---
+title: "Agent Workbench MVP 验收记录"
+description: "本地真实模型、附件、文本仿真、调优、实时语音与兼容性验证记录。"
+---
+
+日期：2026-10-16。对应 [MVP 技术设计](/architecture/agent-workbench-mvp)。验收使用独立本地服务，未变更另一套正在运行的 Dograh 实例，也未发布示例 Agent。
+
+## 环境
+
+- API：`http://127.0.0.1:8016`；UI：`http://localhost:3016`。
+- 独立 PostgreSQL、Redis、MinIO 和专用工作台 Worker。
+- Codex app-server：`0.162.0-alpha.17.2`。
+- 构建与文本运行：已提供的 `qwen3.6-27b`，Chat Completions。
+- 实时语音：Dograh SmallWebRTC、ElevenLabs `scribe_v2_realtime`、Qwen、已配置 ElevenLabs TTS。
+- 实测凭据来自用户指定的本地配置；不写入文档或 Git。
+
+## 真实闭环结果
+
+| 验收项 | 结果 |
+| --- | --- |
+| Codex 动态工具探针 | 真实进程调用工具并读取 `DOGRAH_OK`，2 次模型请求完成 |
+| 业务附件 | Markdown 文件上传、私有存储、解析成功；Codex 使用 `read_attachment` 读取需求 |
+| 构建 | 生成中文预约助手，保存真实候选和 2 条仿真用例 |
+| 仿真基线 | 1/2 通过：价格咨询通过，问好用例未包含断言要求的“姓名”文字 |
+| 调优 | 固定原测试集，修改候选问候与指令，2/2 通过；价格咨询继续通过 |
+| 采用 | 浏览器点击“应用到草稿”成功，原编辑器显示 `v1 (Draft)`，发布指针仍为空 |
+| 原界面 | Canvas / Model / Variables / Settings、Phone Call、Test Agent、Test Audio / Test Chat 均保留 |
+| 语音 | 合成中文用户音频经过真实 WebRTC / STT / Qwen 工具调用 / TTS；识别指令并调用 `get_status`，返回任务完成与测试结果 |
+| 语音音频回传 | 最终探针收到 1,191 个非空音频帧，总音频能量非零；连接关闭后释放资源 |
+| 界面附件 | 通过聊天区“添加附件”上传文件，解析完成后显示在已选附件中 |
+| 协议配置 | 浏览器切到 Responses，后端保存 `responses`；随后恢复 `chat` |
+| 私有访问 | 未认证直接读取附件对象返回 403 |
+| 前端静态检查 | TypeScript `tsc --noEmit` 通过 |
+
+“2/2”仅指这两条固定脚本和字面断言；没有证明任意预约对话质量。语音使用合成测试音频，没有采集用户麦克风，也没有完成真人对话体验或远程 NAT 压测。
+
+## 自动化验证
+
+后端本次选定测试共 **110 项通过**，4 条已有依赖弃用警告；前端语音生命周期 **3 项通过**。
+
+后端覆盖：
+
+- Responses / Chat 路由、函数工具白名单、调用 ID 保留、上游失败不自动回退。
+- 嵌套测试集 JSON Schema 的引用解析。
+- DOCX、XLSX、文本、图片解析，Office 宏拒绝，超长文本标记。
+- 仿真必须提供外部工具 / HTTP 预取 / 知识库夹具；真实引擎的工具与 MCP 开启路径被策略提前截断。
+- 参数不匹配、错误、空回复不能算通过；断言只检查 Agent 发言及真实节点事件。
+- 组织隔离、跨会话引用拒绝、幂等提交、取消后的租约保护、任务过期后的评测状态收敛。
+- 草稿冲突拒绝、重复采用幂等、采用不自动发布、仿真运行不进入普通运行查询。
+- 原工作流版本、文本对话、文本日志、文本闲置策略、OpenRouter 服务工厂回归。
+- DashScope Qwen 的 Chat 参数与 developer 角色兼容仅影响对应连接。
+
+前端覆盖麦克风授权失败、晚到的授权结果、组件卸载资源释放、候选/测试集/附件上下文更新。浏览器验收补充覆盖真实页面的配置切换、附件上传、草稿采用和原编辑器衔接。
+
+复现自动化测试：
+
+```bash
+source venv/bin/activate
+set -a
+source api/.env.test
+set +a
+python -m pytest api/tests/test_agent_workbench* api/tests/test_workflow_versioning.py api/tests/test_workflow_text_chat.py api/tests/test_openrouter_llm_service_factory.py api/tests/test_text_chat_logs.py api/tests/test_text_chat_inactivity.py -q
+```
+
+在 `ui/` 目录运行：
+
+```bash
+npx tsc --noEmit
+npm test -- src/components/agent-workbench/__tests__/useWorkbenchVoice.test.tsx
+```
+
+## 尚未验收
+
+- 真实供应商 Responses 成功调用：当前配置的 Qwen 模型在该接口返回不支持，协议分支采用契约测试验证。
+- 视觉模型读图质量、PDF OCR、复杂文档版式。
+- 生产部署、Linux 镜像、跨网络语音、多人压力测试与对象保留策略。
+- 实际电话、第三方业务系统和其他 MPS 服务；此轮保留相关代码路径，未替代这些服务的专项验收。
