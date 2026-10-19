@@ -1,9 +1,11 @@
 ---
 title: "Agent Workbench MVP 技术设计"
-description: "用开源 Codex、Dograh 文本运行引擎与现有语音链路，实现构建、附件输入、仿真测试、调优和草稿采纳。"
+description: "用开源 Codex 实现 Agent 构建、仿真与调优，并规划 OSS 独立部署的 MPS 解耦、模型审计和验收。"
 ---
 
 本文对应 `codex/agent-workbench-mvp` 分支。目标是让你的用户在一个工作台里完成 Agent 构建、文本仿真和调优，同时继续使用 Dograh 原有编辑、版本、电话和语音测试功能。实现使用真实 Codex app-server；离线原型仍在 `ui/public/prototypes/agent-workbench/`，不代表真实服务的执行结果。
+
+2026-10-19 更新：已完成实时语音读取附件、构建、文本仿真和调优闭环，并在 API 8016 的独立环境关闭 MPS 验证。MPS 开关、初始化控制、模型依赖预检和仿真模型快照已落地；第 9 节保留解耦总方案，并在 9.7 节区分已实现与后续范围。API 8000 的原实例未变更，示例 Agent 只采用到草稿。
 
 ## 1. 范围与关键决策
 
@@ -19,9 +21,9 @@ description: "用开源 Codex、Dograh 文本运行引擎与现有语音链路�
 | 调优 | 冻结候选基线和测试集，Codex 修改后重跑；只推荐有改善且无通过用例回退的结果 |
 | 实时语音 | Dograh SmallWebRTC → 现有 STT → LLM → TTS；语音工具调用同一工作台命令服务 |
 | 生效 | 不可变候选 → 用户应用到草稿 → 原编辑器审核与发布 |
-| 回退 | `AGENT_WORKBENCH_ENABLED=false` 保留原 Agent Builder / MPS 模板生成入口 |
+| 回退 | 现有实现关闭工作台后保留原 MPS Builder；独立模式的回退改造见第 9 节，不能自动恢复 MPS 请求 |
 
-你引用的[规划 Codex 自动构建 Agent (2)](codex://threads/01a14390-99c4-7103-b6fd-b2de3ab1606b)指出，MPS 还承担托管模型、知识库文件处理、录音转写、语音目录、配额和账单等职责。这次只替换 Agent Builder 的生成路径，不删除这些依赖，也不改变已有的 Dograh MCP 和服务密钥体系。
+已有实现替换了 Agent Builder 的生成路径，但 MPS 仍承担托管模型、知识库文件处理、录音转写、语音目录、配额和账单等职责。独立模式需要同时处理这些入口、默认初始化和运行时模型选择，才能形成可验证的无 MPS 构建与测试闭环。对外 Dograh MCP 的本地 API Key 认证继续保留；它不要求使用 MPS Service Key。
 
 ## 2. 架构与协议选择
 
@@ -72,7 +74,7 @@ API 请求示例：
 
 ### 2.2 为什么先不经过 MCP
 
-工作台、Worker 和 Dograh 后端属于同一应用，直接调用领域服务可以共享组织身份、取消租约、校验器和数据库事务，减少 MCP 服务密钥与网络连接管理。复用 `api/mcp_server/ts_bridge.py` 的 SDK/AST 解析器并不意味着通过 MCP 传输。
+工作台、Worker 和 Dograh 后端属于同一应用，直接调用领域服务可以共享组织身份、取消租约、校验器和数据库事务，减少 MCP API 凭证与网络连接管理。复用 `api/mcp_server/ts_bridge.py` 的 SDK/AST 解析器并不意味着通过 MCP 传输。
 
 对外 Dograh MCP 保留。以后需要外部 Codex 客户端操作工作台时，可以给同一服务加 MCP 适配层，暴露 `create_session`、`submit_instruction`、`get_status`、`run_evaluation`、`tune`、`cancel` 等能力。MVP 没有新增对外 MCP 工具；不能把“协议设计”当作已上线接口。
 
@@ -144,7 +146,12 @@ MVP 的夹具 schema 由测试作者显式提供，不能证明线上工具 sche
 - 使用已有登录鉴权、组织模型连接、STT/TTS 服务工厂、SmallWebRTC 和 ICE/TURN 配置。
 - 浏览器发送麦克风轨道；服务端 STT 形成完整话语，LLM 调用工作台工具，TTS 播报结果。
 - 语音与文字共享会话、附件、当前候选/测试集选择及任务状态。
-- 语音工具：`submit_instruction`、`get_status`、`run_tests`、`tune_agent`、`cancel_task`。
+- 语音工具：`submit_instruction`、`get_status`、`read_attachment`、`run_tests`、`tune_agent`、`cancel_task`。
+- 上传完成并勾选的附件随 `context` 消息同步；服务端校验组织、会话、解析状态以及候选/测试集归属，原子替换上下文后返回 `context.applied`。界面确认收到相同选择后显示已同步。无效选择返回 `context.error` 并暂停工具执行，直到收到有效选择，避免继续使用旧附件。
+- `read_attachment` 分页读取实际选中文本，每页最多 8,000 字符；未选中、未解析或其他会话的文件不可读。图片只返回元数据，语音助手不能声称已经读懂图像；构建任务仍按现有视觉模型能力处理图片。
+- 文字提交后保留附件选择，语音中新增或取消附件也会更新后续命令。选择属于当前页面状态，刷新后需重新勾选；文件本身持久保存。
+- 语音命令携带当前候选、测试集和附件；没有显式候选时使用最近成功任务推荐的候选，不选用被调优回归拒绝的版本。任务提交只回传任务编号、类型与状态，结果通过 `get_status` 查询，避免把整份内部任务记录交给语音模型。
+- 可恢复的供应商错误显示提示并允许底层重试；致命错误才断开。语音转写原样保留，包括识别错误，实际执行以工具参数和持久任务结果为准。
 - 关闭语音或打断播报不取消后台任务；只有明确取消命令才取消任务。
 - 每组织最多 2 路工作台语音，每路最多 10 分钟。连接断开释放轨道、连接及 Redis 配额。
 - 工作台语音与原有“Test Agent / Test Audio”不同：前者控制构建过程，后者测试目标 Agent 的实际对话。两者保留。
@@ -182,6 +189,7 @@ MVP 的夹具 schema 由测试作者显式提供，不能证明线上工具 sche
 | 方法与路径 | 作用 |
 | --- | --- |
 | GET `/capabilities` | 功能开关、Codex 安装检测、附件限制 |
+| GET `/sessions/{id}/dependencies` | 当前草稿或候选的模型来源、角色、提供商、模型、端点主机及配置问题；支持 build/evaluate/tune/voice |
 | POST `/sessions` | 新建或打开 Agent 的工作台 |
 | GET `/sessions/{id}` | 当前草稿、候选、附件、任务、测试集、评测 |
 | PATCH `/sessions/{id}` | 配置构建协议 |
@@ -227,6 +235,7 @@ Codex 内部工具：
 | `jobs.py` / `api/tasks/agent_workbench.py` | 独立队列、outbox、构建/评测/调优状态机 |
 | `evaluation.py` / `evaluation_policy.py` | 真实文本仿真、确定性断言、效果隔离 |
 | `voice.py` / `voice_commands.py` | 现有语音栈与共享工作台命令 |
+| `dependencies.py` / `services/mps_policy.py` | 实际模型配置解析、工作台预检与 MPS 禁用边界 |
 | `workflow/text_chat_runner.py` / `pipecat_engine*.py` | 服务端仿真策略扩展点，默认正常运行路径保持原行为 |
 | `pipecat/service_factory.py` | DashScope Qwen 的非思考 Chat 参数和 developer 角色兼容 |
 | `db/filters.py` / `reports_client.py` / `workflow*_client.py` | 普通列表、统计与报表排除仿真 |
@@ -245,6 +254,8 @@ Codex 内部工具：
 
 ```dotenv
 AGENT_WORKBENCH_ENABLED=true
+MPS_ENABLED=false
+ENABLE_MANAGED_SERVICE_BOOTSTRAP=false
 WORKBENCH_CODEX_BINARY=/absolute/path/to/codex
 WORKBENCH_DATA_DIR=/private/workbench/runtime
 WORKBENCH_ASSET_BUCKET=private-workbench-assets
@@ -276,7 +287,7 @@ npm run generate-client
 npm run dev -- --port 3016
 ```
 
-正式部署需要 HTTPS/WSS、正确的 ICE/TURN、私有 bucket 权限及容量管理。API 和 Worker 使用相同数据库、Redis、对象存储和应用加密配置；Worker 需要 Node AST 解析器和 Codex 二进制，普通语音 Worker 不承接工作台队列。此版本没有自动修改现有生产 compose，也没有验收 Linux 容器镜像。现有 WebSocket 登录沿用 token query 鉴权，访问日志应隐藏查询参数。
+正式部署需要 HTTPS/WSS、正确的 ICE/TURN、私有 bucket 权限及容量管理。API 和 Worker 使用相同数据库、Redis、对象存储、应用加密及 MPS 开关配置；Worker 需要 Node AST 解析器和 Codex 二进制，普通语音 Worker 不承接工作台队列。仓库 compose 已声明兼容默认开启的 MPS 环境变量；本次只启动独立本地环境，没有部署生产 compose，也没有验收 Linux 容器镜像。现有 WebSocket 登录沿用 token query 鉴权，访问日志应隐藏查询参数。
 
 ## 8. 验证记录与后续边界
 
@@ -291,3 +302,112 @@ npm run dev -- --port 3016
 - 原 workflow versioning、文本运行、相关服务工厂回归测试继续执行；最终结果为后端 110 项、前端语音 3 项通过，详见 [验收记录](/architecture/agent-workbench-acceptance)。
 
 MVP 尚不包括：生产部署与压测、真实供应商 Responses 成功联调、图片视觉理解质量验收、语义/人工评分、自动生成对抗用户、语音仿真质量评分、外部业务系统联调、无限历史分页、对象保留/删除策略、跨 Worker 的语音断线恢复。上线前应完成各自组织模型配置和真实业务用例验收；不要把示例用例的通过率当成生产质量指标。
+
+2026-10-19 增量验收已覆盖语音读取新上传附件、构建、测试、更新规则后的失败检测、调优重测和草稿采用。实际结果及新增自动化测试见 [验收记录](/architecture/agent-workbench-acceptance)的同日实施章节。
+
+## 9. OSS 独立部署与 MPS 解耦增补
+
+### 9.1 本机配置核查：2026-10-19
+
+本节是实施前的历史只读核查，数量与状态不随后续验收数据更新。通过监听端口、进程工作目录、数据库连接和健康接口区分两套运行实例，再对数据库启用 `default_transaction_read_only=on`，使用各仓库实际的模型解析器解析组织默认与版本覆盖。该次核查没有使用会触发初始化的登录接口，没有调用模型、MPS、电话或供应商凭据校验接口。
+
+| 环境 | 当前模型配置 | Agent 与版本结果 |
+| --- | --- | --- |
+| 原本地实例，API 8000 / UI 3000，`dograhimorph` | Qwen `qwen3.6-27b` 直连 DashScope；STT 为讯飞 `iat` 或 ElevenLabs `scribe_v2_realtime`；TTS 为 ElevenLabs `eleven_flash_v2_5`；未配置 Embedding | 3 个 Agent，3 个已发布版本、1 个当前草稿，均无 MPS 模型依赖；共解析 14 个定义，无解析错误 |
+| 当前工作台实例，API 8016 / UI 3016，`dograh` | Qwen 直连 DashScope + ElevenLabs STT/TTS；未配置 Embedding | 1 个 Agent，只有 v1 草稿、尚未发布；草稿及 3 个候选均无 MPS 模型依赖 |
+
+两套健康接口均返回 OSS / local auth。以上是当前配置解析结果：已发布定义引用的命名模型配置仍按当前目录解析，不等于还原发布当天的连接配置。未发现显式 QA / 留言检测模型使用 Dograh。原环境 86 条运行记录中，85 条有模型快照且均未出现 Dograh/MPS 模型；1 条缺少快照。工作台的 8 条仿真记录没有持久模型快照，不能据此宣称历史外部请求为零。
+
+仍需处理的残留：
+
+- 工作台目录里仍有启用的 `Dograh` Provider Connection，以及名为 `Organization default` 的全 Dograh 配置。名称不代表当前默认；当前默认指向 `Workbench Qwen + ElevenLabs`，现有草稿和候选均未引用旧配置。以后选回旧配置仍可能重新引入 MPS。
+- 工作台有一条 `managed_by=dograh-mps` 的 Cloudonix SIP 配置，未设为默认出站。它属于托管电话资源，不能因为模型不再使用 MPS 就自动删除或宣称完全独立。
+- 原 `dograhimorph` 代码已支持 `ENABLE_MANAGED_SERVICE_BOOTSTRAP`，环境文件设为 `false`；当前工作台分支没有这个开关。工作台组织的 bootstrap 已完成，当前认证走完成状态的快速返回，但新组织仍会尝试托管初始化。
+- 全局知识库入库、录音自动转写、服务密钥和余额界面仍保留 MPS 调用。无 Agent 选用 MPS 模型不等于整个平台已停止访问 MPS。
+
+完整脱敏核查结果保存在本机忽略 Git 的 `run/mps-audit-main-2026-10-19.json` 和 `run/mps-audit-workbench-2026-10-19.json`；报告只保存提供商、模型、连接引用、端点主机和状态，不包含密钥、转写或附件内容。远程部署、实时网络抓包和模型连通性不在此次核查范围内。
+
+### 9.2 独立模式的配置契约
+
+新增部署级 `MPS_ENABLED`，兼容默认值为 `true`；独立安装显式关闭。迁入已有的 `ENABLE_MANAGED_SERVICE_BOOTSTRAP` 开关，托管初始化的实际条件为两个开关均开启。关闭 bootstrap 只影响自动开通；关闭 MPS 才是整个应用禁止使用 MPS 的契约。
+
+这两个开关已实现。首版只支持 `DEPLOYMENT_MODE=oss` 的独立模式；非 OSS 与关闭 MPS 的组合在启动时返回配置错误，不能通过跳过现有额度鉴权来实现。API 与所有 Worker 使用相同启动配置，变更通过协调重启生效。以下为完整解耦的目标契约；尚未实现的外围功能在 9.7 节列明。
+
+独立模式必须同时满足：
+
+1. 注册、登录及新组织初始化不创建 MPS Service Key、账单账户或托管 SIP。新组织进入 BYOK 模型配置引导。
+2. MPS HTTP 客户端在网络调用前拒绝请求；LLM、STT、TTS、Embedding 工厂也设置相同边界，覆盖绕过 HTTP 客户端的 WebSocket/SDK 路径。
+3. 模型检查覆盖组织默认、命名配置、Agent 覆盖、候选、运行快照、API/预通话覆盖、Agent 转接、备用 LLM，以及显式 QA/留言检测模型；同时识别非 Dograh 提供商指向已知或配置的 MPS 端点的情况。无效或无法解析的引用返回错误，不能标记为无依赖。
+4. 已保存的托管连接仍可查看，但不能被独立模式下的新任务使用；保存、采用、发布及运行前重新检查。只读审计不能轮换密钥、修改默认配置或重新发布。
+5. 缺少自带服务时返回具体配置缺项，不能静默回退到 Dograh。未配置 Embedding 不影响无需知识库的任务，但向量入库和向量检索必须明确提示缺项。
+6. 关闭工作台且关闭 MPS 时，新建入口回退到空白画布 / SDK；不能恢复旧 MPS 模板生成。被禁用的云功能返回带稳定错误码 `mps_disabled` 的响应，余额不可伪装成 0。
+
+MPS 服务关闭只约束 Dograh 托管服务。Qwen、ElevenLabs、讯飞等自带连接仍是各自供应商的外部调用；这不是离线模型运行模式。
+
+### 9.3 必须落地的模块改动
+
+| 工作包 | 模块 | 验收行为 |
+| --- | --- | --- |
+| 全局策略与初始化 | `constants.py`、`organization_bootstrap.py`、`mps_service_key_client.py`、`mps_billing.py` | 复用已有 bootstrap 开关，增加统一 MPS 边界；现有组织和新组织均不产生托管开通请求 |
+| 模型依赖检查 | `configuration/model_connections.py`、`run_model_configuration.py`、`pipecat/service_factory.py`、`gen_ai/embedding/factory.py` | 配置写入与执行共用检查；覆盖直接供应商 SDK、语音 WebSocket、显式节点模型和运行覆盖 |
+| 工作台依赖预检 | `agent_workbench/{config,jobs,tools,voice,evaluation}.py`、`schemas/agent_workbench.py`、`routes/agent_workbench.py` | 构建、仿真、调优及实时语音分别报告实际需要的服务；执行时再次验证，前端隐藏按钮不能代替后端限制 |
+| 原有云功能入口 | `routes/{workflow,service_keys,user,organization_usage}.py`、`quota_service.py`、`workflow_run_billing.py` | 独立模式禁用 MPS Builder、托管音色、Service Key 和云账单；OSS 自带配置正常运行，本地用量统计保留 |
+| 知识库本地处理 | `tasks/knowledge_base_processing.py`、新增 `services/knowledge_base/document_processing.py` | 提取现有受限附件解析器中的通用文本解析能力，补本地分块；保留全文/分块两种模式、来源位置、状态与重试；不上传原文件到 MPS |
+| 本地处理边界 | `agent_workbench/file_parser.py`、知识库 schema/入库校验 | 各格式提供明确支持范围；扫描 PDF 无文本返回待 OCR 状态或错误，不假装成功；共享解析能力不混用私有附件和知识库的对象权限 |
+| 文件转写适配 | `routes/workflow_recording.py`、新增 `services/transcription/` | 文件转写使用独立批量转写适配器，优先对接已用 ElevenLabs 的文件接口；不把实时 STT 适配器直接当文件接口；无可用配置时允许手工输入录音文本 |
+| 前端能力呈现 | 工作台、Models、VoiceSelector、API Keys、Billing、Recordings 页面 | 显示当前有效提供商和继承来源；云功能关闭后停止对应请求；录音上传不隐式触发 MPS；能力来自后端 |
+| 运行证据 | `db/agent_workbench_client.py`、`agent_workbench/{jobs,evaluation}.py` | 任务开始固定脱敏模型快照与指纹，并写入每条仿真运行；报告能回答实际使用哪个连接、修订和模型 |
+
+知识库切换 Embedding 时检查模型和向量维度，已有索引不得直接混用；需要重建的文档先生成迁移清单，再显式重建。当前两套环境没有配置 Embedding，应先选定自带连接，不能自动启用遗留 Dograh Embedding。
+
+### 9.4 数据、HTTP 与 MCP 接口增补
+
+本阶段不新增业务表或迁移。已使用 `workbench_jobs.output`、`workbench_evaluations.summary` 和 `workflow_runs.model_configuration_snapshot` 保存解析后的模型来源、配置/连接修订、模型标识、无凭据快照及指纹。`job.input` 保持不变，避免破坏幂等键。快照在任务获得租约后固定一次；基线与候选使用同一有效模型实例，不在评分阶段重新解析组织默认。任务结束保留快照；每条仿真运行复制该快照。历史缺失快照继续标记为未知，不能用当前默认回填为历史事实。
+
+拟增加或扩展的契约：
+
+| 接口 / 工具 | 新增内容 |
+| --- | --- |
+| GET `/api/v1/agent-workbench/capabilities` | `mps_enabled`、本地文档处理、文件转写、托管音色/账单能力；不可暴露密钥 |
+| GET `/api/v1/agent-workbench/sessions/{id}/dependencies` | 按当前工作版本或候选 ID 返回角色、提供商、模型、来源版本、MPS 原因、缺项和动态覆盖限制；先验证组织/会话/候选归属 |
+| 内部 `get_context` / `validate_candidate` | 附带依赖报告；禁止模型为修复失败而擅自切回托管配置 |
+| 对外 MCP 现有创建/保存工具 | 复用同一依赖校验服务；继续使用本地 API Key，不新增 MPS 凭证要求 |
+
+新只读依赖 API 先服务工作台。对外 MCP 审计工具是后续同服务适配，不阻塞 MVP，也不把尚未实现的工具写成已可调用能力。
+
+### 9.5 实施顺序与迁移
+
+1. **P0：开关和依赖边界。** 迁入 bootstrap 开关，落地统一 MPS 策略、后端能力与模型依赖预检。验证当前 Qwen/语音配置仍可构建、运行和调优。
+2. **P0：仿真快照。** 补齐任务/评测持久模型证据，固定基线与候选的配置；解决当前 8 条仿真记录无法完整回溯模型配置的问题。
+3. **P0：本地知识库和文件转写。** 这是完整解除现有功能依赖的必要范围，不能只迁移 Builder 后标记完成。
+4. **P0：入口、回退和部署。** UI 关闭云功能请求；API/Worker/compose 配置一致；新建入口在工作台不可用时仍有空白画布。
+5. **独立模式验收后再启用。** 先导出配置并记录发布指针，再切换测试环境。遗留托管模型配置和 SIP 保留为历史，不自动撤销外部资源。需要迁移的 Agent 使用现有候选→草稿→审核发布流程；本次核查未发现需要替换模型的现有 Agent。
+
+关闭工作台本身不会重新开启 MPS。回滚独立模式需要运维明确重新启用托管服务并检查配置，不能静默恢复外部依赖。
+
+### 9.6 完整解耦验收门槛（部分已执行）
+
+- 在隔离验收环境阻断默认及自定义 MPS 主机，并记录 DNS/HTTP/WebSocket 访问尝试；新组织注册→模型配置→构建→仿真→调优→采用→人工发布均成功，MPS 尝试数为 0。
+- 对真实自带模型完成一次文本闭环及实时语音闭环；对本地知识库全文/分块和文件转写分别验收，不以夹具仿真替代这两项功能验证。
+- 组织默认、草稿、候选、备用模型、显式 QA/留言检测、API 覆盖、预通话覆盖和 Agent 转接引入 MPS 时，在网络访问前明确拒绝；不丢失原来的权限、租户和额度约束。
+- 没有 Embedding、文件转写适配器或有效模型连接时报告具体缺项；不回退到 Dograh、不把错误算通过。
+- 前端新建、音色选择、录音上传、API Keys、Billing 不再触发被关闭的云请求；本地 API Key、画布、版本、通话记录及统计继续可用。
+- 每次评测持有可核对的配置快照和指纹；基线/候选一致，历史未知记录继续标记未知。两套本地数据不能混用，不能修改原环境已发布版本来完成测试。
+- `MPS_ENABLED=true` 时保留原托管路径并做回归；不宣称非 OSS 已完成独立计费替代。
+
+只有上述门槛全部通过，才能把整个平台标记为“无需 MPS”。工作台闭环已完成独立模式验证，外围知识库、文件转写等仍需单独验收。
+
+### 9.7 本次实施状态：2026-10-19
+
+| 范围 | 已实现与验证 |
+| --- | --- |
+| 开关与初始化 | `MPS_ENABLED` 与 `ENABLE_MANAGED_SERVICE_BOOTSTRAP` 兼容默认均为 true；任一关闭即跳过托管初始化，关闭 MPS 仅支持 OSS。未删除旧托管连接或 SIP |
+| 网络调用前检查 | MPS HTTP 客户端、模型解析/快照还原及 LLM/STT/TTS/Realtime/Embedding 工厂拒绝 Dograh 提供商和默认/配置 MPS 主机。显式 QA、留言检测、备用模型与运行覆盖走同一策略 |
+| 工作台预检 | 提交与执行前解析实际候选的配置；依赖接口先验证归属，报告无效引用和缺项。UI 显示模型角色、提供商、模型与端点主机，并链接 Models |
+| 原有入口 | 服务密钥、云账单返回 409 / `mps_disabled`。工作台关闭且 MPS 关闭时，新建入口创建未发布空白草稿。对外 MCP 创建/保存复用 DB 层模型检查，本地 API Key 不变 |
+| 仿真证据 | 4 个真实任务、8 条真实文本运行已核对快照和指纹；调优基线与候选一致。旧记录不回填 |
+| 实时语音 | 真正调用现有 STT、Qwen、TTS 与 Codex；语音读取初版及新收费附件，执行构建、两轮测试、调优、结果查询，最终候选仅采用到草稿 |
+
+后续仍需实现知识库本地全文/分块处理、批量文件转写适配，以及音色/API Keys/Billing/Recordings 等外围页面的完整能力提示与停止无效请求。当前 MPS 关闭时这些云路径被后端拒绝，不应将“禁用”描述为功能已替代。完整新组织浏览器引导、人工发布、跨网络语音和生产部署也未验收。
+
+端点检查识别默认与配置的 MPS 主机，不是通用网络防火墙；不会识别任意 DNS 别名或替代整个网络出口策略。验收环境额外阻断并计数这两个主机的 DNS 访问，完整工作台流程记录为 0；结论仅覆盖本次执行路径。

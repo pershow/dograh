@@ -3,7 +3,7 @@ title: "Agent Workbench MVP 验收记录"
 description: "本地真实模型、附件、文本仿真、调优、实时语音与兼容性验证记录。"
 ---
 
-日期：2026-10-16。对应 [MVP 技术设计](/architecture/agent-workbench-mvp)。验收使用独立本地服务，未变更另一套正在运行的 Dograh 实例，也未发布示例 Agent。
+首次验收：2026-10-16；增量实施验收：2026-10-19。对应 [MVP 技术设计](/architecture/agent-workbench-mvp)。验收使用独立本地服务，未变更另一套正在运行的 Dograh 实例，也未发布示例 Agent。以下保留首次记录，同日只读审计与后续实施分别记录。
 
 ## 环境
 
@@ -74,4 +74,78 @@ npm test -- src/components/agent-workbench/__tests__/useWorkbenchVoice.test.tsx
 - 真实供应商 Responses 成功调用：当前配置的 Qwen 模型在该接口返回不支持，协议分支采用契约测试验证。
 - 视觉模型读图质量、PDF OCR、复杂文档版式。
 - 生产部署、Linux 镜像、跨网络语音、多人压力测试与对象保留策略。
-- 实际电话、第三方业务系统和其他 MPS 服务；此轮保留相关代码路径，未替代这些服务的专项验收。
+- 实际电话、第三方业务系统和其他 MPS 服务；2026-10-16 的实现保留相关代码路径，未替代这些服务的专项验收。
+
+## 2026-10-19：本机模型配置只读核查
+
+本次检查本机 API 8000 与 8016 对应的独立数据库，连接强制只读，使用各自实际模型解析器；没有修改模型、发布指针、密钥或运行服务。
+
+| 核查项 | 结果 |
+| --- | --- |
+| 原本地实例 | 3 个 Agent，已发布版本与当前草稿均使用 Qwen + 讯飞或 ElevenLabs STT + ElevenLabs TTS；无 MPS 模型角色 |
+| 工作台实例 | 1 个未发布 Agent，草稿和 3 个候选均使用 Qwen + ElevenLabs STT/TTS；无 MPS 模型角色 |
+| 配置解析 | 两套环境共 18 个定义按当前模型目录解析，无错误；不代表还原历史配置 |
+| 原实例历史快照 | 86 条记录中 85 条有模型快照，无 Dograh/MPS 模型；1 条缺失快照 |
+| 工作台历史快照 | 8 条仿真记录缺少持久模型快照，无法完整回溯；已列入 MVP 补齐范围 |
+| 遗留托管资源 | 工作台仍有未被当前 Agent 引用的全 Dograh 配置及非默认的托管 Cloudonix SIP；本次未停用或删除 |
+| Bootstrap 差异 | 原实例代码支持并在环境文件关闭 `ENABLE_MANAGED_SERVICE_BOOTSTRAP`；工作台分支尚无该开关，组织 bootstrap 已完成 |
+
+这次结论是“当前 Agent 模型配置无 MPS 依赖”，不是“整个平台已停止请求 MPS”。知识库解析、文件转写、云密钥/账单和新组织初始化仍须处理；没有进行网络阻断或真实模型调用验证。
+
+该次只读核查将 MPS 解耦纳入 [MVP 技术设计](/architecture/agent-workbench-mvp)第 9 节，核查本身没有增加测试结果。后续实施如下。
+
+## 2026-10-19：完整语音闭环与 MPS 开关实施验收
+
+本轮只在 API 8016 / UI 3016 及其独立数据库、Redis、MinIO 上运行；原 API 8000 / UI 3000 服务未重启、未修改。API 与专用工作台 Worker 设置 `MPS_ENABLED=false`、`ENABLE_MANAGED_SERVICE_BOOTSTRAP=false`，重启后再次检查能力、依赖接口和语音附件上下文确认。
+
+### 真实模型与语音结果
+
+会话 `a010fc76-538c-41e0-94b7-d425ef6aa843`，工作流 4。测试输入是合成中文语音；实际音频经过 WebRTC、ElevenLabs STT、配置的 Qwen 和 ElevenLabs TTS。构建与调优调用真正的 Codex app-server，没有模拟模型结果。
+
+| 阶段 | 操作与证据 |
+| --- | --- |
+| 初始附件 | 上传并选中“初版业务规则.md”；语音调用 `read_attachment` 后回答咨询免费 |
+| 语音构建 | 语音调用 `submit_instruction`，Codex 保存候选 `c87f4ea0…` 和两个文本用例 |
+| 初版仿真 | 语音调用 `run_tests`；询问姓名和免费咨询两个用例 **2/2 通过** |
+| 对话中新增附件 | 上传并选中“收费更新规则.md”，通过同一会话的上下文更新交给语音；实际读取后回答“首访咨询费用为一百二十元” |
+| 新规则基线 | 验收脚本通过正常测试集 API 创建新规用例（相当于用户编辑测试集），先固定再开始调优。语音运行原候选，**1/2 通过**：姓名通过，收费失败 |
+| 语音调优 | `tune_agent` 携带所选候选、冻结测试集和两份附件；Codex 修改收费要求，回归 **2/2 通过**，姓名用例仍通过，`improved=true` |
+| 语音查询结果 | `get_status` 返回实际已完成任务与评测；TTS 播报两个用例通过、此前有一个失败 |
+| 草稿采用 | 浏览器采用候选 `669c1502…`；原编辑器显示 `v1 (Draft)`，数据库 `released_definition_id` 仍为空 |
+| 原界面 | Canvas、Model、Variables、Settings、Phone Call、Test Agent、Test Audio / Test Chat 保留；图中收费提示已更新 |
+
+新规测试集 `0e343160…` 的指纹在调优前后不变；调优工具不能修改测试集。闭环收到 **13,130 个音频帧**，累计音频能量非零。过程中外部测试语音合成请求曾连接失败，随后重连同一工作台会话完成；调优期间一次可恢复供应商警告没有关闭会话，之后语音结果查询成功。因此该记录不是“单连接全程无故障”或真人麦克风体验验收。
+
+较早一次候选调优未改善，仍为 1/2，系统正确返回 `improved=false` 并保留基线。成功示例中的 2/2 只代表两条固定脚本与字面断言，不代表所有业务对话通过。
+
+### 模型与 MPS 证据
+
+- 4 个真实任务和 8 条真实仿真运行均保存不含密钥的 v3 模型快照；评测摘要、任务与运行指纹一致：`6c75a957911cba377c7af4a924ca40a3491a3048a542e4ba9db05da4efb358af`。调优基线与候选使用同一配置，历史缺失快照不回填。
+- 语音依赖预检返回 Qwen LLM + ElevenLabs STT/TTS，未配置 Embedding；该无知识库流程正常完成。
+- 测试专用 DNS 观察器在 API 与 Worker 中阻断默认 MPS 主机和配置的 `mps-disabled.invalid`，本轮工作台流程累计 **0 次访问尝试**。这不证明所有产品路径或任意 MPS 别名都已覆盖。
+- 服务密钥和 `/api/v1/organizations/billing/credits` 在关闭 MPS 后返回 HTTP 409、稳定错误码 `mps_disabled`，不返回伪造的零余额。
+- 初始化跳过、非 OSS 禁止关闭 MPS、默认/自定义主机、HTTP/SDK 构造前拦截、模型覆盖/备用模型/历史快照及组织隔离由自动化测试覆盖。未进行完整新组织浏览器引导或人工发布验收。
+
+### 自动化与实现修复
+
+本轮后端选定回归 **302 项通过**，4 条已有弃用警告；前端语音 **6 项通过**；TypeScript 与改动前端 ESLint 检查通过。
+
+新增覆盖附件分页和选中范围、跨会话拒绝、候选/测试集/附件命令传递、拒绝候选不会成为默认目标、上下文确认、可恢复语音错误、模型快照固定与逐运行复制、空白草稿不发布，以及 MPS 策略和兼容默认开启的路径。
+
+修复了一处真实联调发现的问题：Codex 工具校验失败时，错误字符串覆盖 JSON-RPC 请求对象，导致任务崩溃。现在保留请求 ID 并将有限诊断返回 Codex，允许其修正候选后继续执行。附件选择不再因文字提交被清空；语音实际读取文件内容，不能只凭文件名推断规则。
+
+本轮完整后端命令（仅加载测试环境）：
+
+```bash
+source venv/bin/activate
+set -a
+source api/.env.test
+set +a
+python -m pytest api/tests/test_mps_policy.py api/tests/test_agent_workbench* api/tests/test_model_connections.py api/tests/test_model_connection_client.py api/tests/test_run_model_configuration.py api/tests/test_organization_bootstrap.py api/tests/test_mps_service_key_client.py api/tests/test_quota_service.py api/tests/test_workflow_versioning.py api/tests/test_workflow_text_chat.py api/tests/test_openrouter_llm_service_factory.py api/tests/test_text_chat_logs.py api/tests/test_text_chat_inactivity.py -q
+```
+
+本机证据保存在忽略 Git 的 `run/workbench/`：`voice-flow-evidence.json`（真实工具事件与任务结果）、`model-snapshot-evidence.json`（逐运行核对）、`final-smoke-evidence.json`（重启后复核）、`voice-workbench-completed.png`（页面结果）和 `final-regression.log`。这些是开发验收材料，不作为共享部署配置或凭据来源。
+
+### 仍未完成的范围
+
+真人麦克风体验、跨 NAT/TURN、多人并发和生产部署仍需专项验收。当前供应商 Responses 成功调用、图片理解/OCR、真实电话和外部业务系统也不在本轮通过结论内。MPS 关闭时，全局知识库云解析、录音文件云转写等路径会被拒绝；本地替代处理器和外围页面能力提示仍待实现，不能宣称整个平台已完全脱离 MPS。
