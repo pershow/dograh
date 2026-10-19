@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from api.constants import MPS_API_URL
+from api.services.mps_policy import check_model_service
 from api.errors.failure import (
     ErrorSource,
     annotate_failure_metadata,
@@ -386,6 +387,7 @@ def create_stt_service(
     # jurisdiction transcribes the call, and that is the only record an operator
     # has that the configured region was the one actually used - but it is one
     # fact about one service, so it belongs on one line.
+    check_model_service("stt", user_config.stt)
     is_deepgram = user_config.stt.provider == ServiceProviders.DEEPGRAM.value
     deepgram_base_url = _deepgram_base_url(user_config.stt) if is_deepgram else None
 
@@ -727,6 +729,7 @@ def create_tts_service(
     # Synthesis carries the same residency question as transcription - the text
     # sent for speaking is drawn from the conversation - so the endpoint is
     # resolved up front and reported on the creation line.
+    check_model_service("tts", user_config.tts)
     is_deepgram = user_config.tts.provider == ServiceProviders.DEEPGRAM.value
     deepgram_base_url = _deepgram_base_url(user_config.tts) if is_deepgram else None
 
@@ -1201,6 +1204,7 @@ def create_llm_service_from_provider(
             (e.g. "voicemail_detection"). Sent as request metadata by the Dograh
             provider; ignored by other providers.
     """
+    check_model_service("llm", provider=provider, base_url=base_url, endpoint=endpoint)
     # Vertex builds its endpoint from the location, so it is part of what this
     # service is, not a separate event. Resolved here to keep it on one line.
     vertex_location = (
@@ -1420,6 +1424,7 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
     These services bypass separate STT/TTS and handle audio directly via
     a bidirectional WebSocket connection. Reads from user_config.realtime.
     """
+    check_model_service("realtime", user_config.realtime)
     realtime_config = user_config.realtime
     provider = realtime_config.provider
     model = realtime_config.model

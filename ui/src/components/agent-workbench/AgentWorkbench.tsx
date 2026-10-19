@@ -33,6 +33,7 @@ import {
   workbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGet as getCandidate,
   workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet as getCapabilities,
   workbenchCreateSessionApiV1AgentWorkbenchSessionsPost as createSession,
+  workbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGet as getDependencies,
   workbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPost as evaluate,
   workbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGet as getEvents,
   workbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPost as instruct,
@@ -124,6 +125,16 @@ export function AgentWorkbench({
   const [candidate, setCandidate] = useState<Candidate>();
   const [suiteId, setSuiteId] = useState("");
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [dependencies, setDependencies] = useState<{
+    ready: boolean;
+    issues: unknown[];
+    services: {
+      role: string;
+      provider: string;
+      model: string;
+      endpoint_host?: string;
+    }[];
+  }>();
   const [suiteEditor, setSuiteEditor] = useState<string | null>(null);
   const [caseIndex, setCaseIndex] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -218,6 +229,28 @@ export function AgentWorkbench({
     return () => clearInterval(interval);
   }, [authLoading, user, session, reload]);
   const choiceInitialized = useRef(false);
+  useEffect(() => {
+    if (authLoading || !user || !session) return;
+    let disposed = false;
+    getDependencies({
+      path: { session_id: session },
+      query: { candidate_id: candidateId || undefined, purpose: "build" },
+    })
+      .then((response) => {
+        if (!disposed) setDependencies(result(response));
+      })
+      .catch((error) => {
+        if (!disposed)
+          setDependencies({
+            ready: false,
+            issues: [error.message],
+            services: [],
+          });
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [authLoading, user, session, candidateId]);
   useEffect(() => {
     if (!choiceInitialized.current && state) {
       choiceInitialized.current = true;
@@ -728,6 +761,29 @@ export function AgentWorkbench({
               <option value="responses">Responses</option>
             </select>
           </div>
+          {dependencies && (
+            <details className={styles.protocol}>
+              <summary>
+                {dependencies.ready ? "模型连接已检查" : "模型配置需要处理"}
+              </summary>
+              {dependencies.services.map((service) => (
+                <p key={service.role}>
+                  {service.role.toUpperCase()} · {service.provider} /{" "}
+                  {service.model}
+                  {service.endpoint_host ? ` · ${service.endpoint_host}` : ""}
+                </p>
+              ))}
+              {dependencies.issues.map((issue, i) => (
+                <p role="alert" key={i}>
+                  {detailFromError(
+                    { detail: issue },
+                    "模型配置无法解析，请检查 Models",
+                  )}
+                </p>
+              ))}
+              <Link href="/model-configurations">管理模型连接</Link>
+            </details>
+          )}
           <div className={styles.messages}>
             {!messages.length && (
               <div className={styles.welcome}>
@@ -751,8 +807,7 @@ export function AgentWorkbench({
             )}
             {messages.map((e) => {
               const input = e.payload.input as
-                | Record<string, unknown>
-                | undefined;
+                Record<string, unknown> | undefined;
               const isUser =
                 e.type === "task.queued" || e.payload.role === "user";
               const content =
@@ -972,8 +1027,6 @@ export function AgentWorkbench({
                       }),
                     );
                     setText("");
-                    setSelectedAssets([]);
-                    setCandidateId("");
                   })
                 }
               >
@@ -986,8 +1039,10 @@ export function AgentWorkbench({
             </div>
             <small className={styles.composerHint}>
               {voice.status === "connected"
-                ? "正在使用麦克风 · 可以随时打断讲话"
-                : "支持文件、拖放与粘贴 · 每个文件最大 20 MiB"}
+                ? voice.contextSynced
+                  ? `正在使用麦克风 · 已同步 ${selectedAssets.length} 个附件，可直接讨论资料并构建、测试、调优`
+                  : "正在同步附件和版本选择，请稍候…"
+                : "已选附件持续用于文字与语音，可取消勾选 · 单个文件最大 20 MiB"}
             </small>
           </div>
         </aside>

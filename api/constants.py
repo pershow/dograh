@@ -75,6 +75,12 @@ STACK_AUTH_PROJECT_ID = os.getenv("STACK_AUTH_PROJECT_ID")
 STACK_PUBLISHABLE_CLIENT_KEY = os.getenv("STACK_PUBLISHABLE_CLIENT_KEY")
 DOGRAH_MPS_SECRET_KEY = os.getenv("DOGRAH_MPS_SECRET_KEY", None)
 MPS_API_URL = os.getenv("MPS_API_URL", "https://services.dograh.com")
+MPS_ENABLED = os.getenv("MPS_ENABLED", "true").lower() == "true"
+ENABLE_MANAGED_SERVICE_BOOTSTRAP = (
+    os.getenv("ENABLE_MANAGED_SERVICE_BOOTSTRAP", "true").lower() == "true"
+)
+if not MPS_ENABLED and DEPLOYMENT_MODE != "oss":
+    raise RuntimeError("MPS_ENABLED=false is supported only with DEPLOYMENT_MODE=oss")
 DOGRAH_DEVOPS_SECRET = os.getenv("DOGRAH_DEVOPS_SECRET") or None
 ENABLE_PROMETHEUS_METRICS = (
     os.getenv("ENABLE_PROMETHEUS_METRICS", "false").lower() == "true"

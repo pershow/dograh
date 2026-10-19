@@ -151,6 +151,9 @@ async def evaluate(org, session_id, job, candidate_id, suite_id, model_configura
                 "candidate_fingerprint": candidate["fingerprint"],
                 "suite_fingerprint": suite_row["fingerprint"],
                 "model": model_configuration.llm.model,
+                "model_configuration_fingerprint": job.get("output", {}).get(
+                    "model_configuration_fingerprint"
+                ),
             }
         )
         await db_client.wb_evaluation_result(

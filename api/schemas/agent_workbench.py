@@ -137,15 +137,23 @@ class TuneRequest(EvaluateRequest):
     max_rounds: int = Field(default=1, ge=1, le=3)
 
 
-class VoiceToolRequest(StrictModel):
+class VoiceSelection(StrictModel):
     candidate_id: str | None = None
     suite_id: str | None = None
+    asset_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
+class VoiceToolRequest(VoiceSelection):
     call_id: str = Field(min_length=1, max_length=128)
     name: Literal[
-        "submit_instruction", "get_status", "cancel_task", "run_tests", "tune_agent"
+        "submit_instruction",
+        "get_status",
+        "read_attachment",
+        "cancel_task",
+        "run_tests",
+        "tune_agent",
     ]
     arguments: dict = Field(default_factory=dict)
-    asset_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class WorkbenchResponse(BaseModel):

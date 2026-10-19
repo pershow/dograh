@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import jsonschema
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from api.services.agent_workbench.config import WorkbenchSettings
@@ -73,9 +74,11 @@ class CodexClient:
                             }
                         except Exception as error:  # noqa: BLE001 - boundary converts failures to bounded task status
                             # Validation errors are useful for self-repair; provider credentials are never in arguments.
-                            message = (
+                            error_message = (
                                 (
-                                    error.message
+                                    str(error.detail)
+                                    if isinstance(error, HTTPException)
+                                    else error.message
                                     if isinstance(error, jsonschema.ValidationError)
                                     else str(error)
                                 )
@@ -83,6 +86,7 @@ class CodexClient:
                                     error,
                                     (
                                         WorkbenchError,
+                                        HTTPException,
                                         jsonschema.ValidationError,
                                         ValidationError,
                                         ValueError,
@@ -92,12 +96,12 @@ class CodexClient:
                             )
                             await self.on_event(
                                 "tool.failed",
-                                {"name": params["tool"], "error": message[:1000]},
+                                {"name": params["tool"], "error": error_message[:1000]},
                             )
                             answer = {
                                 "success": False,
                                 "contentItems": [
-                                    {"type": "inputText", "text": message[:4000]}
+                                    {"type": "inputText", "text": error_message[:4000]}
                                 ],
                             }
                         await self.send({"id": message["id"], "result": answer})

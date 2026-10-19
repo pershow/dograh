@@ -7,28 +7,45 @@
  * [{ model, message }] }`. This normalizes those to a single string so it can
  * be rendered or thrown directly.
  */
-export function detailFromError(err: unknown, fallback = "Request failed"): string {
-    if (typeof err === "string") return err;
-    const e = err as { detail?: unknown };
-    if (typeof e?.detail === "string") return e.detail;
-    if (Array.isArray(e?.detail) && e.detail.length > 0) {
-        const messages = e.detail
-            .map((item) => {
-                if (typeof item === "string") return item;
-                if (!item || typeof item !== "object") return null;
-                const detail = item as { message?: unknown; msg?: unknown; model?: unknown };
-                const message = typeof detail.message === "string"
-                    ? detail.message
-                    : typeof detail.msg === "string"
-                        ? detail.msg
-                        : null;
-                if (!message) return null;
-                return typeof detail.model === "string" && detail.model
-                    ? `${detail.model}: ${message}`
-                    : message;
-            })
-            .filter((message): message is string => Boolean(message));
-        if (messages.length > 0) return messages.join("\n");
-    }
-    return fallback;
+export function detailFromError(
+  err: unknown,
+  fallback = "Request failed",
+): string {
+  if (typeof err === "string") return err;
+  const e = err as { detail?: unknown };
+  if (typeof e?.detail === "string") return e.detail;
+  if (
+    e?.detail &&
+    typeof e.detail === "object" &&
+    "message" in e.detail &&
+    typeof e.detail.message === "string"
+  ) {
+    const detail = e.detail as { message: string; role?: string };
+    return detail.role ? `${detail.role}: ${detail.message}` : detail.message;
+  }
+  if (Array.isArray(e?.detail) && e.detail.length > 0) {
+    const messages = e.detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return null;
+        const detail = item as {
+          message?: unknown;
+          msg?: unknown;
+          model?: unknown;
+        };
+        const message =
+          typeof detail.message === "string"
+            ? detail.message
+            : typeof detail.msg === "string"
+              ? detail.msg
+              : null;
+        if (!message) return null;
+        return typeof detail.model === "string" && detail.model
+          ? `${detail.model}: ${message}`
+          : message;
+      })
+      .filter((message): message is string => Boolean(message));
+    if (messages.length > 0) return messages.join("\n");
+  }
+  return fallback;
 }

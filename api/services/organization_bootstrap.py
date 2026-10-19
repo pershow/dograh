@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from loguru import logger
 
+from api import constants
 from api.constants import AUTH_PROVIDER, DEPLOYMENT_MODE
 from api.db import db_client
 from api.db.organization_configuration_client import LEASE_COMPLETED
@@ -62,6 +63,8 @@ async def ensure_organization_bootstrapped(
     Never raises. A provisioning failure must not fail authentication — the
     caller is a legitimately authenticated user either way.
     """
+    if not (constants.MPS_ENABLED and constants.ENABLE_MANAGED_SERVICE_BOOTSTRAP):
+        return True
     try:
         state = await db_client.get_configuration_values(
             organization_id, [_BOOTSTRAP_KEY, _CATALOG_DEFAULT_KEY]

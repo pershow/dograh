@@ -11,6 +11,7 @@ from typing import Optional
 from loguru import logger
 
 from api.db.db_client import DBClient
+from api.services.mps_policy import check_model_service
 
 from .azure_openai_service import AzureOpenAIEmbeddingService
 from .base import BaseEmbeddingService
@@ -76,6 +77,7 @@ async def build_embedding_service(
     """
     from api.services.configuration.registry import ServiceProviders
 
+    check_model_service("embeddings", provider=provider, base_url=base_url, endpoint=endpoint)
     model_id = model or DEFAULT_EMBEDDING_MODEL
 
     if provider == ServiceProviders.AZURE.value and endpoint:

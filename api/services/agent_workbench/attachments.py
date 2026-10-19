@@ -29,6 +29,46 @@ ALLOWED = {
 }
 
 
+async def read_selected_attachment(
+    org, session_id, selected_ids, asset_id, offset=0, limit=24000
+):
+    """Both voice and Codex read only explicitly selected, scoped, parsed data."""
+    if asset_id not in selected_ids:
+        raise WorkbenchError("Attachment was not selected for this task")
+    if (
+        type(offset) is not int
+        or type(limit) is not int
+        or offset < 0
+        or not 1 <= limit <= 24000
+    ):
+        raise WorkbenchError(
+            "Attachment offset must be nonnegative and limit between 1 and 24000"
+        )
+    asset = await db_client.wb_get(org, session_id, "assets", asset_id)
+    if asset["status"] != "ready":
+        raise WorkbenchError("附件尚未解析完成。")
+    parsed = asset["parsed"]
+    if parsed.get("kind") == "image":
+        return {
+            "name": asset["name"],
+            "kind": "image",
+            "width": parsed["width"],
+            "height": parsed["height"],
+        }
+    text = parsed.get("text", "")
+    end = min(offset + limit, len(text))
+    return {
+        "name": asset["name"],
+        "kind": "text",
+        "text": text[offset:end],
+        "offset": offset,
+        "next_offset": end if end < len(text) else None,
+        "total_characters": len(text),
+        "truncated_by_parser": parsed.get("truncated", False),
+        "source_locations": [s["location"] for s in parsed.get("segments", [])],
+    }
+
+
 class PrivateAssetStore:
     """Do not reuse MinioFileSystem: it grants public bucket access in local mode."""
 

@@ -20,9 +20,15 @@ class WorkbenchSettings:
         )
 
     def capabilities(self):
+        from api import constants
+
         installed = bool(shutil.which(self.codex_binary))
         return {
             "enabled": self.enabled,
+            "mps_enabled": constants.MPS_ENABLED,
+            "managed_service_bootstrap": constants.MPS_ENABLED
+            and constants.ENABLE_MANAGED_SERVICE_BOOTSTRAP,
+            "legacy_builder": constants.MPS_ENABLED,
             "build": self.enabled and installed,
             "voice": self.enabled,
             "attachments": self.enabled,

@@ -9,6 +9,8 @@ import jsonschema
 from api.db import db_client
 from api.mcp_server.ts_bridge import generate_code, parse_code
 from api.schemas.agent_workbench import SimulationSuite
+from api.services.agent_workbench.attachments import read_selected_attachment
+from api.services.agent_workbench.dependencies import prepare_models
 from api.services.agent_workbench.errors import WorkbenchError
 from api.services.configuration.masking import (
     mask_workflow_definition,
@@ -143,6 +145,7 @@ class WorkbenchTools:
         return {
             "code": code,
             "workflow_id": self.context["session"]["workflow_id"],
+            "model_dependencies": self.context.get("model_dependencies"),
             "tools": [
                 {
                     "tool_uuid": t.tool_uuid,
@@ -181,26 +184,19 @@ class WorkbenchTools:
         return spec.to_mcp_dict()
 
     async def read_attachment(self, asset_id, offset=0, limit=24000):
-        if asset_id not in self.job["input"].get("asset_ids", []):
-            raise WorkbenchError("Attachment was not selected for this task")
-        asset = await db_client.wb_get(self.org, self.session_id, "assets", asset_id)
-        parsed = asset["parsed"]
-        if parsed.get("kind") == "image":
-            return {
-                "name": asset["name"],
-                "kind": "image",
-                "width": parsed["width"],
-                "height": parsed["height"],
-                "note": "The sanitized image is attached to this Codex turn. Vision-capable model required.",
-            }
-        text = parsed.get("text", "")
-        return {
-            "name": asset["name"],
-            "text": text[offset : offset + limit],
-            "total_characters": len(text),
-            "truncated_by_parser": parsed.get("truncated", False),
-            "source_locations": [s["location"] for s in parsed.get("segments", [])],
-        }
+        result = await read_selected_attachment(
+            self.org,
+            self.session_id,
+            self.job["input"].get("asset_ids", []),
+            asset_id,
+            offset,
+            limit,
+        )
+        if result["kind"] == "image":
+            result["note"] = (
+                "The sanitized image is attached to this Codex turn. Vision-capable model required."
+            )
+        return result
 
     async def _validate(self, code):
         parsed = await asyncio.wait_for(parse_code(code), 20)
@@ -251,6 +247,7 @@ class WorkbenchTools:
                     walk(item)
 
         walk(graph)
+        await prepare_models(self.org, {**self.base, "workflow_json": graph}, "build")
         return {
             **copy.deepcopy(self.base),
             "name": (parsed.get("workflowName") or self.base["name"])[:120],

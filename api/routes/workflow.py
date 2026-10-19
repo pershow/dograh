@@ -315,6 +315,7 @@ class WorkflowTemplateResponse(BaseModel):
 class CreateWorkflowRequest(BaseModel):
     name: str
     workflow_definition: dict
+    draft_only: bool = False
 
 
 class DuplicateTemplateRequest(BaseModel):
@@ -515,6 +516,7 @@ async def create_workflow(
         workflow_definition,
         user.id,
         user.selected_organization_id,
+        draft_only=request.draft_only,
     )
 
     capture_event(

@@ -22,6 +22,11 @@ from api.errors.failure import (
 )
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.schemas.model_connections import PreCallModelOverride
+from api.services.mps_policy import (
+    MPSDisabledError,
+    check_definition_models,
+    check_effective_models,
+)
 from api.services.pipecat.pre_call_fetch import PreCallFetchResult
 
 WORKFLOW_MODEL_CONFIGURATION_OVERRIDE_KEY = "model_configuration_override"
@@ -72,9 +77,11 @@ async def validate_workflow_model_compatibility(
     )
     from api.services.managed_model_services import get_dograh_service_api_key
 
+    check_effective_models(effective)
     if definition is None:
         # A run that predates pinned definitions has no consumers to check.
         return
+    check_definition_models(definition.workflow_json, definition.workflow_configurations)
     nodes = (definition.workflow_json or {}).get("nodes", [])
     documents = sorted(
         {
@@ -115,6 +122,8 @@ async def validate_workflow_model_compatibility(
 
 def _configuration_failure(exc: Exception) -> HTTPException:
     # ValidationError text contains raw model input. Never persist or log it.
+    if isinstance(exc, MPSDisabledError):
+        return exc
     status = exc.status_code if isinstance(exc, HTTPException) else 422
     message = (
         exc.detail

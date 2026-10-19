@@ -4,20 +4,29 @@ import asyncio
 import contextlib
 import json
 
+from fastapi import HTTPException
+
 from api.db import db_client
 from api.services.agent_workbench.codex_client import CodexClient
 from api.services.agent_workbench.config import WorkbenchSettings
+from api.services.agent_workbench.dependencies import model_report, prepare_models
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.evaluation import acceptable_improvement, evaluate
 from api.services.agent_workbench.tools import WorkbenchTools
-from api.services.configuration.ai_model_configuration import (
-    get_effective_ai_model_configuration_for_workflow,
-)
 
 QUEUE = "arq:agent-workbench"
 
 
 async def enqueue(org, session_id, kind, payload, key):
+    context = await db_client.wb_context(org, session_id)
+    target = context["target"]
+    if payload.get("candidate_id"):
+        target = (
+            await db_client.wb_get(
+                org, session_id, "candidates", payload["candidate_id"]
+            )
+        )["snapshot"]
+    await prepare_models(org, target, kind)
     job = await db_client.wb_enqueue(org, session_id, kind, payload, key)
     # A Redis outage does not discard the command: the dedicated worker scans the outbox.
     try:
@@ -73,10 +82,20 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
 
 async def _perform(org, session_id, job):
     context = await db_client.wb_context(org, session_id)
-    config = await get_effective_ai_model_configuration_for_workflow(
-        organization_id=org,
-        workflow_configurations=context["target"]["workflow_configurations"],
+    payload = job["input"]
+    target = context["target"]
+    if payload.get("candidate_id"):
+        target = (
+            await db_client.wb_get(
+                org, session_id, "candidates", payload["candidate_id"]
+            )
+        )["snapshot"]
+    resolved = await prepare_models(org, target, job["kind"])
+    config = resolved.effective
+    job["output"] = await db_client.wb_pin_models(
+        org, session_id, job["id"], job["lease_token"], resolved.snapshot
     )
+    context["model_dependencies"] = model_report(resolved, job["kind"])
     if not config.llm or not config.llm.api_key:
         raise WorkbenchError(
             "Configure an LLM connection in Dograh Models before using the workbench"
@@ -85,7 +104,6 @@ async def _perform(org, session_id, job):
         raise WorkbenchError(
             "Codex MVP requires an OpenAI-compatible LLM connection (including Qwen)"
         )
-    payload = job["input"]
     if job["kind"] in {"build", "tune"} and payload.get("candidate_id"):
         base = await db_client.wb_get(
             org, session_id, "candidates", payload["candidate_id"]
@@ -191,6 +209,8 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
         message = (
             str(error)[:3000]
             if isinstance(error, WorkbenchError)
+            else json.dumps(error.detail, ensure_ascii=False)[:3000]
+            if isinstance(error, HTTPException)
             else "Task failed; check the worker diagnostics and model connection"
         )
         import traceback

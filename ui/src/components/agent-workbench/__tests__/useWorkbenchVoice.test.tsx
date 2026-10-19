@@ -90,4 +90,88 @@ describe("workbench microphone lifecycle", () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(Socket.instances).toHaveLength(0);
   });
+  it("only confirms the exact selection acknowledged by the server", async () => {
+    const { result, rerender } = renderHook(
+      ({ assets }) =>
+        useWorkbenchVoice("s", getToken, assets, "c", "suite", onUpdate),
+      { initialProps: { assets: ["a"] } },
+    );
+    await act(() => result.current.start());
+    const message = async (data: object) => {
+      await act(async () =>
+        Socket.instances[0].onmessage?.({ data: JSON.stringify(data) }),
+      );
+    };
+    expect(result.current.contextSynced).toBe(false);
+    await message({
+      type: "context.applied",
+      asset_ids: ["a"],
+      candidate_id: "c",
+      suite_id: "suite",
+    });
+    expect(result.current.contextSynced).toBe(true);
+    rerender({ assets: ["b"] });
+    expect(result.current.contextSynced).toBe(false);
+    await message({
+      type: "context.applied",
+      asset_ids: ["a"],
+      candidate_id: "c",
+      suite_id: "suite",
+    });
+    expect(result.current.contextSynced).toBe(false);
+    await message({ type: "context.error", message: "附件尚未解析完成" });
+    expect(result.current.error).toContain("解析");
+    expect(Socket.instances[0].close).not.toHaveBeenCalled();
+    await message({
+      type: "context.applied",
+      asset_ids: ["b"],
+      candidate_id: "c",
+      suite_id: "suite",
+    });
+    expect(result.current.contextSynced).toBe(true);
+    expect(result.current.error).toBe("");
+  });
+  it("shows rejected voice commands without disconnecting the conversation", async () => {
+    const { result } = renderHook(() =>
+      useWorkbenchVoice("s", getToken, [], "c", "suite", onUpdate),
+    );
+    await act(() => result.current.start());
+    await act(async () =>
+      Socket.instances[0].onmessage?.({
+        data: JSON.stringify({
+          type: "tool.result",
+          name: "run_tests",
+          result: { error: "Task already running" },
+        }),
+      }),
+    );
+    expect(result.current.error).toBe("Task already running");
+    expect(Socket.instances[0].close).not.toHaveBeenCalled();
+  });
+  it("keeps transient provider warnings recoverable", async () => {
+    const { result } = renderHook(() =>
+      useWorkbenchVoice("s", getToken, [], "c", "suite", onUpdate),
+    );
+    await act(() => result.current.start());
+    await act(async () =>
+      Socket.instances[0].onmessage?.({
+        data: JSON.stringify({
+          type: "warning",
+          message: "Reconnecting voice",
+        }),
+      }),
+    );
+    expect(result.current.error).toBe("Reconnecting voice");
+    expect(Socket.instances[0].close).not.toHaveBeenCalled();
+    await act(async () =>
+      Socket.instances[0].onmessage?.({
+        data: JSON.stringify({
+          type: "transcript",
+          role: "assistant",
+          text: "Recovered",
+        }),
+      }),
+    );
+    expect(result.current.error).toBe("");
+  });
 });

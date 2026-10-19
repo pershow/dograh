@@ -14,6 +14,7 @@ from loguru import logger
 from api.constants import DEPLOYMENT_MODE, DOGRAH_MPS_SECRET_KEY, MPS_API_URL
 from api.errors.failure import ErrorSource, classify_exception, log_failure
 from api.errors.mps import MPSUnavailableError
+from api.services.mps_policy import require_mps_enabled
 
 _INVALID_SERVICE_KEY_STATUSES = frozenset({401, 403})
 
@@ -46,6 +47,16 @@ class MPSServiceKeyClient:
     def __init__(self):
         self.base_url = MPS_API_URL
         self.timeout = httpx.Timeout(10.0)
+
+    @staticmethod
+    def _async_client(**kwargs):
+        require_mps_enabled()
+        return httpx.AsyncClient(**kwargs)
+
+    @staticmethod
+    def _sync_client(**kwargs):
+        require_mps_enabled()
+        return httpx.Client(**kwargs)
 
     def _get_headers(
         self,
@@ -91,7 +102,7 @@ class MPSServiceKeyClient:
         For OSS mode: organization_id should be None
         For authenticated mode: organization_id should be provided
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             request_body = {
                 "name": name,
                 "description": description or f"Service key: {name}",
@@ -146,7 +157,7 @@ class MPSServiceKeyClient:
         scoped by ``organization_id`` and authenticated with the Dograh/MPS
         control-plane secret. No model-service key participates in ownership.
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.put(
                 f"{self.base_url}/api/v1/cloudonix/domains/self",
                 headers=self._get_headers(organization_id, created_by),
@@ -181,7 +192,7 @@ class MPSServiceKeyClient:
         For OSS mode: Use created_by to filter keys
         For authenticated mode: Use organization_id to filter keys
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             params = {}
 
             if DEPLOYMENT_MODE == "oss":
@@ -232,7 +243,7 @@ class MPSServiceKeyClient:
         created_by: Optional[str] = None,
     ) -> Optional[dict]:
         """Get a specific service key by ID."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/service-keys/{key_id}",
                 headers=self._get_headers(organization_id, created_by),
@@ -289,7 +300,7 @@ class MPSServiceKeyClient:
             logger.error(f"Service key {key_id} not found or access denied")
             return False
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.delete(
                 f"{self.base_url}/api/v1/service-keys/{key_id}",
                 headers=self._get_headers(organization_id, created_by),
@@ -318,7 +329,7 @@ class MPSServiceKeyClient:
         Raises:
             HTTPException: If the API call fails
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/service-keys/usage/self",
                 headers={
@@ -353,7 +364,7 @@ class MPSServiceKeyClient:
         Returns:
             Dictionary containing total_credits_used and remaining_credits
         """
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/service-keys/usage/created-by",
                 json={"created_by": created_by},
@@ -390,7 +401,7 @@ class MPSServiceKeyClient:
             "billing_details": billing_details or {},
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/billing/accounts/{organization_id}/checkout-sessions",
                 json=payload,
@@ -431,7 +442,7 @@ class MPSServiceKeyClient:
             params["start_date"] = start_date.isoformat()
         if end_date is not None:
             params["end_date"] = end_date.isoformat()
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/billing/accounts/{organization_id}/ledger",
                 params=params,
@@ -461,7 +472,7 @@ class MPSServiceKeyClient:
 
         operation = "get_billing_pricing"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._async_client(timeout=self.timeout) as client:
                 response = await client.get(
                     f"{self.base_url}/api/v1/billing/accounts/{organization_id}/pricing",
                     headers=self._get_headers(organization_id=organization_id),
@@ -495,7 +506,7 @@ class MPSServiceKeyClient:
         created_by: Optional[str] = None,
     ) -> dict:
         """Create or return the MPS v2 billing account for an organization."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.get(
                 f"{self.base_url}/api/v1/billing/accounts/{organization_id}/balance",
                 headers=self._get_headers(
@@ -538,7 +549,7 @@ class MPSServiceKeyClient:
         if minimum_credits is not None:
             payload["minimum_credits"] = minimum_credits
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/billing/accounts/{organization_id}/run-authorization",
                 json=payload,
@@ -579,7 +590,7 @@ class MPSServiceKeyClient:
         if minimum_credits is not None:
             payload["minimum_credits"] = minimum_credits
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/service-keys/run-authorization/self",
                 json=payload,
@@ -613,7 +624,7 @@ class MPSServiceKeyClient:
         if workflow_run_id is not None:
             payload["workflow_run_id"] = workflow_run_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/service-keys/correlation-id/self",
                 json=payload,
@@ -666,7 +677,7 @@ class MPSServiceKeyClient:
 
         max_attempts = max(1, max_attempts)
         last_response: httpx.Response | None = None
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._async_client(timeout=self.timeout) as client:
             for attempt in range(1, max_attempts + 1):
                 response = await client.post(
                     (
@@ -736,7 +747,7 @@ class MPSServiceKeyClient:
         Raises:
             httpx.HTTPStatusError: If the API call fails
         """
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        async with self._async_client(timeout=httpx.Timeout(60.0)) as client:
             files = {
                 "file": (filename, audio_data, content_type),
             }
@@ -785,7 +796,7 @@ class MPSServiceKeyClient:
         """
         operation = "validate_service_key"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with self._sync_client(timeout=self.timeout) as client:
                 response = client.get(
                     f"{self.base_url}/api/v1/service-keys/usage/self",
                     headers={
@@ -845,7 +856,7 @@ class MPSServiceKeyClient:
         """
         operation = "get_voices"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._async_client(timeout=self.timeout) as client:
                 params = {}
                 if model:
                     params["model"] = model
@@ -929,7 +940,7 @@ class MPSServiceKeyClient:
         # Remove JSON content-type so httpx sets the correct multipart boundary.
         headers.pop("Content-Type", None)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        async with self._async_client(timeout=httpx.Timeout(300.0)) as client:
             with open(file_path, "rb") as fh:
                 files = {"file": (filename, fh.read(), content_type)}
 
@@ -979,7 +990,7 @@ class MPSServiceKeyClient:
         Raises:
             HTTPException: If the API call fails
         """
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        async with self._async_client(timeout=httpx.Timeout(30.0)) as client:
             response = await client.post(
                 f"{self.base_url}/api/v1/workflow/create-workflow",
                 json={

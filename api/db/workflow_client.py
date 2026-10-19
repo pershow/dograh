@@ -6,6 +6,7 @@ from sqlalchemy import func, update
 from sqlalchemy.future import select
 from sqlalchemy.orm import load_only, selectinload
 
+from api import constants
 from api.db.base_client import BaseDBClient
 from api.db.model_connection_client import ModelCatalogNotFound, ModelConnectionClient
 from api.db.models import (
@@ -15,6 +16,7 @@ from api.db.models import (
     WorkflowModel,
     WorkflowRunModel,
 )
+from api.services.mps_policy import check_definition_models
 
 
 class WorkflowClient(BaseDBClient):
@@ -39,6 +41,17 @@ class WorkflowClient(BaseDBClient):
         self, session, organization_id, configurations
     ):
         override = (configurations or {}).get("model_configuration_override")
+        if not constants.MPS_ENABLED and organization_id is not None:
+            from api.services.configuration.model_connections import (
+                get_default_model_configuration,
+                resolve_model_configuration,
+            )
+
+            default = await get_default_model_configuration(organization_id)
+            if default or override:
+                await resolve_model_configuration(
+                    organization_id, workflow_override=override, default_row=default
+                )
         if not override:
             return
         if organization_id is None:
@@ -134,9 +147,13 @@ class WorkflowClient(BaseDBClient):
         workflow_definition: dict,
         user_id: int,
         organization_id: int = None,
+        *,
+        draft_only: bool = False,
     ) -> WorkflowModel:
         async with self.async_session() as session:
             try:
+                check_definition_models(workflow_definition, {})
+                await self._check_workflow_model_references(session, organization_id, {})
                 new_workflow = WorkflowModel(
                     name=name,
                     workflow_definition=workflow_definition,  # Keep for backwards compatibility
@@ -146,14 +163,14 @@ class WorkflowClient(BaseDBClient):
                 session.add(new_workflow)
                 await session.flush()  # Flush to get the workflow ID
 
-                # Create the first definition as V1 published
+                # Blank UI creation starts as a draft; existing SDK creation is unchanged.
                 definition = WorkflowDefinitionModel(
                     workflow_json=workflow_definition,
                     workflow_id=new_workflow.id,
-                    is_current=True,
-                    status="published",
+                    is_current=not draft_only,
+                    status="draft" if draft_only else "published",
                     version_number=1,
-                    published_at=datetime.now(UTC),
+                    published_at=None if draft_only else datetime.now(UTC),
                     workflow_configurations=new_workflow.workflow_configurations or {},
                     template_context_variables=new_workflow.template_context_variables
                     or {},
@@ -162,7 +179,8 @@ class WorkflowClient(BaseDBClient):
                 await session.flush()
 
                 # Set the released pointer
-                new_workflow.released_definition_id = definition.id
+                if not draft_only:
+                    new_workflow.released_definition_id = definition.id
 
                 await session.commit()
             except Exception as e:
@@ -276,6 +294,7 @@ class WorkflowClient(BaseDBClient):
                 )
                 session.add(draft)
 
+            check_definition_models(draft.workflow_json, draft.workflow_configurations)
             await self._check_workflow_model_references(
                 session, organization_id, draft.workflow_configurations
             )
@@ -327,6 +346,7 @@ class WorkflowClient(BaseDBClient):
             if not draft:
                 raise ValueError(f"No draft exists for workflow {workflow_id}")
 
+            check_definition_models(draft.workflow_json, draft.workflow_configurations)
             await self._check_workflow_model_references(
                 session, organization_id, draft.workflow_configurations
             )
@@ -438,6 +458,7 @@ class WorkflowClient(BaseDBClient):
                     f"Version {definition_id} not found for workflow {workflow_id}"
                 )
 
+            check_definition_models(source.workflow_json, source.workflow_configurations)
             await self._check_workflow_model_references(
                 session, organization_id, source.workflow_configurations
             )

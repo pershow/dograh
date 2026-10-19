@@ -1,6 +1,6 @@
 """Opt-in workbench API. Every child lookup is rooted in the authenticated org."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -27,6 +27,7 @@ from api.schemas.agent_workbench import (
 )
 from api.services.agent_workbench.attachments import parse_attachment, upload_attachment
 from api.services.agent_workbench.config import WorkbenchSettings
+from api.services.agent_workbench.dependencies import dependency_report
 from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.jobs import enqueue
 from api.services.agent_workbench.voice_commands import voice_command
@@ -117,6 +118,24 @@ async def workbench_settings(
             user.selected_organization_id, session_id, body.model_protocol
         )
     )
+
+
+@router.get("/sessions/{session_id}/dependencies", response_model=WorkbenchResponse)
+async def workbench_dependencies(
+    session_id: str,
+    user: User,
+    _: Enabled,
+    candidate_id: str | None = None,
+    purpose: Literal["build", "evaluate", "tune", "voice"] = "build",
+):
+    org = user.selected_organization_id
+    context = await db_client.wb_context(org, session_id)
+    target = context["target"]
+    if candidate_id:
+        target = (await db_client.wb_get(org, session_id, "candidates", candidate_id))[
+            "snapshot"
+        ]
+    return WorkbenchResponse(data=await dependency_report(org, target, purpose))
 
 
 @router.get("/sessions/{session_id}/events", response_model=WorkbenchResponse)

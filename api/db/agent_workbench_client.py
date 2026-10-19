@@ -23,6 +23,7 @@ from api.db.models import (
 from api.db.workflow_client import WorkflowClient
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.fingerprint import fingerprint
+from api.services.mps_policy import check_definition_models
 
 TABLES = {
     "assets": WorkbenchAssetModel,
@@ -351,7 +352,11 @@ class AgentWorkbenchClient(BaseDBClient):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             job = await self._wb_fence(db, session_id, job_id, token)
-            job.status, job.output, job.error = status, output or {}, error
+            job.status, job.output, job.error = (
+                status,
+                {**job.output, **(output or {})},
+                error,
+            )
             job.lease_token, job.lease_until = None, None
             if status != "completed":
                 await self._wb_stop_evaluations(db, session_id, job_id, status)
@@ -498,12 +503,25 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(row)
 
+    async def wb_pin_models(self, org, session_id, job_id, token, snapshot):
+        async with self.async_session() as db, db.begin():
+            await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            if job.output.get("model_configuration_snapshot"):
+                raise WorkbenchError("Task model configuration is already frozen", 409)
+            job.output = {
+                **job.output,
+                "model_configuration_snapshot": copy.deepcopy(snapshot),
+                "model_configuration_fingerprint": fingerprint(snapshot),
+            }
+            return copy.deepcopy(job.output)
+
     async def wb_evaluation(
         self, org, session_id, job_id, token, candidate_id, suite_id
     ):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
-            await self._wb_fence(db, session_id, job_id, token)
+            job = await self._wb_fence(db, session_id, job_id, token)
             await self._wb_item(db, "candidates", session_id, candidate_id)
             await self._wb_item(db, "suites", session_id, suite_id)
             row = WorkbenchEvaluationModel(
@@ -511,6 +529,11 @@ class AgentWorkbenchClient(BaseDBClient):
                 job_id=job_id,
                 candidate_id=candidate_id,
                 suite_id=suite_id,
+                summary={
+                    "model_configuration_fingerprint": job.output.get(
+                        "model_configuration_fingerprint"
+                    )
+                },
             )
             db.add(row)
             await db.flush()
@@ -539,7 +562,10 @@ class AgentWorkbenchClient(BaseDBClient):
     ):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
-            await self._wb_fence(db, session_id, job_id, token)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            snapshot = job.output.get("model_configuration_snapshot")
+            if not isinstance(snapshot, dict) or snapshot.get("version") != 3:
+                raise WorkbenchError("Freeze the task model configuration before evaluation", 409)
             candidate = await self._wb_item(db, "candidates", session_id, candidate_id)
             run = WorkflowRunModel(
                 name="Workbench simulation",
@@ -547,10 +573,17 @@ class AgentWorkbenchClient(BaseDBClient):
                 definition_id=candidate.definition_id,
                 mode="textchat",
                 purpose="evaluation",
+                model_configuration_snapshot=copy.deepcopy(snapshot),
                 initial_context=initial_context,
                 gathered_context={},
                 logs={},
-                extra={"workbench_session_id": session_id},
+                extra={
+                    "workbench_session_id": session_id,
+                    "workbench_job_id": job_id,
+                    "model_configuration_fingerprint": job.output.get(
+                        "model_configuration_fingerprint"
+                    ),
+                },
             )
             db.add(run)
             await db.flush()
@@ -581,6 +614,9 @@ class AgentWorkbenchClient(BaseDBClient):
                     409,
                 )
             definition = await db.get(WorkflowDefinitionModel, candidate.definition_id)
+            check_definition_models(
+                definition.workflow_json, definition.workflow_configurations
+            )
             await WorkflowClient._check_workflow_model_references(
                 self, db, org, definition.workflow_configurations
             )

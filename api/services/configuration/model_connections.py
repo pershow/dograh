@@ -30,6 +30,7 @@ from api.services.configuration.registry import (
     get_provider_definition,
     get_service_configuration,
 )
+from api.services.mps_policy import check_model_service
 from api.utils.url_security import validate_user_configured_service_url
 
 ROLES = ("llm", "stt", "tts", "realtime", "embeddings")
@@ -158,6 +159,7 @@ def _validate_connection_urls(connection_settings):
 
 def validate_provider_connection(provider, credentials, connection_settings):
     """A connection must locally validate for at least one registered service."""
+    check_model_service("connection", provider=provider, **connection_settings)
     _validate_connection_urls(connection_settings)
     provider = connection_provider(provider)
     schemas = [
@@ -507,6 +509,7 @@ async def _resolve_spec(
         if uuid not in connections:
             connections[uuid] = await _connection(organization_id, uuid)
         row = connections[uuid]
+        check_model_service(key, provider=row.provider, **row.connection_settings)
         if (
             key == "llm"
             and spec.llm_fallback
@@ -625,6 +628,7 @@ async def _resolve_spec(
 
 
 def _build_service(role, provider, credentials, connection_settings, settings):
+    check_model_service(role, provider=provider, **connection_settings)
     schema = _schema(role, provider)
     payload = {
         key: value
@@ -750,6 +754,7 @@ def validate_service_configuration(configuration):
     URL safety retains the existing deployment policy (which resolves hostnames
     in SaaS mode); it never sends a request to a model service.
     """
+    check_model_service("configuration", configuration)
     _check_required_credentials(configuration)
     _, _, connection_settings, _ = split_service_configuration(configuration)
     _validate_connection_urls(connection_settings)

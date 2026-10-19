@@ -122,6 +122,13 @@ async def test_evaluation_runs_are_hidden_from_normal_queries(db_session, wb):
     context = await db_session.wb_context(org, sid)
     job = await db_session.wb_enqueue(org, sid, "build", {"text": "build"}, "new")
     job = await db_session.wb_claim(org, sid, job["id"])
+    await db_session.wb_pin_models(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        {"version": 3, "mode": "pipeline", "services": {}},
+    )
     candidate = await db_session.wb_save_candidate(
         org,
         sid,
@@ -177,3 +184,71 @@ async def test_expired_job_stops_evaluation_and_emits_failure(
     assert (await db_session.wb_events(org, sid))[-1]["type"] == "task.failed"
     with pytest.raises(LeaseLost):
         await db_session.wb_heartbeat(org, sid, job["id"], job["lease_token"])
+
+
+async def test_job_model_pin_is_immutable_and_copied_into_every_run(db_session, wb):
+    from api.services.agent_workbench.fingerprint import fingerprint
+
+    org, _user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    job = await db_session.wb_enqueue(org, sid, "build", {"text": "model pin"}, "pin")
+    job = await db_session.wb_claim(org, sid, job["id"])
+    candidate = await db_session.wb_save_candidate(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        context["target"],
+        "code",
+        "summary",
+        context["target_fingerprint"],
+    )
+    with pytest.raises(WorkbenchError, match="Freeze"):
+        await db_session.wb_create_run(
+            org, sid, job["id"], job["lease_token"], candidate["id"], {}
+        )
+    snapshot = {
+        "version": 3,
+        "mode": "pipeline",
+        "services": {"llm": {"provider": "openai", "settings": {"model": "frozen"}}},
+    }
+    pinned = await db_session.wb_pin_models(
+        org, sid, job["id"], job["lease_token"], snapshot
+    )
+    with pytest.raises(WorkbenchError, match="already frozen"):
+        await db_session.wb_pin_models(
+            org, sid, job["id"], job["lease_token"], {**snapshot, "mode": "realtime"}
+        )
+    for _ in range(2):
+        run_id = await db_session.wb_create_run(
+            org, sid, job["id"], job["lease_token"], candidate["id"], {}
+        )
+        run, _ = await db_session.get_workflow_run_with_context(run_id)
+        assert run.model_configuration_snapshot == snapshot
+        assert run.extra["model_configuration_fingerprint"] == fingerprint(snapshot)
+    await db_session.wb_finish(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        "completed",
+        output={"candidate_id": candidate["id"]},
+    )
+    completed = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "model pin"}, "pin"
+    )
+    assert (
+        completed["output"]["model_configuration_snapshot"]
+        == pinned["model_configuration_snapshot"]
+    )
+
+
+async def test_blank_creation_can_start_without_publishing(db_session, wb):
+    org, user, _sid = wb
+    workflow = await db_session.create_workflow(
+        "Blank", {"nodes": [], "edges": []}, user, org, draft_only=True
+    )
+    assert workflow.released_definition_id is None
+    draft = await db_session.get_draft_version(workflow.id)
+    assert draft is not None and draft.status == "draft"
+    assert await db_session.get_workflow_version_summaries(workflow.id, org) == []

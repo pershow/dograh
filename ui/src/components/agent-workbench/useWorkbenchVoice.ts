@@ -15,6 +15,8 @@ export function useWorkbenchVoice(
     "off",
   );
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
+  const [syncedContext, setSyncedContext] = useState("");
   const ws = useRef<WebSocket | null>(null);
   const pc = useRef<RTCPeerConnection | null>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -46,6 +48,7 @@ export function useWorkbenchVoice(
       audio.current = null;
     }
     setStatus("off");
+    setSyncedContext("");
   }, []);
   useEffect(() => () => stop(), [stop, sessionId]);
   useEffect(() => {
@@ -55,6 +58,7 @@ export function useWorkbenchVoice(
   const start = useCallback(async () => {
     if (!sessionId || ws.current) return;
     setError("");
+    setWarning("");
     setStatus("connecting");
     const attempt = ++generation.current;
     try {
@@ -135,11 +139,30 @@ export function useWorkbenchVoice(
             });
           } else if (message.type === "error") {
             throw new Error(message.message);
+          } else if (message.type === "context.applied") {
+            setSyncedContext(
+              JSON.stringify({
+                asset_ids: message.asset_ids,
+                candidate_id: message.candidate_id || "",
+                suite_id: message.suite_id || "",
+              }),
+            );
+            setError("");
+          } else if (message.type === "context.error") {
+            setSyncedContext("");
+            setError(message.message);
+          } else if (message.type === "warning") {
+            setWarning(message.message);
           } else if (
             message.type === "tool.result" ||
             message.type === "transcript"
-          )
+          ) {
+            if (message.type === "transcript" && message.role === "assistant")
+              setWarning("");
+            if (message.type === "tool.result" && message.result?.error)
+              setError(message.result.error);
             onUpdate();
+          }
         } catch (error) {
           setError(error instanceof Error ? error.message : "语音连接失败");
           stop();
@@ -157,5 +180,11 @@ export function useWorkbenchVoice(
       stop();
     }
   }, [sessionId, getToken, onUpdate, stop]);
-  return { status, error, start, stop };
+  return {
+    status,
+    error: error || warning,
+    start,
+    stop,
+    contextSynced: syncedContext === JSON.stringify(selected.current),
+  };
 }

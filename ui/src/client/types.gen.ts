@@ -1197,6 +1197,10 @@ export type CreateWorkflowRequest = {
     workflow_definition: {
         [key: string]: unknown;
     };
+    /**
+     * Draft Only
+     */
+    draft_only?: boolean;
 };
 
 /**
@@ -6599,23 +6603,23 @@ export type VoiceToolRequest = {
      */
     suite_id?: string | null;
     /**
+     * Asset Ids
+     */
+    asset_ids?: Array<string>;
+    /**
      * Call Id
      */
     call_id: string;
     /**
      * Name
      */
-    name: 'submit_instruction' | 'get_status' | 'cancel_task' | 'run_tests' | 'tune_agent';
+    name: 'submit_instruction' | 'get_status' | 'read_attachment' | 'cancel_task' | 'run_tests' | 'tune_agent';
     /**
      * Arguments
      */
     arguments?: {
         [key: string]: unknown;
     };
-    /**
-     * Asset Ids
-     */
-    asset_ids?: Array<string>;
 };
 
 /**
@@ -16407,6 +16411,59 @@ export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses 
 };
 
 export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponse = WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses[keyof WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses];
+
+export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Candidate Id
+         */
+        candidate_id?: string | null;
+        /**
+         * Purpose
+         */
+        purpose?: 'build' | 'evaluate' | 'tune' | 'voice';
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/dependencies';
+};
+
+export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetError = WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetErrors[keyof WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetErrors];
+
+export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponse = WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponses[keyof WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponses];
 
 export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetData = {
     body?: never;
