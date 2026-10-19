@@ -1,6 +1,8 @@
 """Database client for managing knowledge base documents and chunks."""
 
 import hashlib
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -79,6 +81,7 @@ class KnowledgeBaseClient(BaseDBClient):
     async def get_document_by_id(
         self,
         document_id: int,
+        organization_id: int | None = None,
     ) -> Optional[KnowledgeBaseDocumentModel]:
         """Get a document by its database ID.
 
@@ -92,9 +95,159 @@ class KnowledgeBaseClient(BaseDBClient):
             query = select(KnowledgeBaseDocumentModel).where(
                 KnowledgeBaseDocumentModel.id == document_id
             )
+            if organization_id is not None:
+                query = query.where(
+                    KnowledgeBaseDocumentModel.organization_id == organization_id,
+                    KnowledgeBaseDocumentModel.is_active.is_(True),
+                )
 
             result = await session.execute(query)
             return result.scalar_one_or_none()
+
+    @staticmethod
+    def _document_processing_active(document):
+        claim = (document.custom_metadata or {}).get("processing_claim") or {}
+        try:
+            expires = datetime.fromisoformat(claim["expires_at"])
+            return expires > datetime.now(UTC)
+        except (KeyError, ValueError, TypeError):
+            # Legacy in-flight jobs have no lease. Do not race them on upgrade.
+            return document.processing_status == "processing" and not claim
+
+    async def claim_document_processing(self, document_id, organization_id, s3_key):
+        """Fence duplicate/retried jobs; no caller-supplied key can change ownership."""
+        async with self.async_session() as session, session.begin():
+            document = await session.scalar(
+                select(KnowledgeBaseDocumentModel)
+                .where(
+                    KnowledgeBaseDocumentModel.id == document_id,
+                    KnowledgeBaseDocumentModel.organization_id == organization_id,
+                    KnowledgeBaseDocumentModel.is_active.is_(True),
+                )
+                .with_for_update()
+            )
+            if not document or (document.custom_metadata or {}).get("s3_key") != s3_key:
+                return None
+            if document.processing_status not in {"pending", "processing"}:
+                return None
+            if (
+                document.processing_status == "processing"
+                and self._document_processing_active(document)
+            ):
+                return None
+            token = str(uuid.uuid4())
+            document.processing_status = "processing"
+            document.processing_error = None
+            document.custom_metadata = {
+                **(document.custom_metadata or {}),
+                "processing_claim": {
+                    "token": token,
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(seconds=300)
+                    ).isoformat(),
+                },
+            }
+            return token
+
+    async def finish_document_processing(
+        self,
+        document_id,
+        organization_id,
+        token,
+        *,
+        error=None,
+        full_text=None,
+        chunks=None,
+        metadata=None,
+        file_metadata=None,
+    ):
+        """Replace served content and status atomically, only for the current lease."""
+        async with self.async_session() as session, session.begin():
+            document = await session.scalar(
+                select(KnowledgeBaseDocumentModel)
+                .where(
+                    KnowledgeBaseDocumentModel.id == document_id,
+                    KnowledgeBaseDocumentModel.organization_id == organization_id,
+                    KnowledgeBaseDocumentModel.is_active.is_(True),
+                )
+                .with_for_update()
+            )
+            claim = (
+                (document.custom_metadata or {}).get("processing_claim", {})
+                if document
+                else {}
+            )
+            if not document or claim.get("token") != token:
+                return False
+            document.custom_metadata = {
+                k: v
+                for k, v in document.custom_metadata.items()
+                if k != "processing_claim"
+            }
+            for field, value in (file_metadata or {}).items():
+                if field in {"file_hash", "file_size_bytes", "mime_type"}:
+                    setattr(document, field, value)
+            document.processing_status = "failed" if error else "completed"
+            document.processing_error = error
+            if error:
+                return True
+            if document.retrieval_mode == "full_document":
+                document.full_text = full_text
+                document.total_chunks = 0
+            else:
+                await session.execute(
+                    delete(KnowledgeBaseChunkModel).where(
+                        KnowledgeBaseChunkModel.document_id == document_id,
+                        KnowledgeBaseChunkModel.organization_id == organization_id,
+                    )
+                )
+                for chunk in chunks or []:
+                    session.add(
+                        KnowledgeBaseChunkModel(
+                            **chunk,
+                            document_id=document_id,
+                            organization_id=organization_id,
+                        )
+                    )
+                document.total_chunks = len(chunks or [])
+            document.docling_metadata = metadata or {}
+            return True
+
+    async def queue_document_retry(self, document_uuid, organization_id):
+        async with self.async_session() as session:
+            async with session.begin():
+                document = await session.scalar(
+                    select(KnowledgeBaseDocumentModel)
+                    .where(
+                        KnowledgeBaseDocumentModel.document_uuid == document_uuid,
+                        KnowledgeBaseDocumentModel.organization_id == organization_id,
+                        KnowledgeBaseDocumentModel.is_active.is_(True),
+                    )
+                    .with_for_update()
+                )
+                if not document:
+                    return None
+                # Recover an upload stranded between the DB commit and enqueue.
+                pending_active = document.processing_status == "pending" and (
+                    document.updated_at > datetime.now(UTC) - timedelta(seconds=300)
+                )
+                if pending_active or (
+                    document.processing_status == "processing"
+                    and self._document_processing_active(document)
+                ):
+                    raise ValueError("Document processing is already queued or running")
+                document.processing_status = "pending"
+                document.processing_error = None
+                document.updated_at = datetime.now(UTC)
+                document.custom_metadata = {
+                    k: v
+                    for k, v in (document.custom_metadata or {}).items()
+                    if k != "processing_claim"
+                }
+            # Production sessions expire ORM fields on commit. Refresh after the
+            # transaction exits so the route can safely read this detached row.
+            await session.refresh(document)
+            return document
 
     async def get_document_by_uuid(
         self,

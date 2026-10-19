@@ -22,6 +22,11 @@ from api.schemas.knowledge_base import (
 )
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
+from api.services.documents.knowledge_base import (
+    MAX_FILE_SIZE_BYTES,
+    prepare_embeddings,
+    validate_filename,
+)
 from api.services.knowledge_base_content import (
     DocumentContentConflictError,
     DocumentContentTooLargeError,
@@ -34,6 +39,45 @@ from api.services.posthog_client import capture_event
 from api.services.storage import storage_fs
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-base"])
+
+
+@router.get("/processing-capabilities")
+async def document_processing_capabilities(user=Depends(get_user)):
+    from api.services.configuration.ai_model_configuration import (
+        get_resolved_ai_model_configuration,
+    )
+    from api.services.documents.knowledge_base import DOCUMENT_EXTENSIONS
+
+    result = {
+        "processor": "local-v1",
+        "max_bytes": MAX_FILE_SIZE_BYTES,
+        "formats": sorted(DOCUMENT_EXTENSIONS),
+        "full_document": True,
+        "chunked": False,
+        "embedding": None,
+        "issue": None,
+    }
+    try:
+        resolved = await get_resolved_ai_model_configuration(
+            organization_id=user.selected_organization_id
+        )
+        cfg = resolved.effective.embeddings
+        if cfg and cfg.api_key:
+            result.update(
+                chunked=True,
+                embedding={
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "dimensions": 1536,
+                },
+            )
+        else:
+            result["issue"] = (
+                "Configure the Embedding role in Models before using Chunked Search."
+            )
+    except HTTPException as error:
+        result["issue"] = error.detail
+    return result
 
 
 def _has_live_content(document: KnowledgeBaseDocumentModel) -> bool:
@@ -95,6 +139,7 @@ async def get_upload_url(
     """
 
     try:
+        validate_filename(request.filename)
         # Generate unique document UUID for S3 organization
         document_uuid = str(uuid.uuid4())
 
@@ -106,7 +151,7 @@ async def get_upload_url(
             file_path=s3_key,
             expiration=1800,  # 30 minutes
             content_type=request.mime_type,
-            max_size=100_000_000,  # 100MB max
+            max_size=MAX_FILE_SIZE_BYTES,
         )
 
         if not upload_url:
@@ -125,6 +170,8 @@ async def get_upload_url(
             s3_key=s3_key,
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Error generating upload URL: {exc}")
         raise HTTPException(
@@ -151,15 +198,31 @@ async def process_document(
     The document status will be updated from 'pending' -> 'processing' -> 'completed' or 'failed'.
 
     Embedding:
-    Uses OpenAI text-embedding-3-small (1536-dimensional embeddings, requires API key configured in Model Configurations).
+    Uses the organization default Embedding role for chunked mode. Full Document mode needs no embedding model.
 
     Access Control:
     * Users can only process documents in their organization.
     """
 
     try:
-        # Extract filename from s3_key
-        filename = request.s3_key.split("/")[-1]
+        try:
+            canonical_uuid = str(uuid.UUID(request.document_uuid))
+        except ValueError as exc:
+            raise HTTPException(422, detail="Invalid document UUID") from exc
+        filename = validate_filename(request.s3_key.split("/")[-1])
+        expected_key = f"knowledge_base/{user.selected_organization_id}/{canonical_uuid}/{filename}"
+        if request.s3_key != expected_key:
+            raise HTTPException(
+                422,
+                detail="Document storage key does not belong to this organization and upload",
+            )
+        existing = await db_client.get_document_by_uuid(
+            canonical_uuid, user.selected_organization_id
+        )
+        if existing:
+            raise HTTPException(
+                409, detail="Document already exists; use its retry endpoint"
+            )
 
         # Create document record with the specific UUID from upload
         document = await db_client.create_document(
@@ -175,17 +238,28 @@ async def process_document(
         )
 
         # Enqueue background task for processing
-        await enqueue_document_processing(
-            document_id=document.id,
-            s3_key=request.s3_key,
-            organization_id=user.selected_organization_id,
-            created_by_provider_id=str(user.provider_id),
-            retrieval_mode=request.retrieval_mode,
-        )
+        try:
+            await enqueue_document_processing(
+                document_id=document.id,
+                s3_key=request.s3_key,
+                organization_id=user.selected_organization_id,
+                created_by_provider_id=str(user.provider_id),
+                retrieval_mode=request.retrieval_mode,
+            )
+        except Exception as error:
+            await db_client.update_document_status(
+                document.id,
+                "failed",
+                error_message="Processing could not be queued. Use Retry to start it again.",
+            )
+            raise HTTPException(
+                503,
+                detail="Document saved, but processing could not be queued. Use Retry in Files.",
+            ) from error
 
         logger.info(
             f"Created document {request.document_uuid} (id={document.id}) and enqueued processing "
-            f"with OpenAI embeddings, org {user.selected_organization_id}"
+            f"using configured retrieval mode, org {user.selected_organization_id}"
         )
 
         capture_event(
@@ -473,50 +547,7 @@ async def search_chunks(
     """
 
     try:
-        # Import here to avoid circular dependency
-        from api.services.configuration.ai_model_configuration import (
-            apply_managed_embeddings_base_url,
-            get_resolved_ai_model_configuration,
-        )
-        from api.services.gen_ai import build_embedding_service
-
-        # Try to get the organization's embeddings configuration
-        resolved_config = await get_resolved_ai_model_configuration(
-            organization_id=user.selected_organization_id,
-        )
-        effective_config = resolved_config.effective
-        embeddings_api_key = None
-        embeddings_model = None
-        embeddings_provider = None
-        embeddings_base_url = None
-        embeddings_endpoint = None
-        embeddings_api_version = None
-
-        if effective_config.embeddings:
-            embeddings_api_key = effective_config.embeddings.api_key
-            embeddings_model = effective_config.embeddings.model
-            embeddings_provider = getattr(effective_config.embeddings, "provider", None)
-            embeddings_endpoint = getattr(effective_config.embeddings, "endpoint", None)
-            embeddings_base_url = apply_managed_embeddings_base_url(
-                provider=embeddings_provider,
-                base_url=getattr(effective_config.embeddings, "base_url", None),
-            )
-            embeddings_api_version = getattr(
-                effective_config.embeddings, "api_version", None
-            )
-
-        # Manual search runs outside any workflow run, so resolve the MPS
-        # correlation id here.
-        embedding_service = await build_embedding_service(
-            db_client=db_client,
-            provider=embeddings_provider,
-            api_key=embeddings_api_key,
-            model=embeddings_model,
-            base_url=embeddings_base_url,
-            endpoint=embeddings_endpoint,
-            api_version=embeddings_api_version,
-            resolve_correlation=True,
-        )
+        embedding_service, _ = await prepare_embeddings(user.selected_organization_id)
 
         # Perform search
         results = await embedding_service.search_similar_chunks(
@@ -554,6 +585,38 @@ async def search_chunks(
             total_results=len(chunks),
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Error searching chunks: {exc}")
         raise HTTPException(status_code=500, detail="Failed to search chunks") from exc
+
+
+@router.post("/documents/{document_uuid}/retry", response_model=DocumentResponseSchema)
+async def retry_document(document_uuid: str, user=Depends(get_user)):
+    try:
+        document = await db_client.queue_document_retry(
+            document_uuid, user.selected_organization_id
+        )
+    except ValueError as error:
+        raise HTTPException(409, detail=str(error)) from error
+    if not document:
+        raise HTTPException(404, detail="Document not found")
+    try:
+        await enqueue_document_processing(
+            document.id,
+            document.custom_metadata.get("s3_key", ""),
+            user.selected_organization_id,
+            str(user.provider_id),
+            document.retrieval_mode,
+        )
+    except Exception as error:
+        await db_client.update_document_status(
+            document.id,
+            "failed",
+            error_message="Processing could not be queued. Retry later.",
+        )
+        raise HTTPException(
+            503, detail="Processing could not be queued. Retry later."
+        ) from error
+    return _to_document_response(document)

@@ -5,13 +5,13 @@ import hashlib
 import json
 import mimetypes
 import os
-import sys
 import tempfile
 import uuid
 from pathlib import Path
 
 from api.db import db_client
 from api.services.agent_workbench.errors import WorkbenchError
+from api.services.documents.parsing import FileParsingError, parse_local_file
 
 MAX_BYTES = 20 * 1024 * 1024
 ALLOWED = {
@@ -208,37 +208,12 @@ async def parse_attachment(org, session_id, asset_id):
                 or hashlib.sha256(local.read_bytes()).hexdigest() != asset["sha256"]
             ):
                 raise WorkbenchError("Attachment integrity check failed")
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "api.services.agent_workbench.file_parser",
-                str(local),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                env={
-                    key: os.environ[key]
-                    for key in ("PATH", "LANG", "SYSTEMROOT")
-                    if key in os.environ
-                },
-            )
-            try:
-                stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
-            finally:
-                if process.returncode is None:
-                    process.kill()
-                    await process.wait()
-            if process.returncode != 0:
-                raise WorkbenchError(
-                    "File is malformed, encrypted, or exceeds parsing limits"
-                )
-            parsed = json.loads(stdout)
-            if parsed.get("error"):
-                raise WorkbenchError(parsed["error"])
+            parsed = await parse_local_file(local)
         return await db_client.wb_asset_result(org, session_id, asset_id, parsed=parsed)
     except Exception as error:  # noqa: BLE001 - boundary converts failures to bounded task status
         message = (
             str(error)
-            if isinstance(error, WorkbenchError)
+            if isinstance(error, (WorkbenchError, FileParsingError))
             else "Attachment parsing failed; retry or use a text document"
         )
         return await db_client.wb_asset_result(org, session_id, asset_id, error=message)

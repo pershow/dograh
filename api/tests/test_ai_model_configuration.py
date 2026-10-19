@@ -39,7 +39,13 @@ async def test_default_configuration_is_resolved_through_the_catalog(monkeypatch
     effective = EffectiveAIModelConfiguration(
         llm=OpenRouterLLMConfiguration(api_key="private-test-key", temperature=0.5)
     )
-    resolve = AsyncMock(return_value=SimpleNamespace(effective=effective))
+    resolve = AsyncMock(
+        return_value=model_connections.ResolvedModelConfiguration(
+            effective=effective,
+            snapshot={"version": 3},
+            provenance=[{"source": "organization"}],
+        )
+    )
     monkeypatch.setattr(
         model_connections,
         "get_default_model_configuration",
@@ -50,6 +56,8 @@ async def test_default_configuration_is_resolved_through_the_catalog(monkeypatch
     resolved = await get_resolved_ai_model_configuration(organization_id=42)
 
     assert (resolved.source, resolved.effective) == ("organization_v3", effective)
+    assert resolved.snapshot == {"version": 3}
+    assert resolved.provenance == [{"source": "organization"}]
     resolve.assert_awaited_once_with(42, default_row=row)
 
 

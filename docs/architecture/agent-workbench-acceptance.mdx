@@ -148,4 +148,56 @@ python -m pytest api/tests/test_mps_policy.py api/tests/test_agent_workbench* ap
 
 ### 仍未完成的范围
 
-真人麦克风体验、跨 NAT/TURN、多人并发和生产部署仍需专项验收。当前供应商 Responses 成功调用、图片理解/OCR、真实电话和外部业务系统也不在本轮通过结论内。MPS 关闭时，全局知识库云解析、录音文件云转写等路径会被拒绝；本地替代处理器和外围页面能力提示仍待实现，不能宣称整个平台已完全脱离 MPS。
+真人麦克风体验、跨 NAT/TURN、多人并发和生产部署仍需专项验收。当前供应商 Responses 成功调用、图片理解/OCR、真实电话和外部业务系统也不在本轮通过结论内。该轮结束时全局知识库和录音文件转写尚未替代；后续实现与验收见下一节。音色、账单等剩余外围入口仍未全部完成，不能宣称整个平台已完全脱离 MPS。
+
+
+## 2026-10-19：知识库批量入库与录音文件转写
+
+本轮仅更新并重启 API 8016、它的普通 ARQ Worker 和工作台 Worker，继续使用独立数据库和存储。API 8000 / UI 3000 及其 Worker 未修改或重启。经用户明确确认，在 8016 的组织默认 `Workbench Qwen + ElevenLabs` 配置新增 Embedding 角色：复用 Qwen/DashScope 连接，模型 `text-embedding-v4`，请求 1536 维；LLM、STT、TTS 配置保持原样。
+
+### 真实验收
+
+| 验收项 | 结果 |
+| --- | --- |
+| 全文知识库 | Markdown 服务说明本地解析，状态 completed，写入全文；不调用 Embedding |
+| 分块知识库 | TXT 预约政策生成 2 块，CSV 收费政策生成 1 块；DashScope `/compatible-mode/v1/embeddings` 真实返回 200，保存 1536 维向量 |
+| 语义检索 | 查询“取消预约是否收费？”并限定预约文档，返回 2 个匹配块 |
+| 无文本文件 | 空白文档明确 failed，没有生成可用知识内容 |
+| 修复重试 | 保留同一个文档 UUID，编辑修复空白内容后重新入队，变为 completed 且清除错误；失败分块文档通过 Retry API 重新处理成功 |
+| 浏览器批量上传 | 一次选择 `ui-policy.txt` 与 `ui-price.md`，使用 Chunked Search；逐项显示 Queued，弹窗保留，列表最终两个 completed |
+| 文件转写 | 合成中文 WAV 通过真实 ElevenLabs `/v1/speech-to-text`、`scribe_v2` 转写，保留原实时模型 `scribe_v2_realtime` |
+| 录音保存 | API 保存录音 `0ywjpl7l`；浏览器再次选择同一测试 WAV、自动转写并人工校正同音错词后保存为 `j4rrtl42`，列表可见，保存配置来源元数据 |
+| MPS 观察 | API、普通 Worker、工作台 Worker 的测试观察器继续阻断默认 MPS 主机和配置的 `mps-disabled.invalid`；本轮执行路径记录 0 次访问尝试 |
+
+这里的录音为已有合成测试音频，没有采集真人麦克风。自动检测语言的转写曾出现“调优”“用例”的同音误识别；已验证人工校正后保存，不把“接口成功”解释为 ASR 零误差。
+
+联调实际暴露并修复了三处问题：Embedding 配置未保留连接 `base_url`，导致首轮请求误走默认 OpenAI 地址并收到 401；组织默认配置包装器丢弃模型来源快照，导致向量请求成功后保存失败；重试事务返回的 ORM 字段在提交后过期，导致生产配置下接口 500。修复后均使用相同测试文件重新验证。MPS 尝试为零不表示没有访问其他模型供应商；Qwen 和 ElevenLabs 的外部请求是本轮预期行为。
+
+### 自动化结果与范围
+
+最终选定后端回归 **354 项通过**，4 条已有弃用警告；前端文件、录音、原文档深链接和工作台语音生命周期合计 **15 项通过**。TypeScript `tsc --noEmit`、本次改动的前端 ESLint、新增 Python 模块与测试的 Ruff 检查通过。生成 SDK 已更新。
+
+新增测试涵盖本地提取边界、Unicode 分块来源偏移、无模型全文入库、空白/扫描 PDF/超长文本拒绝、组织与对象键隔离、重复任务和旧令牌拒绝、失败保留旧索引、过期 pending 重试、生产事务字段过期、真实目录解析保留端点/维度/来源、错误向量拒绝、文件转写 HTTP 合约、限流/鉴权/重定向/空结果、手工文本回退、批量部分失败恢复和请求响应丢失恢复。
+
+完整后端命令是在上一节 302 项回归命令后追加下列测试文件；仅加载 `api/.env.test`：
+
+```text
+api/tests/test_local_knowledge_processing.py
+api/tests/test_file_transcription.py
+api/tests/test_openai_embedding_compatibility.py
+api/tests/test_agent_embedding_configuration.py
+api/tests/test_dograh_embedding_service.py
+api/tests/test_knowledge_base_processing_embeddings.py
+api/tests/test_knowledge_base_content_edit.py
+api/tests/test_ai_model_configuration.py
+```
+
+在 `ui/` 运行的前端用例：
+
+```bash
+npm exec -- vitest run src/app/files/DocumentUpload.test.tsx src/app/files/DocumentList.test.tsx src/app/recordings/RecordingsUploadDialog.test.tsx src/components/agent-workbench/__tests__/useWorkbenchVoice.test.tsx
+```
+
+本机忽略 Git 的证据：`run/workbench/content-evidence.json`、`content-probe-final.log`、`content-regression-final.log`、`content-ui-final-tests.log`、`content-files-completed.png`、`content-transcription-ready.png`、`content-recordings-completed.png`。记录用于开发验收，不能作为共享凭据或生产配置。
+
+本轮不含扫描 PDF OCR、旧 `.doc`、其他供应商文件转写适配、生产吞吐压测或真实业务知识质量评测。文件解析上限与人工文本回退见设计 9.8 节。前一节语音构建/测试/调优的真实闭环结果仍有效，本轮运行其回归测试，没有重新执行整段语音构建流程。

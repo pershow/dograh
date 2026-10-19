@@ -31,6 +31,7 @@ async def retrieve_from_knowledge_base(
     embeddings_api_version: Optional[str] = None,
     correlation_id: Optional[str] = None,
     tracing_context=None,
+    embeddings_dimensions: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Retrieve relevant information from the knowledge base using vector similarity search.
 
@@ -77,6 +78,7 @@ async def retrieve_from_knowledge_base(
                 embeddings_endpoint,
                 embeddings_api_version,
                 correlation_id,
+                embeddings_dimensions,
             )
 
         # Create span with parent context
@@ -117,6 +119,7 @@ async def retrieve_from_knowledge_base(
                         embeddings_endpoint,
                         embeddings_api_version,
                         correlation_id,
+                        embeddings_dimensions,
                     )
 
                     # Add result metadata to span
@@ -195,6 +198,7 @@ async def retrieve_from_knowledge_base(
                 embeddings_endpoint,
                 embeddings_api_version,
                 correlation_id,
+                embeddings_dimensions,
             )
     else:
         # Tracing is disabled - perform retrieval without tracing
@@ -210,6 +214,7 @@ async def retrieve_from_knowledge_base(
             embeddings_endpoint,
             embeddings_api_version,
             correlation_id,
+            embeddings_dimensions,
         )
 
 
@@ -225,6 +230,7 @@ async def _perform_retrieval(
     embeddings_endpoint: Optional[str] = None,
     embeddings_api_version: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    embeddings_dimensions: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Internal function to perform the actual retrieval operation.
 
@@ -276,6 +282,7 @@ async def _perform_retrieval(
                 endpoint=embeddings_endpoint,
                 api_version=embeddings_api_version,
                 correlation_id=correlation_id,
+                dimensions=embeddings_dimensions,
             )
 
             results = await embedding_service.search_similar_chunks(

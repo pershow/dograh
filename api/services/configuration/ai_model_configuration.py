@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from fastapi import HTTPException
@@ -21,6 +21,8 @@ WORKFLOW_MODEL_CONFIGURATION_V2_OVERRIDE_KEY = "model_configuration_v2_override"
 class ResolvedAIModelConfiguration:
     effective: EffectiveAIModelConfiguration
     source: AIModelConfigurationSource
+    snapshot: dict = field(default_factory=dict)
+    provenance: list[dict] = field(default_factory=list)
 
 
 async def get_resolved_ai_model_configuration(
@@ -40,7 +42,10 @@ async def get_resolved_ai_model_configuration(
                 organization_id, default_row=default
             )
             return ResolvedAIModelConfiguration(
-                effective=resolved.effective, source="organization_v3"
+                effective=resolved.effective,
+                source="organization_v3",
+                snapshot=resolved.snapshot,
+                provenance=resolved.provenance,
             )
     return ResolvedAIModelConfiguration(
         effective=EffectiveAIModelConfiguration(), source="empty"

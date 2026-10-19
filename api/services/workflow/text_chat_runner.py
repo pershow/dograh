@@ -703,6 +703,7 @@ async def execute_text_chat_pending_turn(
         embeddings_provider=embeddings_provider,
         embeddings_endpoint=embeddings_endpoint,
         embeddings_api_version=embeddings_api_version,
+        embeddings_dimensions=getattr(user_config.embeddings, "dimensions", None),
         has_recordings=has_recordings,
         context_compaction_enabled=context_compaction_enabled,
         call_dispositions=call_dispositions,

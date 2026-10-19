@@ -65,6 +65,7 @@ async def build_embedding_service(
     api_version: Optional[str] = None,
     correlation_id: Optional[str] = None,
     resolve_correlation: bool = False,
+    dimensions: Optional[int] = None,
 ) -> BaseEmbeddingService:
     """Construct the right embedding service for a provider/config.
 
@@ -102,6 +103,7 @@ async def build_embedding_service(
         )
 
     return OpenAIEmbeddingService(
+        **({"dimensions": dimensions} if dimensions is not None else {}),
         db_client=db_client,
         api_key=api_key,
         model_id=model_id,

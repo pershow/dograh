@@ -317,7 +317,7 @@ export type BodyTranscribeAudioApiV1WorkflowRecordingsTranscribePost = {
     /**
      * Language
      */
-    language?: string;
+    language?: string | null;
 };
 
 /**
@@ -3649,7 +3649,7 @@ export type ProcessDocumentRequestSchema = {
      *
      * Retrieval mode: 'chunked' for vector search or 'full_document' for full text retrieval
      */
-    retrieval_mode?: string;
+    retrieval_mode?: 'chunked' | 'full_document';
 };
 
 /**
@@ -15089,6 +15089,43 @@ export type CreateOrUpdateEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenPostRespons
 
 export type CreateOrUpdateEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenPostResponse = CreateOrUpdateEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenPostResponses[keyof CreateOrUpdateEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenPostResponses];
 
+export type DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/knowledge-base/processing-capabilities';
+};
+
+export type DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetError = DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetErrors[keyof DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetErrors];
+
+export type DocumentProcessingCapabilitiesApiV1KnowledgeBaseProcessingCapabilitiesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
 export type GetUploadUrlApiV1KnowledgeBaseUploadUrlPostData = {
     body: DocumentUploadRequestSchema;
     headers?: {
@@ -15434,6 +15471,50 @@ export type SearchChunksApiV1KnowledgeBaseSearchPostResponses = {
 
 export type SearchChunksApiV1KnowledgeBaseSearchPostResponse = SearchChunksApiV1KnowledgeBaseSearchPostResponses[keyof SearchChunksApiV1KnowledgeBaseSearchPostResponses];
 
+export type RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Document Uuid
+         */
+        document_uuid: string;
+    };
+    query?: never;
+    url: '/api/v1/knowledge-base/documents/{document_uuid}/retry';
+};
+
+export type RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostError = RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostErrors[keyof RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostErrors];
+
+export type RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: DocumentResponseSchema;
+};
+
+export type RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostResponse = RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostResponses[keyof RetryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPostResponses];
+
 export type GetUploadUrlsApiV1WorkflowRecordingsUploadUrlPostData = {
     body: BatchRecordingUploadRequestSchema;
     headers?: {
@@ -15661,6 +15742,43 @@ export type UpdateRecordingApiV1WorkflowRecordingsIdPatchResponses = {
 };
 
 export type UpdateRecordingApiV1WorkflowRecordingsIdPatchResponse = UpdateRecordingApiV1WorkflowRecordingsIdPatchResponses[keyof UpdateRecordingApiV1WorkflowRecordingsIdPatchResponses];
+
+export type TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/workflow-recordings/transcription-capabilities';
+};
+
+export type TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetError = TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetErrors[keyof TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetErrors];
+
+export type TranscriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type TranscribeAudioApiV1WorkflowRecordingsTranscribePostData = {
     body: BodyTranscribeAudioApiV1WorkflowRecordingsTranscribePost;

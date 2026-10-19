@@ -18,7 +18,7 @@ def _service_with_fake_client(correlation_id):
         correlation_id=correlation_id,
     )
     create = AsyncMock(
-        return_value=SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])])
+        return_value=SimpleNamespace(data=[SimpleNamespace(index=0, embedding=[0.1] * 1536)])
     )
     service.client = SimpleNamespace(embeddings=SimpleNamespace(create=create))
     return service, create

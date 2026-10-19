@@ -1,7 +1,7 @@
 """Pydantic schemas for knowledge base operations."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,7 +29,7 @@ class ProcessDocumentRequestSchema(BaseModel):
 
     document_uuid: str = Field(..., description="Document UUID to process")
     s3_key: str = Field(..., description="S3 key of the uploaded file")
-    retrieval_mode: str = Field(
+    retrieval_mode: Literal["chunked", "full_document"] = Field(
         default="chunked",
         description="Retrieval mode: 'chunked' for vector search or 'full_document' for full text retrieval",
     )

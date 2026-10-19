@@ -2413,6 +2413,10 @@ class ElevenlabsSTTConfiguration(BaseSTTConfiguration):
             "allow_custom_input": True,
         },
     )
+    file_transcription_model: Literal["scribe_v2", "scribe_v1"] = Field(
+        default="scribe_v2",
+        description="Batch file transcription model using the same ElevenLabs connection; separate from realtime STT.",
+    )
     language: str = Field(
         default="en",
         description=(
@@ -2481,10 +2485,19 @@ OPENAI_EMBEDDING_MODELS = ["text-embedding-3-small"]
 @register_embeddings(provider=OPENAI_PROVIDER)
 class OpenAIEmbeddingsConfiguration(BaseEmbeddingsConfiguration):
     provider: Literal[ServiceProviders.OPENAI] = ServiceProviders.OPENAI
+    base_url: str | None = Field(
+        default=None,
+        description="OpenAI-compatible embeddings endpoint, inherited from the provider connection (including DashScope).",
+    )
     model: str = Field(
         default="text-embedding-3-small",
         description="OpenAI embedding model.",
-        json_schema_extra={"examples": OPENAI_EMBEDDING_MODELS},
+        json_schema_extra={"examples": OPENAI_EMBEDDING_MODELS, "allow_custom_input": True},
+    )
+
+    dimensions: Literal[1536] | None = Field(
+        default=None,
+        description="Requested vector size. Set 1536 for models such as text-embedding-v4; Dograh storage requires 1536 dimensions.",
     )
 
 

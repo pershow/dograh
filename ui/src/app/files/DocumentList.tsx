@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import {
   deleteDocumentApiV1KnowledgeBaseDocumentsDocumentUuidDelete,
   listDocumentsApiV1KnowledgeBaseDocumentsGet,
+  retryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPost,
 } from '@/client/sdk.gen';
 import type { DocumentResponseSchema } from '@/client/types.gen';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +16,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useOrganizationTimezone } from '@/hooks/useOrganizationTimezone';
+import { detailFromError } from '@/lib/apiError';
+import { useAuth } from '@/lib/auth';
 import { formatDateTime } from '@/lib/dateTime';
 import logger from '@/lib/logger';
 
@@ -31,6 +34,7 @@ const canOpen = (doc: DocumentResponseSchema) =>
   isEditableDocument(doc.filename) && !isBusy(doc);
 
 export default function DocumentList({ refreshTrigger }: DocumentListProps) {
+  const { user, loading: authLoading } = useAuth();
   const organizationTimezone = useOrganizationTimezone();
   // `/files?document=<uuid>` deep-links to one document (e.g. from an agent
   // node's knowledge base section): scroll to it and open it when editable.
@@ -70,8 +74,9 @@ export default function DocumentList({ refreshTrigger }: DocumentListProps) {
 
   // Fetch documents on mount and when refreshTrigger changes
   useEffect(() => {
+    if (authLoading || !user) return;
     fetchDocuments();
-  }, [fetchDocuments, refreshTrigger]);
+  }, [fetchDocuments, refreshTrigger, authLoading, user]);
 
   // Poll for documents that are processing
   useEffect(() => {
@@ -290,6 +295,33 @@ export default function DocumentList({ refreshTrigger }: DocumentListProps) {
                 className="flex items-center gap-1"
                 onClick={(event) => event.stopPropagation()}
               >
+                {(doc.processing_status === "failed" ||
+                  (isBusy(doc) &&
+                    Date.now() - Date.parse(doc.updated_at) > 300_000)) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const response =
+                          await retryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPost(
+                            { path: { document_uuid: doc.document_uuid } },
+                          );
+                        if (response.error)
+                          throw new Error(detailFromError(response.error));
+                        await fetchDocuments();
+                      } catch (error) {
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Unable to retry processing",
+                        );
+                      }
+                    }}
+                  >
+                    Retry
+                  </Button>
+                )}
                 {isEditableDocument(doc.filename) && (
                   <Button
                     variant="ghost"

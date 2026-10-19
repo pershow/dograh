@@ -25,6 +25,7 @@ def agent(configuration):
 def engine_stub():
     return SimpleNamespace(
         active_agent=None,
+        evaluation_policy=None,
         _get_organization_id=AsyncMock(return_value=7),
         _get_otel_context=lambda: None,
         _call_context_vars={"mps_correlation_id": "authorized-run"},

@@ -6,15 +6,18 @@ import type { DocumentResponseSchema } from '@/client/types.gen';
 import DocumentList from './DocumentList';
 
 const mocks = vi.hoisted(() => ({
+  auth: {user: {id: 'u'}, loading: false},
   query: '',
   list: vi.fn(),
 }));
 
+vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(mocks.query),
 }));
 vi.mock('@/client/sdk.gen', () => ({
   listDocumentsApiV1KnowledgeBaseDocumentsGet: mocks.list,
+  retryDocumentApiV1KnowledgeBaseDocumentsDocumentUuidRetryPost: vi.fn(),
   deleteDocumentApiV1KnowledgeBaseDocumentsDocumentUuidDelete: vi.fn(),
   getDocumentContentApiV1KnowledgeBaseDocumentsDocumentUuidContentGet: vi.fn(),
   saveDocumentContentApiV1KnowledgeBaseDocumentsDocumentUuidContentPut: vi.fn(),

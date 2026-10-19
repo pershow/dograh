@@ -22,6 +22,7 @@ export default function FilesPage() {
     const { user, redirectToLogin, loading } = useAuth();
     const [refreshKey, setRefreshKey] = useState(0);
     const [isUploadOpen, setIsUploadOpen] = useState(false);
+    const [uploadBusy, setUploadBusy] = useState(false);
 
     // Redirect if not authenticated
     useEffect(() => {
@@ -32,7 +33,6 @@ export default function FilesPage() {
 
     const handleUploadSuccess = () => {
         setRefreshKey(prev => prev + 1);
-        setIsUploadOpen(false);
     };
 
     if (loading || !user) {
@@ -56,20 +56,20 @@ export default function FilesPage() {
                 description="Documents shared across all agents in your organization"
                 actions={<Button onClick={() => setIsUploadOpen(true)}>
                     <Upload className="w-4 h-4 mr-2" />
-                    Upload Document
+                    Upload Documents
                 </Button>}>
                 <DocumentList refreshTrigger={refreshKey} />
             </PageSection>
 
-            <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-                <DialogContent>
+            <Dialog open={isUploadOpen} onOpenChange={open => { if (!uploadBusy) setIsUploadOpen(open); }}>
+                <DialogContent className="max-h-[85vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Upload Document</DialogTitle>
+                        <DialogTitle>Upload Documents</DialogTitle>
                         <DialogDescription>
-                            Upload a PDF or document file to add to your knowledge base
+                            Add a batch of documents and track each upload separately.
                         </DialogDescription>
                     </DialogHeader>
-                    <DocumentUpload onUploadSuccess={handleUploadSuccess} />
+                    <DocumentUpload onUploadSuccess={handleUploadSuccess} onBusyChange={setUploadBusy} />
                 </DialogContent>
             </Dialog>
         </PageLayout>

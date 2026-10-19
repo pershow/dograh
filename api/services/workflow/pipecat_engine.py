@@ -150,6 +150,7 @@ class PipecatEngine:
         embeddings_provider: Optional[str] = None,
         embeddings_endpoint: Optional[str] = None,
         embeddings_api_version: Optional[str] = None,
+        embeddings_dimensions: Optional[int] = None,
         has_recordings: bool = False,
         is_realtime: bool = False,
         context_compaction_enabled: bool = False,
@@ -272,6 +273,7 @@ class PipecatEngine:
         self._embeddings_provider: Optional[str] = embeddings_provider
         self._embeddings_endpoint: Optional[str] = embeddings_endpoint
         self._embeddings_api_version: Optional[str] = embeddings_api_version
+        self._embeddings_dimensions = embeddings_dimensions
 
         # Audio configuration (set via set_audio_config from _run_pipeline)
         self._audio_config = None
@@ -577,6 +579,7 @@ class PipecatEngine:
                 ),
                 "embeddings_endpoint": getattr(embeddings, "endpoint", None),
                 "embeddings_api_version": getattr(embeddings, "api_version", None),
+                "embeddings_dimensions": getattr(embeddings, "dimensions", None),
             }
         else:
             embedding_settings = {
@@ -586,6 +589,7 @@ class PipecatEngine:
                 "embeddings_provider": self._embeddings_provider,
                 "embeddings_endpoint": self._embeddings_endpoint,
                 "embeddings_api_version": self._embeddings_api_version,
+                "embeddings_dimensions": getattr(self, "_embeddings_dimensions", None),
             }
 
         async def retrieve_kb_func(function_call_params: FunctionCallParams) -> None:

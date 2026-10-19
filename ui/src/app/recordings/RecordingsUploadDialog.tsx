@@ -7,27 +7,18 @@ import {
     createRecordingsApiV1WorkflowRecordingsPost,
     getUploadUrlsApiV1WorkflowRecordingsUploadUrlPost,
     transcribeAudioApiV1WorkflowRecordingsTranscribePost,
+    transcriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGet,
 } from "@/client";
 import type { RecordingUploadResponseSchema } from "@/client/types.gen";
 import { Button } from "@/components/ui/button";
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { LANGUAGE_DISPLAY_NAMES } from "@/constants/languages";
+import { detailFromError } from "@/lib/apiError";
+import { useAuth } from "@/lib/auth";
 interface RecordingsUploadDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -42,15 +33,45 @@ interface PendingFile {
     transcript: string;
     isTranscribing: boolean;
     error?: string;
+    transcriptionConfiguration?: Record<string, unknown>;
 }
 
 let pendingFileCounter = 0;
 
-export const RecordingsUploadDialog = ({
-    open,
-    onOpenChange,
-    onUploadComplete,
-}: RecordingsUploadDialogProps) => {
+export const RecordingsUploadDialog = ({ open, onOpenChange, onUploadComplete }: RecordingsUploadDialogProps) => {
+    const { user, loading: authLoading } = useAuth();
+    const [transcription, setTranscription] = useState<{
+        available: boolean;
+        provider?: string;
+        model?: string;
+        issue?: unknown;
+    }>();
+    const [autoTranscribe, setAutoTranscribe] = useState(true);
+    const generation = useRef(0);
+    const transcriptionQueue = useRef(Promise.resolve());
+    useEffect(() => {
+        if (!open || authLoading || !user) return;
+        let disposed = false;
+        transcriptionCapabilitiesApiV1WorkflowRecordingsTranscriptionCapabilitiesGet()
+            .then((response) => {
+                if (!disposed)
+                    setTranscription(
+                        response.error
+                            ? { available: false, issue: detailFromError(response.error) }
+                            : (response.data as typeof transcription),
+                    );
+            })
+            .catch(() => {
+                if (!disposed)
+                    setTranscription({
+                        available: false,
+                        issue: "Unable to check transcription configuration. Enter text manually or reopen to retry.",
+                    });
+            });
+        return () => {
+            disposed = true;
+        };
+    }, [open, authLoading, user]);
     const [uploading, setUploading] = useState(false);
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [error, setError] = useState<string | null>(null);
@@ -85,7 +106,9 @@ export const RecordingsUploadDialog = ({
     }, []);
 
     useEffect(() => {
+        generation.current += 1;
         if (open) {
+            setTranscription(undefined);
             setError(null);
             setPendingFiles([]);
             setLanguage("multi");
@@ -100,53 +123,83 @@ export const RecordingsUploadDialog = ({
         }
     }, [open, stopRecording, stopRecordingTimer]);
 
-    const transcribeFile = async (pendingId: string, file: File) => {
+    const transcribeFile = async (pendingId: string, file: File, attempt = generation.current) => {
+        if (attempt !== generation.current) return;
         setPendingFiles((prev) =>
-            prev.map((p) => (p.id === pendingId ? { ...p, isTranscribing: true } : p))
+            prev.map((p) => (p.id === pendingId ? { ...p, isTranscribing: true, error: undefined } : p)),
         );
         try {
-            const currentLang = languageRef.current;
             const result = await transcribeAudioApiV1WorkflowRecordingsTranscribePost({
-                body: { file, language: currentLang },
+                body: { file, language: languageRef.current },
             });
-            const data = result.data as Record<string, unknown> | undefined;
-            if (data?.transcript) {
+            if (result.error) throw new Error(detailFromError(result.error, "Transcription failed"));
+            const data = result.data as {
+                transcript?: string;
+                transcription_configuration?: Record<string, unknown>;
+            };
+            if (!data?.transcript) throw new Error("No speech recognized. Enter the transcript manually.");
+            if (attempt === generation.current)
                 setPendingFiles((prev) =>
                     prev.map((p) =>
-                        p.id === pendingId ? { ...p, transcript: data.transcript as string, isTranscribing: false } : p
-                    )
+                        p.id === pendingId
+                            ? {
+                                  ...p,
+                                  transcript: data.transcript!,
+                                  transcriptionConfiguration: data.transcription_configuration,
+                                  isTranscribing: false,
+                              }
+                            : p,
+                    ),
                 );
-            } else {
+        } catch (error) {
+            if (attempt === generation.current)
                 setPendingFiles((prev) =>
-                    prev.map((p) => (p.id === pendingId ? { ...p, isTranscribing: false } : p))
+                    prev.map((p) =>
+                        p.id === pendingId
+                            ? {
+                                  ...p,
+                                  isTranscribing: false,
+                                  error:
+                                      error instanceof Error
+                                          ? error.message
+                                          : "Transcription failed. You can enter text manually.",
+                              }
+                            : p,
+                    ),
                 );
-            }
-        } catch {
-            setPendingFiles((prev) =>
-                prev.map((p) =>
-                    p.id === pendingId
-                        ? { ...p, isTranscribing: false, error: "Auto-transcription failed" }
-                        : p
-                )
-            );
         }
     };
 
     const addPendingFiles = (files: File[]) => {
         const valid: PendingFile[] = [];
+        const rejected: string[] = [];
         for (const file of files) {
-            if (file.size > MAX_FILE_SIZE) {
-                setError(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds 5MB limit - skipped.`);
+            if (!file.size || file.size > MAX_FILE_SIZE) {
+                rejected.push(`${file.name}: use nonempty audio up to 5 MiB.`);
+                continue;
+            }
+            if (pendingFiles.length + valid.length >= 20) {
+                rejected.push("Only 20 recordings are allowed per batch.");
                 continue;
             }
             const id = `pending-${++pendingFileCounter}`;
-            valid.push({ id, file, transcript: "", isTranscribing: false });
+            valid.push({
+                id,
+                file,
+                transcript: "",
+                isTranscribing: autoTranscribe && transcription?.available === true,
+            });
         }
+        setError(rejected.length ? [...new Set(rejected)].join(" ") : null);
         if (valid.length === 0) return;
         setPendingFiles((prev) => [...prev, ...valid]);
-        setError(null);
-        for (const pf of valid) {
-            transcribeFile(pf.id, pf.file);
+        if (autoTranscribe && transcription?.available) {
+            const attempt = generation.current;
+            for (const pf of valid) {
+                transcriptionQueue.current = transcriptionQueue.current.then(() =>
+                    transcribeFile(pf.id, pf.file, attempt),
+                );
+            }
         }
     };
 
@@ -155,9 +208,7 @@ export const RecordingsUploadDialog = ({
     };
 
     const updateTranscript = (pendingId: string, transcript: string) => {
-        setPendingFiles((prev) =>
-            prev.map((p) => (p.id === pendingId ? { ...p, transcript } : p))
-        );
+        setPendingFiles((prev) => prev.map((p) => (p.id === pendingId ? { ...p, transcript } : p)));
     };
 
     const startRecording = async () => {
@@ -176,14 +227,20 @@ export const RecordingsUploadDialog = ({
                 stream.getTracks().forEach((t) => t.stop());
                 stopRecordingTimer();
 
-                const blob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType });
+                const blob = new Blob(audioChunksRef.current, {
+                    type: mediaRecorder.mimeType,
+                });
                 if (blob.size > MAX_FILE_SIZE) {
-                    setError(`Recording (${(blob.size / (1024 * 1024)).toFixed(1)}MB) exceeds the maximum allowed size of 5MB.`);
+                    setError(
+                        `Recording (${(blob.size / (1024 * 1024)).toFixed(1)}MB) exceeds the maximum allowed size of 5MB.`,
+                    );
                     resetRecordingState();
                     return;
                 }
                 const ext = mediaRecorder.mimeType.includes("webm") ? "webm" : "mp4";
-                const file = new File([blob], `${filename}.${ext}`, { type: mediaRecorder.mimeType });
+                const file = new File([blob], `${filename}.${ext}`, {
+                    type: mediaRecorder.mimeType,
+                });
                 resetRecordingState();
                 addPendingFiles([file]);
             };
@@ -225,8 +282,8 @@ export const RecordingsUploadDialog = ({
                 },
             });
 
-            if (!uploadUrlResponse.data?.items) {
-                throw new Error("Failed to get upload URLs");
+            if (uploadUrlResponse.error || !uploadUrlResponse.data?.items) {
+                throw new Error(detailFromError(uploadUrlResponse.error, "Failed to get upload URLs"));
             }
 
             const items = uploadUrlResponse.data.items;
@@ -242,10 +299,10 @@ export const RecordingsUploadDialog = ({
                     if (!uploadResponse.ok) {
                         throw new Error(`File upload failed for ${file.name}`);
                     }
-                })
+                }),
             );
 
-            await createRecordingsApiV1WorkflowRecordingsPost({
+            const saved = await createRecordingsApiV1WorkflowRecordingsPost({
                 body: {
                     recordings: items.map((item: RecordingUploadResponseSchema, idx: number) => ({
                         recording_id: item.recording_id,
@@ -256,11 +313,13 @@ export const RecordingsUploadDialog = ({
                             file_size_bytes: ready[idx].file.size,
                             mime_type: ready[idx].file.type,
                             language,
+                            transcription_configuration: ready[idx].transcriptionConfiguration,
                         },
                     })),
                 },
             });
 
+            if (saved.error) throw new Error(detailFromError(saved.error, "Unable to save recordings"));
             setPendingFiles([]);
             setLanguage("multi");
             resetRecordingState();
@@ -285,18 +344,36 @@ export const RecordingsUploadDialog = ({
                 <DialogHeader>
                     <DialogTitle>Upload Recordings</DialogTitle>
                     <DialogDescription>
-                        Upload or record audio files. Use{" "}
-                        <code className="text-xs bg-muted px-1 rounded">@</code> in
+                        Upload or record audio files. Use <code className="text-xs bg-muted px-1 rounded">@</code> in
                         prompt fields to insert them into your agents.
                     </DialogDescription>
                 </DialogHeader>
 
-                {error && (
-                    <div className="text-sm text-destructive bg-destructive/10 rounded-md p-2">
-                        {error}
-                    </div>
-                )}
+                {error && <div className="text-sm text-destructive bg-destructive/10 rounded-md p-2">{error}</div>}
 
+                <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                    <label className="flex items-center gap-2">
+                        <input
+                            type="checkbox"
+                            checked={autoTranscribe && transcription?.available === true}
+                            onChange={(e) => setAutoTranscribe(e.target.checked)}
+                            disabled={!transcription?.available || anyTranscribing}
+                        />
+                        Automatically transcribe files
+                    </label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                        {!transcription
+                            ? "Checking the configured STT connection…"
+                            : transcription.available
+                              ? `Using ${transcription.provider} / ${transcription.model} from Models. You can also enter text manually.`
+                              : typeof transcription.issue === "string"
+                                ? transcription.issue
+                                : detailFromError(
+                                      { detail: transcription.issue },
+                                      "Automatic transcription is unavailable. Enter text manually.",
+                                  )}
+                    </p>
+                </div>
                 {/* Upload Section */}
                 <div className="space-y-3">
                     {/* Audio source: file picker or record */}
@@ -317,7 +394,7 @@ export const RecordingsUploadDialog = ({
                                 size="sm"
                                 className="flex-1 justify-start text-sm font-normal"
                                 onClick={() => fileInputRef.current?.click()}
-                                disabled={isBusy}
+                                disabled={isBusy || !transcription || authLoading || !user}
                             >
                                 <Upload className="w-4 h-4 mr-2 shrink-0" />
                                 <span className="text-muted-foreground">Choose audio files (max 5MB each)</span>
@@ -328,7 +405,7 @@ export const RecordingsUploadDialog = ({
                                     variant="outline"
                                     size="sm"
                                     onClick={() => setRecordingStep("naming")}
-                                    disabled={uploading || anyTranscribing}
+                                    disabled={uploading || anyTranscribing || !transcription || authLoading || !user}
                                 >
                                     <Mic className="w-4 h-4 mr-1" />
                                     Record
@@ -369,7 +446,8 @@ export const RecordingsUploadDialog = ({
                                         <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" />
                                     </span>
                                     <span className="text-sm font-mono">
-                                        {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, "0")}
+                                        {Math.floor(recordingDuration / 60)}:
+                                        {(recordingDuration % 60).toString().padStart(2, "0")}
                                     </span>
                                     <span className="text-xs text-muted-foreground">{recordingFilename}</span>
                                     <Button
@@ -390,7 +468,8 @@ export const RecordingsUploadDialog = ({
                     {pendingFiles.length > 0 && (
                         <div className="space-y-2">
                             <Label className="text-xs text-muted-foreground">
-                                Pending ({pendingFiles.length} file{pendingFiles.length !== 1 ? "s" : ""})
+                                Pending ({pendingFiles.length} file
+                                {pendingFiles.length !== 1 ? "s" : ""})
                             </Label>
                             {pendingFiles.map((pf) => (
                                 <div key={pf.id} className="rounded-md border p-2 space-y-1.5 bg-muted/10">
@@ -411,11 +490,22 @@ export const RecordingsUploadDialog = ({
                                             <X className="w-3.5 h-3.5" />
                                         </Button>
                                     </div>
-                                    {pf.error && (
-                                        <p className="text-xs text-destructive">{pf.error}</p>
+                                    {pf.error && <p className="text-xs text-destructive">{pf.error}</p>}
+                                    {pf.error && transcription?.available && (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={pf.isTranscribing || uploading}
+                                            onClick={() => transcribeFile(pf.id, pf.file)}
+                                        >
+                                            Retry transcription
+                                        </Button>
                                     )}
                                     <Textarea
-                                        placeholder={pf.isTranscribing ? "Transcribing..." : "What does this recording say?"}
+                                        aria-label={`Transcript for ${pf.file.name}`}
+                                        placeholder={
+                                            pf.isTranscribing ? "Transcribing..." : "What does this recording say?"
+                                        }
                                         value={pf.transcript}
                                         onChange={(e) => updateTranscript(pf.id, e.target.value)}
                                         disabled={pf.isTranscribing}
@@ -430,7 +520,7 @@ export const RecordingsUploadDialog = ({
                     {/* Language */}
                     <div>
                         <Label className="text-xs text-muted-foreground">Language</Label>
-                        <Select value={language} onValueChange={setLanguage}>
+                        <Select value={language} onValueChange={setLanguage} disabled={isBusy}>
                             <SelectTrigger className="h-9 text-sm">
                                 <SelectValue />
                             </SelectTrigger>
@@ -444,19 +534,13 @@ export const RecordingsUploadDialog = ({
                         </Select>
                     </div>
 
-                    <Button
-                        size="sm"
-                        onClick={handleUpload}
-                        disabled={readyCount === 0 || isBusy}
-                    >
+                    <Button size="sm" onClick={handleUpload} disabled={readyCount === 0 || isBusy}>
                         {uploading ? (
                             <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                         ) : (
                             <Upload className="w-4 h-4 mr-1" />
                         )}
-                        {uploading
-                            ? "Uploading..."
-                            : `Upload ${readyCount} Recording${readyCount !== 1 ? "s" : ""}`}
+                        {uploading ? "Uploading..." : `Upload ${readyCount} Recording${readyCount !== 1 ? "s" : ""}`}
                     </Button>
                 </div>
             </DialogContent>

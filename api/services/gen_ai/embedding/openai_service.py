@@ -1,7 +1,7 @@
 """OpenAI embedding service.
 
 Embeds text and performs vector similarity search via the local database.
-Document conversion and chunking now live in the Model Proxy Service (MPS);
+Document conversion and chunking run in the shared local document processor;
 this file no longer pulls docling/transformers.
 """
 
@@ -39,6 +39,7 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
         model_id: str = DEFAULT_MODEL_ID,
         base_url: Optional[str] = None,
         default_headers: Optional[Dict[str, str]] = None,
+        dimensions: Optional[int] = None,
     ):
         """Initialize the OpenAI embedding service.
 
@@ -51,6 +52,9 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
         """
         self.db = db_client
         self.model_id = model_id
+        if dimensions not in (None, EMBEDDING_DIMENSION):
+            raise ValueError("Dograh knowledge storage requires 1536 dimensions")
+        self.dimensions = dimensions
 
         self._api_key_configured = bool(api_key)
         if self._api_key_configured:
@@ -91,7 +95,7 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
         Override hook for subclasses (e.g. DograhEmbeddingService injects the MPS
         billing protocol here). The base service adds nothing.
         """
-        return {}
+        return {"dimensions": self.dimensions} if self.dimensions is not None else {}
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Embed a batch of texts using OpenAI API.
@@ -107,9 +111,25 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
                 model=self.model_id,
                 **self._request_kwargs(),
             )
-            return [item.embedding for item in response.data]
+            ordered = sorted(response.data, key=lambda item: item.index)
+            if [item.index for item in ordered] != list(range(len(texts))):
+                raise ValueError(
+                    "Embedding response count or indexes do not match the input"
+                )
+            embeddings = [item.embedding for item in ordered]
+            import math
+
+            if any(
+                len(vector) != EMBEDDING_DIMENSION
+                or any(not math.isfinite(value) for value in vector)
+                for vector in embeddings
+            ):
+                raise ValueError(
+                    "Embedding service must return finite 1536-dimensional vectors; configure dimensions=1536 or use a compatible model"
+                )
+            return embeddings
         except Exception as e:
-            logger.error(f"Error generating OpenAI embeddings: {e}")
+            logger.error("Embedding request failed: {}", type(e).__name__)
             raise
 
     async def embed_query(self, query: str) -> List[float]:

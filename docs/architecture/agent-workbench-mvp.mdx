@@ -352,13 +352,13 @@ MPS 服务关闭只约束 Dograh 托管服务。Qwen、ElevenLabs、讯飞等自
 | 模型依赖检查 | `configuration/model_connections.py`、`run_model_configuration.py`、`pipecat/service_factory.py`、`gen_ai/embedding/factory.py` | 配置写入与执行共用检查；覆盖直接供应商 SDK、语音 WebSocket、显式节点模型和运行覆盖 |
 | 工作台依赖预检 | `agent_workbench/{config,jobs,tools,voice,evaluation}.py`、`schemas/agent_workbench.py`、`routes/agent_workbench.py` | 构建、仿真、调优及实时语音分别报告实际需要的服务；执行时再次验证，前端隐藏按钮不能代替后端限制 |
 | 原有云功能入口 | `routes/{workflow,service_keys,user,organization_usage}.py`、`quota_service.py`、`workflow_run_billing.py` | 独立模式禁用 MPS Builder、托管音色、Service Key 和云账单；OSS 自带配置正常运行，本地用量统计保留 |
-| 知识库本地处理 | `tasks/knowledge_base_processing.py`、新增 `services/knowledge_base/document_processing.py` | 提取现有受限附件解析器中的通用文本解析能力，补本地分块；保留全文/分块两种模式、来源位置、状态与重试；不上传原文件到 MPS |
+| 知识库本地处理 | `tasks/knowledge_base_processing.py`、`services/documents/{knowledge_base,parsing,file_parser}.py` | 提取现有受限附件解析器中的通用文本解析能力，补本地分块；保留全文/分块两种模式、来源位置、状态与重试；不上传原文件到 MPS |
 | 本地处理边界 | `agent_workbench/file_parser.py`、知识库 schema/入库校验 | 各格式提供明确支持范围；扫描 PDF 无文本返回待 OCR 状态或错误，不假装成功；共享解析能力不混用私有附件和知识库的对象权限 |
 | 文件转写适配 | `routes/workflow_recording.py`、新增 `services/transcription/` | 文件转写使用独立批量转写适配器，优先对接已用 ElevenLabs 的文件接口；不把实时 STT 适配器直接当文件接口；无可用配置时允许手工输入录音文本 |
 | 前端能力呈现 | 工作台、Models、VoiceSelector、API Keys、Billing、Recordings 页面 | 显示当前有效提供商和继承来源；云功能关闭后停止对应请求；录音上传不隐式触发 MPS；能力来自后端 |
 | 运行证据 | `db/agent_workbench_client.py`、`agent_workbench/{jobs,evaluation}.py` | 任务开始固定脱敏模型快照与指纹，并写入每条仿真运行；报告能回答实际使用哪个连接、修订和模型 |
 
-知识库切换 Embedding 时检查模型和向量维度，已有索引不得直接混用；需要重建的文档先生成迁移清单，再显式重建。当前两套环境没有配置 Embedding，应先选定自带连接，不能自动启用遗留 Dograh Embedding。
+知识库切换 Embedding 时检查模型和向量维度，已有索引不得直接混用；需要重建的文档先生成迁移清单，再显式重建。本次在用户确认后，为 8016 组织默认配置增加 Qwen 连接上的 `text-embedding-v4`，显式请求 1536 维；原 8000 配置未改动。不能自动启用遗留 Dograh Embedding。
 
 ### 9.4 数据、HTTP 与 MCP 接口增补
 
@@ -395,7 +395,7 @@ MPS 服务关闭只约束 Dograh 托管服务。Qwen、ElevenLabs、讯飞等自
 - 每次评测持有可核对的配置快照和指纹；基线/候选一致，历史未知记录继续标记未知。两套本地数据不能混用，不能修改原环境已发布版本来完成测试。
 - `MPS_ENABLED=true` 时保留原托管路径并做回归；不宣称非 OSS 已完成独立计费替代。
 
-只有上述门槛全部通过，才能把整个平台标记为“无需 MPS”。工作台闭环已完成独立模式验证，外围知识库、文件转写等仍需单独验收。
+只有上述门槛全部通过，才能把整个平台标记为“无需 MPS”。工作台闭环、本地知识库和文件转写已分别完成 8016 验证；其他门槛仍按本节逐项验收。
 
 ### 9.7 本次实施状态：2026-10-19
 
@@ -408,6 +408,63 @@ MPS 服务关闭只约束 Dograh 托管服务。Qwen、ElevenLabs、讯飞等自
 | 仿真证据 | 4 个真实任务、8 条真实文本运行已核对快照和指纹；调优基线与候选一致。旧记录不回填 |
 | 实时语音 | 真正调用现有 STT、Qwen、TTS 与 Codex；语音读取初版及新收费附件，执行构建、两轮测试、调优、结果查询，最终候选仅采用到草稿 |
 
-后续仍需实现知识库本地全文/分块处理、批量文件转写适配，以及音色/API Keys/Billing/Recordings 等外围页面的完整能力提示与停止无效请求。当前 MPS 关闭时这些云路径被后端拒绝，不应将“禁用”描述为功能已替代。完整新组织浏览器引导、人工发布、跨网络语音和生产部署也未验收。
+知识库本地全文/分块处理、批量文件转写适配及 Files/Recordings 能力提示已在后续增量实现，见 9.8 节。音色/API Keys/Billing 等外围页面的完整能力提示与停止无效请求仍需继续处理；这些剩余云路径当前由后端拒绝，不能将“禁用”描述为功能已替代。完整新组织浏览器引导、人工发布、跨网络语音和生产部署也未验收。
 
 端点检查识别默认与配置的 MPS 主机，不是通用网络防火墙；不会识别任意 DNS 别名或替代整个网络出口策略。验收环境额外阻断并计数这两个主机的 DNS 访问，完整工作台流程记录为 0；结论仅覆盖本次执行路径。
+
+
+### 9.8 知识库批量处理与录音文件转写（已实现）
+
+你可以继续在原有 Files、Recordings 页面操作；原 Agent 编辑器、工作台文字/语音附件和画布不变。本阶段不新增表或迁移，API 和普通 ARQ Worker 必须同时更新。只在 8016 环境启用并验证，8000 原实例保持原状。
+
+#### 本地文档处理与 Embedding
+
+`services/documents/file_parser.py` 和 `parsing.py` 提供共享解析子进程；工作台附件改为调用它们，原模块保留兼容入口。知识库与会话附件仍使用各自的存储路径和归属检查，不合并权限或自动互相关联。
+
+Files 支持每批最多 20 个文件、每个 5 MiB，支持 TXT、MD、CSV、JSON、带文本的 PDF、DOCX、XLSX。页面逐个上传并入队，每个文档独立完成或失败；首个文件入队不会关闭弹窗。支持拖放、移除待上传文件、部分失败继续和重试；请求响应丢失后先检查已有文档，避免重复上传或重复处理。
+
+- **Full Document**：本地解析后写入全文，不调用 Embedding，也不要求配置 LLM。
+- **Chunked Search**：本地提取、保留来源位置并分块，复用组织默认配置的 Embedding 连接；只有提取文本发送给该供应商，原文件不交给 MPS 解析。文本及语音 Agent 的知识检索也传递相同的维度参数。
+- `text-embedding-v4` 显式配置 `dimensions=1536`，兼容现有 PostgreSQL 向量列。该模型支持 1536 维，但默认维度不同，因此不能只改模型名；参见 [DashScope Embedding 文档](https://www.alibabacloud.com/help/en/model-studio/text-embedding-synchronous-api)。请求按每批最多 10 条发送，返回数量、顺序、维度及有限数值均校验。
+- OpenAI 兼容 Embedding 配置新增 `base_url` 字段，保留 Provider Connection 的 DashScope 地址；`dimensions` 从模型目录传入入库、手工检索、文本和语音运行链路。只有显式选择 Dograh Embedding 且 MPS 开启时才保留托管模型兼容路径。
+
+解析沿用工作台的 30 秒子进程超时和格式资源限制；知识库拒绝超过 200,000 个提取字符的文档，不使用截断内容建立一个看似完整的索引。分块采用 UTF-8 字节上界预算，默认 128，范围 32–2048；这是保守预算，不是供应商 tokenizer 的精确 token 数。最多 4096 块，记录来源位置与段内字符偏移。扫描 PDF 无可提取文本时提示先 OCR 或导出文本；不支持图片 OCR、旧 `.doc` 和任意复杂文档排版还原。
+
+#### 任务、状态和数据一致性
+
+保留 `process_knowledge_base_document` 的 ARQ 调用签名。Worker 先按组织读取文档，再核对入队对象键与已保存键；不能凭队列参数读取其他组织文件。文档解析、分块、向量请求在事务外执行；成功后以一个事务替换全文或分块和完成状态。重建失败时保留已可用的旧全文/索引。
+
+现有字段的新增用途：
+
+| 字段 | 内容 |
+| --- | --- |
+| `knowledge_base_documents.custom_metadata.processing_claim` | 任务令牌和 300 秒有效期；行锁领取、重复任务拒绝、完成时令牌校验 |
+| `processing_status` / `processing_error` | pending → processing → completed / failed；上游错误使用安全、可操作的说明 |
+| `docling_metadata` | 保留历史字段名，新增 `processor=local-v1`、来源位置、分块预算及脱敏 Embedding 配置快照和来源修订 |
+| `knowledge_base_chunks` | 现有块文本、来源偏移、模型 ID、1536 维向量；成功事务内统一替换 |
+| `workflow_recordings.recording_metadata` | 文件转写的提供商、文件模型、实时模型、连接 UUID/修订及配置来源，无凭据 |
+
+单任务最多 240 秒。用户取消或 Worker 正常退出时记录中断失败；进程崩溃后由租约过期允许手工重试。数据库提交后未能入队的 pending 文档，超过 300 秒也可重试。Retry API 使用组织范围与行锁，拒绝仍活跃的任务；事务提交后刷新 ORM 对象，兼容生产环境 `expire_on_commit=True`。此阶段没有自动巡检器或无限自动重试。
+
+已有索引的模型与维度兼容性检查继续有效；不会自动重建或覆盖其他组织索引。相同模型名但不同端点是否属于同一向量空间，仍不能仅凭模型名证明，变更供应商连接前需单独验证或重建。
+
+#### 文件转写
+
+`services/transcription/files.py` 使用组织默认 STT 配置；首个自带连接适配器为当前已用的 ElevenLabs。文件转写模型新增为 `file_transcription_model`，默认 `scribe_v2`，可选 `scribe_v1`；实时语音仍使用 `scribe_v2_realtime`。文件调用 [ElevenLabs Speech-to-text 文件接口](https://elevenlabs.io/docs/api-reference/speech-to-text/convert)，不把录音塞入实时 WebSocket 管线。
+
+支持 WAV、MP3、MP4、M4A、OGG、FLAC、WEBM、AAC，单文件 5 MiB；语言可自动检测或指定 ISO 代码。复用已有密钥和端点，不把凭据送到浏览器，不跟随供应商重定向。超时、无语音、鉴权失败、限流返回稳定错误码，且允许用户重试或手工填文本。未适配的 STT 提供商明确提示手工输入，不静默改用其他供应商。原显式 Dograh STT 在 MPS 开启时仍保留兼容路径，独立模式禁止该路径。
+
+录音弹窗先读取能力，显示实际提供商与文件模型。用户可关闭自动转写，逐项校正文字，或在失败后重试。批量自动转写按顺序执行；关闭后晚到响应不污染新弹窗。保存沿用原上传和录音创建接口，录音仍可在 Agent 提示词中通过 `@` 引用。此次仅替换录音文件转写依赖，没有新增工作台音频附件类型。
+
+#### 接口
+
+| 接口 | 契约 |
+| --- | --- |
+| GET `/api/v1/knowledge-base/processing-capabilities` | 组织范围的解析格式、文件上限、全文/分块能力、Embedding 模型和缺项；不调用供应商健康检查 |
+| POST `/api/v1/knowledge-base/upload-url` | 校验文件名/格式，生成组织路径的受限上传地址 |
+| POST `/api/v1/knowledge-base/process-document` | 校验文档 UUID、精确对象路径和 retrieval_mode；保存后入队，队列失败可重试 |
+| POST `/api/v1/knowledge-base/documents/{uuid}/retry` | 重试失败或过期任务；404 表示不存在/无权访问，409 表示仍在处理 |
+| GET `/api/v1/workflow-recordings/transcription-capabilities` | 当前 STT 是否支持文件转写、文件模型、配置来源和缺项 |
+| POST `/api/v1/workflow-recordings/transcribe` | 保留 multipart 文件接口，返回文本、语言和脱敏转写配置 |
+
+UI 使用从 8016 OpenAPI 重新生成的 SDK。这里没有新增专用 MCP 工具；知识库与录音继续由 Dograh 后端服务管理，Codex 的工作台工具仍使用原有权限与候选流程。
