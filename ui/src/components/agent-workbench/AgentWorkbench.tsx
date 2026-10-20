@@ -749,9 +749,9 @@ export function AgentWorkbench({
                   {!state.suites.length && (
                     <option value="">等待生成测试集</option>
                   )}
-                  {state.suites.map((s) => (
+                  {state.suites.map((s, index) => (
                     <option key={s.id} value={s.id}>
-                      {s.payload.name}
+                      {state.suites.length - index} · {s.payload.name}
                     </option>
                   ))}
                 </select>
