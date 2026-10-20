@@ -112,6 +112,7 @@ function WorkflowEditor({
     const searchParams = useSearchParams();
     const { confirmNavigate, hasDirtyChanges } = useUnsavedChangesContext();
     const workbenchOpen = searchParams.get('workbench') === '1';
+    const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
     const [candidatePreview, setCandidatePreview] = useState<Candidate>();
     const [previewNodes, setPreviewNodes] = useState<FlowNode[]>([]);
     const [previewEdges, setPreviewEdges] = useState<FlowEdge[]>([]);
@@ -908,7 +909,7 @@ function WorkflowEditor({
                         </div>
 
                         {workbenchOpen && (
-                            <aside aria-label="Agent 工作台" className="absolute inset-y-0 right-0 z-20 h-full w-full border-l border-border bg-background shadow-xl md:static md:w-[440px] md:shrink-0 md:shadow-none 2xl:w-[480px]">
+                            <aside aria-label="Agent 工作台" className={`absolute inset-y-0 right-0 z-20 h-full min-h-0 w-full border-l border-border bg-background shadow-xl md:static md:shrink-0 md:shadow-none ${workbenchExpanded ? "md:w-[min(780px,72%)]" : "md:w-[min(520px,50vw)]"}`}>
                                 <AgentWorkbench
                                     key={`${workflowId}:${searchParams.get('session') || 'latest'}`}
                                     workflowId={workflowId}
@@ -918,6 +919,8 @@ function WorkflowEditor({
                                     onAdopted={onDraftAdopted}
                                     onTargetChange={handleTargetChange}
                                     onClose={() => setWorkbenchOpen(false)}
+                                    expanded={workbenchExpanded}
+                                    onExpandedChange={setWorkbenchExpanded}
                                     adoptDisabledReason={isDirty || hasDirtyChanges || settingsSaving
                                         ? "草稿有未保存的修改，请先返回当前草稿保存，再应用候选版本。"
                                         : isViewingHistoricalVersion ? "请先返回当前草稿，再应用候选版本。" : undefined}

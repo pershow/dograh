@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import { AgentWorkbench } from '../AgentWorkbench';
@@ -119,8 +119,86 @@ it('previews candidate defaults and labels unresolved business values', async ()
     workflow_json: {nodes: [{id: 'start', data: {prompt: '{{customer}} {{current_weekday}}'}}], edges: []},
   }}));
   render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '候选版本说明'}));
   await screen.findByText('Provided company');
   expect(screen.getByText('customer')).toBeTruthy();
   expect(screen.getByText('待填写 / 每次通话传入')).toBeTruthy();
   expect(screen.queryByText('current_weekday')).toBeNull();
+});
+
+it('opens settings and attachments without losing the input or voice context', async () => {
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const input = await screen.findByRole('textbox', {name: '构建需求'});
+  fireEvent.change(input, {target: {value: 'Keep this unsent requirement'}});
+  expect(screen.queryByRole('combobox', {name: '构建模型协议'})).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name: '工作台设置'}));
+  expect((await screen.findByRole('combobox', {name: '构建模型协议'}) as HTMLSelectElement).value).toBe('chat');
+  fireEvent.keyDown(screen.getByRole('dialog', {name: '工作台设置'}), {key: 'Escape'});
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', {name: '工作台设置'})));
+  fireEvent.click(screen.getByRole('button', {name: '资料附件，已选择 1 个'}));
+  const attachment = await screen.findByRole('checkbox', {name: 'SOP.txt'});
+  expect((attachment as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(attachment);
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual([]);
+  fireEvent.click(attachment);
+  fireEvent.keyDown(screen.getByRole('dialog', {name: '资料附件'}), {key: 'Escape'});
+  await waitFor(() => expect(screen.queryByRole('dialog', {name: '资料附件'})).toBeNull());
+  fireEvent.click(screen.getByRole('button', {name: '文本仿真'}));
+  expect((screen.getByRole('textbox', {name: '构建需求'}) as HTMLTextAreaElement).value).toBe('Keep this unsent requirement');
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual(['asset']);
+  expect(mocks.create).not.toHaveBeenCalled();
+});
+
+it('keeps cancellation available in every view without the large background-task banner', async () => {
+  mocks.session.mockResolvedValue(response({...state, jobs: [{...state.jobs[0], status: 'running'}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  await screen.findByRole('button', {name: '取消任务'});
+  expect(screen.queryByText(/离开页面不会取消/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name: '文本仿真'}));
+  expect(screen.getByRole('button', {name: '取消任务'})).toBeTruthy();
+  expect(screen.queryByRole('textbox', {name: '构建需求'})).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name: /向助手提出修改/}));
+  expect(screen.getByRole('textbox', {name: '构建需求'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', {name: '收起输入框'}));
+  expect(screen.queryByRole('textbox', {name: '构建需求'})).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name: '调优'}));
+  expect(screen.getByRole('button', {name: '取消任务'})).toBeTruthy();
+});
+
+it('shows the recommended result with the original suite and lets the reader select any case', async () => {
+  mocks.session.mockResolvedValue(response({...state,
+    suites: [{id: 'new-suite', payload: {name: 'New suite', cases: []}}, {id: 'original-suite', payload: {name: 'Original suite', cases: []}}],
+    jobs: [{id: 'tune', kind: 'tune', status: 'completed', input: {suite_id: 'original-suite'}, output: {candidate_id: 'candidate', improved: true}}],
+    evaluations: [{id: 'evaluation', candidate_id: 'candidate', suite_id: 'original-suite', status: 'completed',
+      summary: {passed: 1, total: 2}, results: [
+        {name: 'First case', status: 'passed', transcript: [{role: 'assistant', text: 'First response'}], assertions: [], tool_calls: []},
+        {name: 'Second case', status: 'failed', transcript: [{role: 'assistant', text: 'Second response'}], assertions: [{kind: 'contains', value: 'Goodbye', passed: false}], tool_calls: []},
+      ]}],
+  }));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '调优'}));
+  fireEvent.click(screen.getByRole('button', {name: '查看推荐版本'}));
+  expect((screen.getByRole('combobox', {name: '测试集'}) as HTMLSelectElement).value).toBe('original-suite');
+  expect(screen.getByText('First response')).toBeTruthy();
+  fireEvent.change(screen.getByRole('combobox', {name: '测试场景'}), {target: {value: '1'}});
+  const transcript = screen.getByRole('region', {name: '仿真对话与断言'});
+  expect(within(transcript).getByText('Second response')).toBeTruthy();
+  expect(within(transcript).getByText(/Goodbye/)).toBeTruthy();
+});
+
+it('preserves the composing session when expanding the workbench', async () => {
+  const preview = vi.fn();
+  const expand = vi.fn();
+  const props = {workflowId: 7, sessionId: 'existing', onPreviewChange: preview, onExpandedChange: expand};
+  const view = render(<AgentWorkbench {...props} expanded={false} />);
+  const input = await screen.findByRole('textbox', {name: '构建需求'});
+  fireEvent.change(input, {target: {value: 'Unsent changes'}});
+  fireEvent.click(screen.getByRole('button', {name: '展开工作台'}));
+  expect(expand).toHaveBeenCalledWith(true);
+  view.rerender(<AgentWorkbench {...props} expanded />);
+  expect((screen.getByRole('textbox', {name: '构建需求'}) as HTMLTextAreaElement).value).toBe('Unsent changes');
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual(['asset']);
+  expect(screen.getByRole('button', {name: '收起工作台'})).toBeTruthy();
+  expect(mocks.create).not.toHaveBeenCalled();
+  expect(mocks.candidate).toHaveBeenCalledOnce();
 });

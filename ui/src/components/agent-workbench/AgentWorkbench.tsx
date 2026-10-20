@@ -1,13 +1,19 @@
 "use client";
 import {
   ArrowUp,
-  Bot,
   Check,
+  ChevronDown,
+  ChevronUp,
   FileText,
   FlaskConical,
+  Info,
   Loader2,
+  Maximize2,
+  MessageSquare,
   Mic,
+  Minimize2,
   Paperclip,
+  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
@@ -34,6 +40,11 @@ import {
 } from "@/client/sdk.gen";
 import type { SimulationSuite } from "@/client/types.gen";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
@@ -84,6 +95,8 @@ export function AgentWorkbench({
   onAdopted,
   onTargetChange,
   onClose,
+  expanded,
+  onExpandedChange,
   adoptDisabledReason,
 }: {
   workflowId?: number;
@@ -93,6 +106,8 @@ export function AgentWorkbench({
   onAdopted?: () => void;
   onTargetChange?: (snapshot: Snapshot, canReload: boolean) => void;
   onClose?: () => void;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   adoptDisabledReason?: string;
 }) {
   const {
@@ -127,7 +142,12 @@ export function AgentWorkbench({
   }>();
   const [suiteEditor, setSuiteEditor] = useState<string | null>(null);
   const [caseIndex, setCaseIndex] = useState(0);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [followingMessages, setFollowingMessages] = useState(true);
+  const followMessages = useRef(true);
   const fileInput = useRef<HTMLInputElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const resultsPane = useRef<HTMLElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const cursor = useRef(0);
   const init = useRef<Promise<WorkbenchSession> | null>(null);
@@ -169,7 +189,11 @@ export function AgentWorkbench({
     reload,
   );
   useEffect(() => {
-    if (state) onTargetChange?.(state.target, !text.trim() && voice.status === "off" && !busy);
+    if (state)
+      onTargetChange?.(
+        state.target,
+        !text.trim() && voice.status === "off" && !busy,
+      );
   }, [state, text, voice.status, busy, onTargetChange]);
   useEffect(() => {
     if (authLoading) return;
@@ -208,7 +232,10 @@ export function AgentWorkbench({
           throw new Error("此工作台会话不属于当前 Agent。");
         setSession(value.id);
         if (onPreviewChange) onSessionReady?.(value);
-        else router.replace(`/workflow/${value.workflow_id}?workbench=1&session=${value.id}`);
+        else
+          router.replace(
+            `/workflow/${value.workflow_id}?workbench=1&session=${value.id}`,
+          );
       })
       .catch((error) => {
         if (!disposed) setError(error.message);
@@ -216,7 +243,16 @@ export function AgentWorkbench({
     return () => {
       disposed = true;
     };
-  }, [authLoading, user, workflowId, sessionId, redirectToLogin, router, onPreviewChange, onSessionReady]);
+  }, [
+    authLoading,
+    user,
+    workflowId,
+    sessionId,
+    redirectToLogin,
+    router,
+    onPreviewChange,
+    onSessionReady,
+  ]);
   useEffect(() => {
     if (authLoading || !user || !session) return;
     void reload();
@@ -252,14 +288,19 @@ export function AgentWorkbench({
       if (state.candidates[0]) setCandidateId(state.candidates[0].id);
       // Restore the submitted attachment context when returning to this session.
       // Evaluations have no asset selection; use the most recent build/tune input.
-      const submitted = state.jobs.find(j => Array.isArray(j.input.asset_ids));
+      const submitted = state.jobs.find((j) =>
+        Array.isArray(j.input.asset_ids),
+      );
       const assetIds = submitted?.input.asset_ids;
       if (Array.isArray(assetIds))
         setSelectedAssets(
-          assetIds.filter((id): id is string =>
-            typeof id === "string" &&
-            state.assets.some(a => a.id === id && a.status === "ready"),
-          ).slice(0, 5),
+          assetIds
+            .filter(
+              (id): id is string =>
+                typeof id === "string" &&
+                state.assets.some((a) => a.id === id && a.status === "ready"),
+            )
+            .slice(0, 5),
         );
     }
   }, [state]);
@@ -277,7 +318,9 @@ export function AgentWorkbench({
       .then((r) => {
         if (!disposed) setCandidate(result<Candidate>(r));
       })
-      .catch((e) => { if (!disposed) setError(e.message); });
+      .catch((e) => {
+        if (!disposed) setError(e.message);
+      });
     return () => {
       disposed = true;
     };
@@ -287,7 +330,8 @@ export function AgentWorkbench({
     const completed = events
       .filter(
         (e) =>
-          ["task.completed", "candidate.adopted"].includes(e.type) && e.sequence > completedCursor.current,
+          ["task.completed", "candidate.adopted"].includes(e.type) &&
+          e.sequence > completedCursor.current,
       )
       .at(-1);
     if (!completed) return;
@@ -302,8 +346,12 @@ export function AgentWorkbench({
     if (typeof output?.suite_id === "string") setSuiteId(output.suite_id);
   }, [events]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [events.length]);
+    if (tab === "canvas" && followMessages.current)
+      bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [events.length, tab]);
+  useEffect(() => {
+    if (resultsPane.current) resultsPane.current.scrollTop = 0;
+  }, [tab, candidateId, suiteId]);
   const action = async (operation: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -380,6 +428,8 @@ export function AgentWorkbench({
       );
       setTab("tuning");
     });
+  const composerExpanded =
+    tab === "canvas" || composerOpen || !!text || voice.status !== "off";
   const messages = events.filter((e) =>
     [
       "task.queued",
@@ -402,7 +452,11 @@ export function AgentWorkbench({
             <p>正在准备工作台…</p>
           </>
         )}
-        {onClose && <Button variant="ghost" onClick={onClose}>关闭工作台</Button>}
+        {onClose && (
+          <Button variant="ghost" onClick={onClose}>
+            关闭工作台
+          </Button>
+        )}
         <Link href="/workflow">返回 Agents</Link>
       </div>
     );
@@ -411,9 +465,101 @@ export function AgentWorkbench({
       <header className={styles.header}>
         <Sparkles size={18} />
         <strong>Agent 工作台</strong>
-        <Button variant="ghost" size="icon" aria-label="关闭工作台" onClick={onClose}>
-          <X size={18} />
-        </Button>
+        <div className={styles.headerActions}>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="工作台设置"
+                title="工作台设置"
+              >
+                <Settings2 size={16} />
+                {dependencies && !dependencies.ready && (
+                  <span className={styles.warningDot} />
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className={styles.popover}
+              aria-label="工作台设置"
+            >
+              <h3>工作台设置</h3>
+              <p className={styles.subtle}>Codex · 使用 Dograh 模型连接</p>
+              <div className={styles.protocol}>
+                <label htmlFor="model-protocol">构建模型协议</label>
+                <select
+                  id="model-protocol"
+                  value={state.session.model_protocol}
+                  disabled={locked}
+                  onChange={(e) =>
+                    action(async () => {
+                      result(
+                        await settings({
+                          path: { session_id: session },
+                          body: {
+                            model_protocol: e.target.value as
+                              | "chat"
+                              | "responses",
+                          },
+                        }),
+                      );
+                    })
+                  }
+                >
+                  <option value="chat">Chat Completions</option>
+                  <option value="responses">Responses</option>
+                </select>
+              </div>
+              {dependencies && (
+                <details className={styles.protocol}>
+                  <summary>
+                    {dependencies.ready ? "模型连接已检查" : "模型配置需要处理"}
+                  </summary>
+                  {dependencies.services.map((service) => (
+                    <p key={service.role}>
+                      {service.role.toUpperCase()} · {service.provider} /{" "}
+                      {service.model}
+                      {service.endpoint_host
+                        ? ` · ${service.endpoint_host}`
+                        : ""}
+                    </p>
+                  ))}
+                  {dependencies.issues.map((issue, i) => (
+                    <p role="alert" key={i}>
+                      {detailFromError(
+                        { detail: issue },
+                        "模型配置无法解析，请检查 Models",
+                      )}
+                    </p>
+                  ))}
+                  <Link href="/model-configurations">管理模型连接</Link>
+                </details>
+              )}
+            </PopoverContent>
+          </Popover>
+          {onExpandedChange && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={expanded ? "收起工作台" : "展开工作台"}
+              title={expanded ? "收起工作台" : "展开工作台"}
+              onClick={() => onExpandedChange(!expanded)}
+            >
+              {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="关闭工作台"
+            title="关闭工作台"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </Button>
+        </div>
       </header>
       <div className={styles.toolbar}>
         <nav aria-label="工作台功能">
@@ -422,251 +568,359 @@ export function AgentWorkbench({
             ["tests", "文本仿真"],
             ["tuning", "调优"],
           ].map(([key, label]) => (
-            <button key={key} onClick={() => setTab(key as typeof tab)} aria-pressed={tab === key}>
+            <button
+              key={key}
+              onClick={() => setTab(key as typeof tab)}
+              aria-pressed={tab === key}
+            >
               {label}
             </button>
           ))}
         </nav>
       </div>
-      {active && (
-        <p role="status" className="border-b bg-muted/40 px-6 py-2 text-sm text-muted-foreground">
-          任务正在后台{active.status === "queued" ? "排队" : "执行"}，离开页面不会取消。
-          可从 Voice Agents 列表中此 Agent 的「工作台」返回，继续查看进度和结果。
-        </p>
-      )}
       <div className={styles.versionbar}>
         <label>
           画布版本
-          <select value={candidateId} aria-label="候选版本" onChange={(e) => setCandidateId(e.target.value)}>
+          <select
+            value={candidateId}
+            aria-label="候选版本"
+            onChange={(e) => setCandidateId(e.target.value)}
+          >
             <option value="">当前草稿</option>
             {state.candidates.map((c, i) => (
-              <option key={c.id} value={c.id}>{state.candidates.length - i} · {c.name}</option>
+              <option key={c.id} value={c.id}>
+                {state.candidates.length - i} · {c.name}
+              </option>
             ))}
           </select>
         </label>
-        <Button size="sm" variant="outline" disabled={!candidate || candidate.id !== candidateId || locked || !!adoptDisabledReason}
+        {candidate && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="候选版本说明"
+                title="候选版本说明 · 只读预览"
+              >
+                <Info size={16} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              className={`${styles.popover} ${styles.candidateSummary}`}
+              aria-label="候选版本说明"
+            >
+              <h3>候选版本说明 · 只读预览</h3>
+              <p>{candidate.summary}</p>
+              {candidate.snapshot && (
+                <details>
+                  <summary>Variables · 应用时随候选写入草稿</summary>
+                  <p>
+                    默认值用于仿真和编辑器测试；空值需要补充，或在每次通话中传入。
+                  </p>
+                  <dl>
+                    {Object.entries({
+                      ...Object.fromEntries(
+                        referencedVariables(
+                          candidate.snapshot.workflow_json.nodes,
+                          candidate.snapshot.workflow_json.edges,
+                        ).map((name) => [name, ""]),
+                      ),
+                      ...candidate.snapshot.template_context_variables,
+                    }).map(([name, value]) => (
+                      <div key={name} className="mb-2">
+                        <dt className="font-mono">{name}</dt>
+                        <dd className="whitespace-pre-wrap break-words">
+                          {String(value ?? "").trim() ||
+                            "待填写 / 每次通话传入"}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              )}
+              <details>
+                <summary>查看代码</summary>
+                <pre>{candidate.code}</pre>
+              </details>
+            </PopoverContent>
+          </Popover>
+        )}
+
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={
+            !candidate ||
+            candidate.id !== candidateId ||
+            locked ||
+            !!adoptDisabledReason
+          }
           title={adoptDisabledReason}
-          onClick={() => action(async () => {
-            result(await adopt({path: {session_id: session, candidate_id: candidateId}}));
-            setCandidateId("");
-            setCandidate(undefined);
-            onPreviewChange(undefined);
-            setNotice("已应用到草稿，可继续编辑、测试和发布。");
-            onAdopted?.();
-          })}>
-          <Check size={14} />应用到草稿
+          onClick={() =>
+            action(async () => {
+              result(
+                await adopt({
+                  path: { session_id: session, candidate_id: candidateId },
+                }),
+              );
+              setCandidateId("");
+              setCandidate(undefined);
+              onPreviewChange(undefined);
+              setNotice("已应用到草稿，可继续编辑、测试和发布。");
+              onAdopted?.();
+            })
+          }
+        >
+          <Check size={14} />
+          应用到草稿
         </Button>
       </div>
-      {adoptDisabledReason && <p className={styles.testHelp}>{adoptDisabledReason}</p>}
-      {candidate && (
-        <details className={styles.candidateSummary}>
-          <summary>候选版本说明 · 只读预览</summary>
-          <p>{candidate.summary}</p>
-          {candidate.snapshot && (
-            <details>
-              <summary>Variables · 应用时随候选写入草稿</summary>
-              <p>默认值用于仿真和编辑器测试；空值需要补充，或在每次通话中传入。</p>
-              <dl>
-                {Object.entries({
-                  ...Object.fromEntries(referencedVariables(
-                    candidate.snapshot.workflow_json.nodes,
-                    candidate.snapshot.workflow_json.edges,
-                  ).map(name => [name, ""])),
-                  ...candidate.snapshot.template_context_variables,
-                }).map(([name, value]) => (
-                  <div key={name} className="mb-2">
-                    <dt className="font-mono">{name}</dt>
-                    <dd className="whitespace-pre-wrap break-words">{String(value ?? "").trim() || "待填写 / 每次通话传入"}</dd>
-                  </div>
-                ))}
-              </dl>
-            </details>
-          )}
-          <details><summary>查看代码</summary><pre>{candidate.code}</pre></details>
-        </details>
+      {adoptDisabledReason && (
+        <p className={styles.testHelp}>{adoptDisabledReason}</p>
+      )}
+      {active && (
+        <div role="status" className={styles.taskStatus}>
+          <Loader2 size={15} className="animate-spin" />
+          <span>
+            {statusText[active.status]} ·{" "}
+            {String(
+              events.filter((e) => e.type === "tool.started").at(-1)?.payload
+                .name || active.kind,
+            )}
+          </span>
+          <button
+            onClick={() =>
+              action(async () => {
+                result(
+                  await cancel({
+                    path: { session_id: session, job_id: active.id },
+                  }),
+                );
+              })
+            }
+          >
+            取消任务
+          </button>
+        </div>
       )}
       <div className={styles.body}>
-        {tab !== "canvas" && <main className={styles.main}>
-          <div className={styles.runActions}>
-            <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={runTests}>
-              <FlaskConical size={14} />运行文本仿真
-            </Button>
-            <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={runTune}>
-              <Sparkles size={14} />开始调优
-            </Button>
-            {(!candidateId || !suiteId) && <p className={styles.subtle}>请先选择候选版本和测试集。</p>}
-          </div>
-          {tab === "tests" && (
-            <div className={styles.tests}>
-              <div className={styles.suitebar}>
-                <label>
-                  测试集{" "}
-                  <select
-                    aria-label="测试集"
-                    value={suiteId}
-                    onChange={(e) => {
-                      setSuiteId(e.target.value);
-                      setCaseIndex(0);
-                    }}
-                  >
-                    {!state.suites.length && (
-                      <option value="">等待生成测试集</option>
-                    )}
-                    {state.suites.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.payload.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={locked}
-                  onClick={() =>
-                    setSuiteEditor(
-                      JSON.stringify(
-                        selectedSuite?.payload || {
-                          name: "新测试集",
-                          cases: [
-                            {
-                              name: "价格咨询",
-                              user_messages: ["请问价格是多少？"],
-                              assertions: [
-                                { kind: "contains", value: "咨询免费" },
-                              ],
-                            },
-                          ],
-                        },
-                        null,
-                        2,
-                      ),
-                    )
-                  }
+        {tab !== "canvas" && (
+          <main
+            ref={resultsPane}
+            className={styles.main}
+            aria-label={tab === "tests" ? "文本仿真结果" : "调优记录"}
+          >
+            <div className={styles.runActions}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={locked || !candidateId || !suiteId}
+                onClick={runTests}
+              >
+                <FlaskConical size={14} />
+                运行文本仿真
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={locked || !candidateId || !suiteId}
+                onClick={runTune}
+              >
+                <Sparkles size={14} />
+                开始调优
+              </Button>
+              {(!candidateId || !suiteId) && (
+                <p className={styles.subtle}>请先选择候选版本和测试集。</p>
+              )}
+            </div>
+            <div className={styles.suitebar}>
+              <label>
+                测试集{" "}
+                <select
+                  aria-label="测试集"
+                  value={suiteId}
+                  onChange={(e) => {
+                    setSuiteId(e.target.value);
+                    setCaseIndex(0);
+                  }}
                 >
-                  编辑测试集
-                </Button>
-              </div>
-              <p className={styles.testHelp}>
-                固定用户脚本 · 真实文本引擎 · 业务工具使用测试夹具
-              </p>
-              {evaluation ? (
-                <>
-                  <div className={styles.metrics}>
-                    <b>
-                      {evaluation.summary.passed || 0}
-                      <small> / {evaluation.summary.total || 0} 通过</small>
-                    </b>
-                    <span>
-                      {statusText[evaluation.status] || evaluation.status}
-                    </span>
-                    <span>
-                      失败 {evaluation.summary.failed || 0} · 错误{" "}
-                      {evaluation.summary.error || 0}
-                    </span>
-                  </div>
-                  <div className={styles.results}>
-                    <div className={styles.caseList}>
-                      {evaluation.results.map((c, i) => (
-                        <button
-                          key={i}
-                          className={caseIndex === i ? styles.selected : ""}
-                          onClick={() => setCaseIndex(i)}
-                        >
-                          <span>{c.name}</span>
-                          <small data-status={c.status}>
-                            {statusText[c.status] || c.status}
-                          </small>
-                        </button>
-                      ))}
+                  {!state.suites.length && (
+                    <option value="">等待生成测试集</option>
+                  )}
+                  {state.suites.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.payload.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={locked}
+                onClick={() =>
+                  setSuiteEditor(
+                    JSON.stringify(
+                      selectedSuite?.payload || {
+                        name: "新测试集",
+                        cases: [
+                          {
+                            name: "价格咨询",
+                            user_messages: ["请问价格是多少？"],
+                            assertions: [
+                              { kind: "contains", value: "咨询免费" },
+                            ],
+                          },
+                        ],
+                      },
+                      null,
+                      2,
+                    ),
+                  )
+                }
+              >
+                编辑测试集
+              </Button>
+            </div>
+            {tab === "tests" && (
+              <div className={styles.tests}>
+                <p className={styles.testHelp}>
+                  固定用户脚本 · 真实文本引擎 · 业务工具使用测试夹具
+                </p>
+                {evaluation ? (
+                  <>
+                    <div className={styles.metrics}>
+                      <b>
+                        {evaluation.summary.passed || 0}
+                        <small> / {evaluation.summary.total || 0} 通过</small>
+                      </b>
+                      <span>
+                        {statusText[evaluation.status] || evaluation.status}
+                      </span>
+                      <span>
+                        失败 {evaluation.summary.failed || 0} · 错误{" "}
+                        {evaluation.summary.error || 0}
+                      </span>
                     </div>
-                    <div className={styles.transcript}>
-                      {currentCase?.error && (
-                        <p role="alert">{currentCase.error}</p>
-                      )}
-                      {currentCase?.transcript.map((m, i) => (
-                        <div
-                          key={i}
-                          className={
-                            m.role === "user"
-                              ? styles.userBubble
-                              : styles.botBubble
-                          }
+                    <div className={styles.results}>
+                      <label className={styles.caseSelector}>
+                        测试场景
+                        <select
+                          aria-label="测试场景"
+                          value={Math.min(
+                            caseIndex,
+                            evaluation.results.length - 1,
+                          )}
+                          onChange={(e) => setCaseIndex(Number(e.target.value))}
                         >
-                          <small>
-                            {m.role === "user" ? "模拟用户" : "Agent"}
-                          </small>
-                          <p>{m.text || "（无文本回复）"}</p>
-                        </div>
-                      ))}
-                      <div className={styles.assertions}>
-                        {currentCase?.assertions.map((a, i) => (
-                          <p
+                          {evaluation.results.map((c, i) => (
+                            <option key={i} value={i}>
+                              {i + 1}. {c.name} ·{" "}
+                              {statusText[c.status] || c.status}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div
+                        className={styles.transcript}
+                        role="region"
+                        aria-label="仿真对话与断言"
+                        tabIndex={0}
+                      >
+                        {currentCase?.error && (
+                          <p role="alert">{currentCase.error}</p>
+                        )}
+                        {currentCase?.transcript.map((m, i) => (
+                          <div
                             key={i}
-                            data-status={a.passed ? "passed" : "failed"}
+                            className={
+                              m.role === "user"
+                                ? styles.userBubble
+                                : styles.botBubble
+                            }
                           >
-                            {a.passed ? "✓" : "×"} {a.kind} ·{" "}
-                            {String(a.value ?? "")}
-                          </p>
+                            <small>
+                              {m.role === "user" ? "模拟用户" : "Agent"}
+                            </small>
+                            <p>{m.text || "（无文本回复）"}</p>
+                          </div>
                         ))}
+                        <div className={styles.assertions}>
+                          {currentCase?.assertions.map((a, i) => (
+                            <p
+                              key={i}
+                              data-status={a.passed ? "passed" : "failed"}
+                            >
+                              {a.passed ? "✓" : "×"} {a.kind} ·{" "}
+                              {String(a.value ?? "")}
+                            </p>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </>
-              ) : (
-                <div className={styles.empty}>
-                  <FlaskConical size={32} />
-                  <h2>验证 Agent 的实际表现</h2>
-                  <p>选择候选版本和测试集，运行后可查看逐轮对话与断言结果。</p>
-                </div>
-              )}
-            </div>
-          )}
-          {tab === "tuning" && (
-            <div className={styles.tuning}>
-              <h2>每次调优都有依据</h2>
-              <p className={styles.subtle}>
-                保留测试集，用相同场景比较修改前后；不会自动发布。
-              </p>
-              {state.jobs
-                .filter((j) => j.kind === "tune")
-                .map((j) => (
-                  <article key={j.id}>
-                    <div>
-                      <strong>调优任务</strong>
-                      <span>{statusText[j.status] || j.status}</span>
-                    </div>
+                  </>
+                ) : (
+                  <div className={styles.empty}>
+                    <FlaskConical size={32} />
+                    <h2>验证 Agent 的实际表现</h2>
                     <p>
-                      {j.error ||
-                        (j.output.improved
-                          ? "已找到通过更多用例且无回退的候选版本。"
-                          : j.status === "completed"
-                            ? "本轮没有找到更好的候选版本，保留原结果。"
-                            : "正在分析失败案例并验证修改。")}
+                      选择候选版本和测试集，运行后可查看逐轮对话与断言结果。
                     </p>
-                    {typeof j.output.candidate_id === "string" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setCandidateId(String(j.output.candidate_id));
-                          setTab("tests");
-                        }}
-                      >
-                        查看推荐版本
-                      </Button>
-                    )}
-                  </article>
-                ))}
-              {!state.jobs.some((j) => j.kind === "tune") && (
-                <div className={styles.empty}>
-                  <Sparkles size={30} />
-                  <p>先完成一次文本仿真，再根据失败案例调优。</p>
-                </div>
-              )}
-            </div>
-          )}
-        </main>}
+                  </div>
+                )}
+              </div>
+            )}
+            {tab === "tuning" && (
+              <div className={styles.tuning}>
+                <h2>每次调优都有依据</h2>
+                <p className={styles.subtle}>
+                  保留测试集，用相同场景比较修改前后；不会自动发布。
+                </p>
+                {state.jobs
+                  .filter((j) => j.kind === "tune")
+                  .map((j, index, jobs) => (
+                    <article key={j.id}>
+                      <div>
+                        <strong>调优任务 {jobs.length - index}</strong>
+                        <span>{statusText[j.status] || j.status}</span>
+                      </div>
+                      <p>
+                        {j.error ||
+                          (j.output.improved
+                            ? "已找到通过更多用例且无回退的候选版本。"
+                            : j.status === "completed"
+                              ? "本轮没有找到更好的候选版本，保留原结果。"
+                              : "正在分析失败案例并验证修改。")}
+                      </p>
+                      {typeof j.output.candidate_id === "string" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setCandidateId(String(j.output.candidate_id));
+                            if (typeof j.input.suite_id === "string")
+                              setSuiteId(j.input.suite_id);
+                            setCaseIndex(0);
+                            setTab("tests");
+                          }}
+                        >
+                          查看推荐版本
+                        </Button>
+                      )}
+                    </article>
+                  ))}
+                {!state.jobs.some((j) => j.kind === "tune") && (
+                  <div className={styles.empty}>
+                    <Sparkles size={30} />
+                    <p>先完成一次文本仿真，再根据失败案例调优。</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </main>
+        )}
         <aside
           className={`${styles.assistant} ${tab !== "canvas" ? styles.compact : ""}`}
           onDragOver={(e) => e.preventDefault()}
@@ -675,64 +929,25 @@ export function AgentWorkbench({
             void addFiles(Array.from(e.dataTransfer.files));
           }}
         >
-          {tab === "canvas" && <>
-          <div className={styles.assistantTitle}>
-            <span className={styles.botIcon}>
-              <Bot size={20} />
-            </span>
-            <div>
-              <strong>构建助手</strong>
-              <small>Codex · 使用 Dograh 模型连接</small>
-            </div>
-            <span className={styles.online}>服务已连接</span>
-          </div>
-          <div className={styles.protocol}>
-            <label htmlFor="model-protocol">构建模型协议</label>
-            <select
-              id="model-protocol"
-              value={state.session.model_protocol}
-              disabled={locked}
-              onChange={(e) =>
-                action(async () => {
-                  result(
-                    await settings({
-                      path: { session_id: session },
-                      body: {
-                        model_protocol: e.target.value as "chat" | "responses",
-                      },
-                    }),
-                  );
-                })
-              }
-            >
-              <option value="chat">Chat Completions</option>
-              <option value="responses">Responses</option>
-            </select>
-          </div>
-          {dependencies && (
-            <details className={styles.protocol}>
-              <summary>
-                {dependencies.ready ? "模型连接已检查" : "模型配置需要处理"}
-              </summary>
-              {dependencies.services.map((service) => (
-                <p key={service.role}>
-                  {service.role.toUpperCase()} · {service.provider} /{" "}
-                  {service.model}
-                  {service.endpoint_host ? ` · ${service.endpoint_host}` : ""}
-                </p>
-              ))}
-              {dependencies.issues.map((issue, i) => (
-                <p role="alert" key={i}>
-                  {detailFromError(
-                    { detail: issue },
-                    "模型配置无法解析，请检查 Models",
-                  )}
-                </p>
-              ))}
-              <Link href="/model-configurations">管理模型连接</Link>
-            </details>
-          )}
-          <div className={styles.messages}>
+          <div
+            className={styles.messages}
+            hidden={tab !== "canvas"}
+            role="region"
+            aria-label="构建对话"
+            tabIndex={0}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const following =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+              followMessages.current = following;
+              setFollowingMessages(following);
+            }}
+          >
+            {messages.length > 0 && (
+              <p className={styles.conversationLabel}>
+                构建对话 <span>Codex</span>
+              </p>
+            )}
             {!messages.length && (
               <div className={styles.welcome}>
                 <h2>你想构建什么 Agent？</h2>
@@ -755,7 +970,8 @@ export function AgentWorkbench({
             )}
             {messages.map((e) => {
               const input = e.payload.input as
-                Record<string, unknown> | undefined;
+                | Record<string, unknown>
+                | undefined;
               const isUser =
                 e.type === "task.queued" || e.payload.role === "user";
               const content =
@@ -796,35 +1012,25 @@ export function AgentWorkbench({
                 </div>
               );
             })}
-            {active && (
-              <div className={styles.taskStatus}>
-                <Loader2 size={15} className="animate-spin" />
-                <span>
-                  {statusText[active.status]} ·{" "}
-                  {String(
-                    events.filter((e) => e.type === "tool.started").at(-1)
-                      ?.payload.name || active.kind,
-                  )}
-                </span>
-                <button
-                  onClick={() =>
-                    action(async () => {
-                      result(
-                        await cancel({
-                          path: { session_id: session, job_id: active.id },
-                        }),
-                      );
-                    })
-                  }
-                >
-                  取消任务
-                </button>
-              </div>
-            )}
             <div ref={bottom} />
           </div>
-          </>}
           <div className={styles.composer}>
+            {tab === "canvas" && !followingMessages && (
+              <button
+                className={styles.latestMessage}
+                onClick={() => {
+                  followMessages.current = true;
+                  setFollowingMessages(true);
+                  bottom.current?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "nearest",
+                  });
+                }}
+              >
+                <ChevronDown size={14} />
+                回到最新消息
+              </button>
+            )}
             {(error || syncError) && (
               <div role="alert" className={styles.error}>
                 {error || syncError}
@@ -849,150 +1055,213 @@ export function AgentWorkbench({
                 {voice.error}
               </p>
             )}
-            {state.assets.length > 0 && (
-              <details className={styles.assets}>
-                <summary>资料附件 · 已选择 {selectedAssets.length}/5</summary>
-                {state.assets.map((a) => (
-                  <div key={a.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={selectedAssets.includes(a.id)}
-                        disabled={locked || a.status !== "ready"}
-                        onChange={(e) => {
-                          if (e.target.checked && selectedAssets.length >= 5) {
-                            setError("最多引用 5 个附件");
-                            return;
-                          }
-                          setSelectedAssets((old) =>
-                            e.target.checked
-                              ? [...old, a.id]
-                              : old.filter((id) => id !== a.id),
-                          );
-                        }}
-                      />
-                      <FileText size={13} />
-                      {a.name}
-                    </label>
-                    {a.status === "failed" ? (
-                      <button
-                        disabled={busy}
-                        title={a.error}
-                        onClick={() =>
-                          action(async () => {
-                            result(
-                              await retryAsset({
-                                path: { session_id: session, asset_id: a.id },
-                              }),
-                            );
-                          })
-                        }
-                      >
-                        解析失败 · 重试
-                      </button>
-                    ) : (
-                      <small>可引用</small>
-                    )}
-                  </div>
-                ))}
-              </details>
-            )}
-            <div className={styles.selectedFiles}>
-              {selectedAssets.map((id) => (
-                <span key={id}>
-                  <Paperclip size={12} />
-                  {state.assets.find((a) => a.id === id)?.name}
+            <div className={styles.composerContext}>
+              <Popover>
+                <PopoverTrigger asChild>
                   <button
-                    aria-label="移除附件引用"
-                    onClick={() =>
-                      setSelectedAssets((old) => old.filter((i) => i !== id))
-                    }
+                    className={styles.attachmentButton}
+                    aria-label={`资料附件，已选择 ${selectedAssets.length} 个`}
                   >
-                    <X size={12} />
+                    <Paperclip size={14} />
+                    附件 <b>{selectedAssets.length}</b>
+                    <ChevronUp size={12} />
                   </button>
-                </span>
-              ))}
+                </PopoverTrigger>
+                <PopoverContent
+                  side="top"
+                  align="start"
+                  className={`${styles.popover} ${styles.assets}`}
+                  aria-label="资料附件"
+                >
+                  <h3>资料附件 · 已选择 {selectedAssets.length}/5</h3>
+                  <p className={styles.subtle}>
+                    已选资料同时用于文字和语音交互。单个文件最大 20 MiB。
+                  </p>
+                  {!state.assets.length && (
+                    <p className={styles.subtle}>
+                      还没有附件，上传话术或业务资料即可开始。
+                    </p>
+                  )}
+                  {state.assets.map((a) => (
+                    <div key={a.id}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={selectedAssets.includes(a.id)}
+                          disabled={locked || a.status !== "ready"}
+                          onChange={(e) => {
+                            if (
+                              e.target.checked &&
+                              selectedAssets.length >= 5
+                            ) {
+                              setError("最多引用 5 个附件");
+                              return;
+                            }
+                            setSelectedAssets((old) =>
+                              e.target.checked
+                                ? [...old, a.id]
+                                : old.filter((id) => id !== a.id),
+                            );
+                          }}
+                        />
+                        <FileText size={13} />
+                        {a.name}
+                      </label>
+                      {a.status === "failed" ? (
+                        <button
+                          disabled={busy}
+                          title={a.error}
+                          onClick={() =>
+                            action(async () => {
+                              result(
+                                await retryAsset({
+                                  path: { session_id: session, asset_id: a.id },
+                                }),
+                              );
+                            })
+                          }
+                        >
+                          解析失败 · 重试
+                        </button>
+                      ) : (
+                        <small>
+                          {a.status === "ready" ? "可引用" : "解析中"}
+                        </small>
+                      )}
+                    </div>
+                  ))}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={locked}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Paperclip size={14} />
+                    上传文件
+                  </Button>
+                </PopoverContent>
+              </Popover>
+              <span
+                className={styles.attachmentNames}
+                title={selectedAssets
+                  .map((id) => state.assets.find((a) => a.id === id)?.name)
+                  .join("、")}
+              >
+                {selectedAssets.length
+                  ? selectedAssets
+                      .map((id) => state.assets.find((a) => a.id === id)?.name)
+                      .join(" · ")
+                  : "支持拖入文件、粘贴图片"}
+              </span>
+              {tab !== "canvas" &&
+                composerExpanded &&
+                !text &&
+                voice.status === "off" && (
+                  <button
+                    aria-label="收起输入框"
+                    onClick={() => setComposerOpen(false)}
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                )}
             </div>
-            <Textarea
-              aria-label="构建需求"
-              placeholder="描述需求、修改意见，或拖入文件…"
-              value={text}
-              disabled={busy}
-              onChange={(e) => setText(e.target.value)}
-              onPaste={(e) => {
-                if (e.clipboardData.files.length) {
-                  e.preventDefault();
-                  void addFiles(Array.from(e.clipboardData.files));
-                }
-              }}
-            />
-            <div className={styles.composerActions}>
-              <input
-                ref={fileInput}
-                type="file"
-                hidden
-                multiple
-                accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp"
-                onChange={(e) => {
-                  void addFiles(Array.from(e.target.files || []));
-                  e.target.value = "";
+            {!composerExpanded && (
+              <button
+                className={styles.openComposer}
+                onClick={() => {
+                  setComposerOpen(true);
+                  requestAnimationFrame(() => composerInput.current?.focus());
+                }}
+              >
+                <MessageSquare size={15} />
+                向助手提出修改，或补充调优要求…
+              </button>
+            )}
+            <div className={styles.inputBox} data-collapsed={!composerExpanded}>
+              <Textarea
+                ref={composerInput}
+                aria-label="构建需求"
+                hidden={!composerExpanded}
+                rows={2}
+                placeholder="描述需求、修改意见，或拖入文件…"
+                value={text}
+                disabled={busy}
+                onChange={(e) => setText(e.target.value)}
+                onPaste={(e) => {
+                  if (e.clipboardData.files.length) {
+                    e.preventDefault();
+                    void addFiles(Array.from(e.clipboardData.files));
+                  }
                 }}
               />
-              <button
-                aria-label="添加附件"
-                disabled={locked}
-                onClick={() => fileInput.current?.click()}
-              >
-                <Paperclip size={18} />
-              </button>
-              <button
-                className={voice.status !== "off" ? styles.voiceActive : ""}
-                onClick={() =>
-                  voice.status === "off" ? void voice.start() : voice.stop()
-                }
-              >
-                <Mic size={16} />
-                {voice.status === "off"
-                  ? "实时语音"
-                  : voice.status === "connecting"
-                    ? "连接中…"
-                    : "结束语音"}
-              </button>
-              <Button
-                size="sm"
-                disabled={locked || !text.trim()}
-                aria-label="发送构建需求"
-                onClick={() =>
-                  action(async () => {
-                    result(
-                      await instruct({
-                        path: { session_id: session },
-                        body: {
-                          text: text.trim(),
-                          candidate_id: candidateId || null,
-                          asset_ids: selectedAssets,
-                          idempotency_key: crypto.randomUUID(),
-                        },
-                      }),
-                    );
-                    setText("");
-                  })
-                }
-              >
-                {busy ? (
-                  <Loader2 size={17} className="animate-spin" />
-                ) : (
-                  <ArrowUp size={17} />
-                )}
-              </Button>
+              <div className={styles.composerActions}>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  hidden
+                  multiple
+                  accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp"
+                  onChange={(e) => {
+                    void addFiles(Array.from(e.target.files || []));
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  aria-label="添加附件"
+                  disabled={locked}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <Paperclip size={18} />
+                </button>
+                <button
+                  className={voice.status !== "off" ? styles.voiceActive : ""}
+                  onClick={() =>
+                    voice.status === "off" ? void voice.start() : voice.stop()
+                  }
+                >
+                  <Mic size={16} />
+                  {voice.status === "off"
+                    ? "实时语音"
+                    : voice.status === "connecting"
+                      ? "连接中…"
+                      : "结束语音"}
+                </button>
+                <Button
+                  size="sm"
+                  disabled={locked || !text.trim()}
+                  aria-label="发送构建需求"
+                  onClick={() =>
+                    action(async () => {
+                      result(
+                        await instruct({
+                          path: { session_id: session },
+                          body: {
+                            text: text.trim(),
+                            candidate_id: candidateId || null,
+                            asset_ids: selectedAssets,
+                            idempotency_key: crypto.randomUUID(),
+                          },
+                        }),
+                      );
+                      setText("");
+                    })
+                  }
+                >
+                  {busy ? (
+                    <Loader2 size={17} className="animate-spin" />
+                  ) : (
+                    <ArrowUp size={17} />
+                  )}
+                </Button>
+              </div>
             </div>
-            <small className={styles.composerHint}>
-              {voice.status === "connected"
-                ? voice.contextSynced
-                  ? `正在使用麦克风 · 已同步 ${selectedAssets.length} 个附件，可直接讨论资料并构建、测试、调优`
-                  : "正在同步附件和版本选择，请稍候…"
-                : "已选附件持续用于文字与语音，可取消勾选 · 单个文件最大 20 MiB"}
-            </small>
+            {voice.status === "connected" && (
+              <small role="status" className={styles.composerHint}>
+                {voice.contextSynced
+                  ? `正在使用麦克风 · 已同步 ${selectedAssets.length} 个附件`
+                  : "正在同步附件和版本选择，请稍候…"}
+              </small>
+            )}
           </div>
         </aside>
       </div>
