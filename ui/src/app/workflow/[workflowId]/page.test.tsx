@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     auth: { user: { id: '1' }, loading: false, redirectToLogin: vi.fn() },
     workflow: vi.fn(),
     versions: vi.fn(),
+    editor: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -22,7 +23,7 @@ vi.mock('@/client/sdk.gen', () => ({
     getWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGet: mocks.versions,
 }));
 vi.mock('./RenderWorkflow', () => ({
-    default: (props: Record<string, unknown>) => <pre data-testid="workflow">{JSON.stringify(props)}</pre>,
+    default: (props: Record<string, unknown>) => { mocks.editor(props); return <pre data-testid="workflow">{JSON.stringify(props)}</pre>; },
 }));
 
 const version = (number: number) => ({
@@ -127,4 +128,21 @@ describe('workflow version links', () => {
         await act(async () => { resolveOld({ data: [version(3)] }); });
         expect(editorProps().initialSelectedVersion.id).toBe(101);
     });
+});
+
+it('refetches the entire draft after candidate adoption without losing the session URL', async () => {
+    mocks.query = 'workbench=1&session=existing';
+    render(<WorkflowDetailPage />);
+    await screen.findByTestId('workflow');
+    mocks.workflow.mockResolvedValue({ data: {
+        id: 12, name: 'Adopted agent', workflow_definition: {nodes: [{id: 'new'}], edges: []},
+        workflow_configurations: {max_call_duration: 120}, template_context_variables: {company: 'New'},
+    } });
+    act(() => mocks.editor.mock.lastCall?.[0].onDraftAdopted());
+    await waitFor(() => expect(editorProps().initialWorkflowName).toBe('Adopted agent'));
+    expect(editorProps().initialFlow.nodes).toEqual([{id: 'new'}]);
+    expect(editorProps().initialWorkflowConfigurations).toEqual({max_call_duration: 120});
+    expect(editorProps().initialTemplateContextVariables).toEqual({company: 'New'});
+    expect(mocks.workflow).toHaveBeenCalledTimes(2);
+    expect(mocks.versions).not.toHaveBeenCalled();
 });

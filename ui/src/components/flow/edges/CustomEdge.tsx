@@ -153,7 +153,7 @@ export default function CustomEdge(props: CustomEdgeProps) {
     const { id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, style, selected } = props;
 
     const { getEdges, setNodes } = useReactFlow<FlowNode, FlowEdge>();
-    const { saveWorkflow } = useWorkflow();
+    const { saveWorkflow, readOnly } = useWorkflow();
     const updateEdge = useWorkflowStore((state) => state.updateEdge);
     const deleteEdge = useWorkflowStore((state) => state.deleteEdge);
     const [open, setOpen] = useState(false);
@@ -252,14 +252,15 @@ export default function CustomEdge(props: CustomEdgeProps) {
     }, [selected, isHovered, source, target, setNodes]);
 
     const handleSaveEdgeData = useCallback(async (updatedData: FlowEdgeData) => {
+        if (readOnly) return;
         // Use the workflow store's updateEdge method to properly track history
         updateEdge(id, { data: updatedData });
         await saveWorkflow();
-    }, [id, updateEdge, saveWorkflow]);
+    }, [id, updateEdge, saveWorkflow, readOnly]);
 
     const handleDeleteEdge = useCallback(() => {
-        deleteEdge(id);
-    }, [id, deleteEdge]);
+        if (!readOnly) deleteEdge(id);
+    }, [id, deleteEdge, readOnly]);
 
     return (
         <>

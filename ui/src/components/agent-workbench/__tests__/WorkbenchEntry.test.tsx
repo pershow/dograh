@@ -40,7 +40,7 @@ describe("return to the Agent's workbench", () => {
   it("opens the existing workflow from the list without bubbling to Edit", async () => {
     render(<WorkflowTable workflows={workflows} showArchived={false} />);
     fireEvent.click(await screen.findByRole("button", { name: "在工作台中继续 正在构建的 Agent" }));
-    expect(mocks.push.mock.calls).toEqual([["/workflow/workbench?workflowId=3"]]);
+    expect(mocks.push.mock.calls).toEqual([["/workflow/3?workbench=1"]]);
     expect(mocks.capabilities).toHaveBeenCalledOnce();
   });
 
@@ -64,7 +64,8 @@ describe("return to the Agent's workbench", () => {
     expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
   });
 
-  it("exposes the editor entry despite graph errors and keeps the unsaved-change guard", async () => {
+  it("opens the panel in place despite graph errors, preserving unsaved edits", async () => {
+    const openWorkbench = vi.fn();
     mocks.confirmNavigate.mockImplementation(() => {});
     render(<WorkflowEditorHeader
       workflowId={3}
@@ -77,6 +78,7 @@ describe("return to the Agent's workbench", () => {
       onPhoneCallClick={vi.fn()}
       onTestAgentClick={vi.fn()}
       onHistoryClick={vi.fn()}
+      onWorkbenchClick={openWorkbench}
       isViewingHistoricalVersion={false}
       onBackToDraft={vi.fn()}
       hasDraft
@@ -84,9 +86,8 @@ describe("return to the Agent's workbench", () => {
       renameWorkflow={vi.fn()}
     />);
     fireEvent.click(await screen.findByRole("button", { name: "工作台" }));
-    expect(mocks.confirmNavigate).toHaveBeenCalledOnce();
+    expect(openWorkbench).toHaveBeenCalledOnce();
+    expect(mocks.confirmNavigate).not.toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
-    mocks.confirmNavigate.mock.calls[0][0]();
-    expect(mocks.push).toHaveBeenCalledWith("/workflow/workbench?workflowId=3");
   });
 });

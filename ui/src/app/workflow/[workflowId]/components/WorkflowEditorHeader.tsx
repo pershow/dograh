@@ -44,6 +44,9 @@ interface WorkflowEditorHeaderProps {
     onPhoneCallClick: () => void;
     onTestAgentClick: () => void;
     onHistoryClick: () => void;
+    onWorkbenchClick?: () => void;
+    workbenchOpen?: boolean;
+    isCandidatePreview?: boolean;
     activeVersionLabel?: string;
     isViewingHistoricalVersion: boolean;
     onBackToDraft: () => void;
@@ -63,6 +66,9 @@ export const WorkflowEditorHeader = ({
     onPhoneCallClick,
     onTestAgentClick,
     onHistoryClick,
+    onWorkbenchClick,
+    workbenchOpen = false,
+    isCandidatePreview = false,
     activeVersionLabel,
     isViewingHistoricalVersion,
     onBackToDraft,
@@ -95,7 +101,7 @@ export const WorkflowEditorHeader = ({
     const renameButtonRef = useRef<HTMLButtonElement>(null);
 
     const hasValidationErrors = workflowValidationErrors.length > 0;
-    const isCallDisabled = isDirty || hasValidationErrors || savingSettings;
+    const isCallDisabled = isCandidatePreview || isDirty || hasValidationErrors || savingSettings;
 
     const handleSave = async () => {
         setSavingWorkflow(true);
@@ -273,7 +279,7 @@ export const WorkflowEditorHeader = ({
                                 </span>
                                 <span className="hidden md:inline">{workflowName}</span>
                             </h1>
-                            {!isViewingHistoricalVersion && (
+                            {!isViewingHistoricalVersion && !isCandidatePreview && (
                                 <button
                                     ref={renameButtonRef}
                                     type="button"
@@ -317,13 +323,13 @@ export const WorkflowEditorHeader = ({
                     className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#3a3a3a] hover:bg-[#2a2a2a] transition-colors cursor-pointer"
                 >
                     <History className="w-4 h-4 text-gray-400" />
-                    {activeVersionLabel && !isViewingHistoricalVersion && (
+                    {activeVersionLabel && !isViewingHistoricalVersion && !isCandidatePreview && (
                         <span className="text-sm text-gray-300">{activeVersionLabel}</span>
                     )}
                 </button>
 
                 {/* Unsaved changes indicator (hidden when viewing history) */}
-                {isDirty && !isViewingHistoricalVersion && (
+                {isDirty && !isViewingHistoricalVersion && !isCandidatePreview && (
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-yellow-500/30 bg-yellow-500/10">
                         <div className="w-2 h-2 rounded-full bg-yellow-500" />
                         <span className="text-sm text-yellow-500">Unsaved changes</span>
@@ -377,7 +383,7 @@ export const WorkflowEditorHeader = ({
                 )}
 
                 {/* Publish button (only when on draft with no unsaved changes) */}
-                {!isViewingHistoricalVersion && hasDraft && (
+                {!isViewingHistoricalVersion && !isCandidatePreview && hasDraft && (
                     <PublishWorkflowPopover
                         key={workflowId}
                         workflowId={workflowId}
@@ -386,7 +392,7 @@ export const WorkflowEditorHeader = ({
                     />
                 )}
 
-                {!isViewingHistoricalVersion && (
+                {!isViewingHistoricalVersion && !isCandidatePreview && (
                     <Button
                         variant="outline"
                         className="flex items-center gap-2 bg-transparent border-[#3a3a3a] hover:bg-[#2a2a2a] text-white"
@@ -403,7 +409,8 @@ export const WorkflowEditorHeader = ({
                         variant="outline"
                         className="flex items-center gap-2 bg-transparent border-teal-700 hover:bg-teal-950 text-teal-200"
                         title="恢复此 Agent 的构建会话，继续查看任务、仿真测试和调优"
-                        onClick={() => confirmNavigate(() => router.push(`/workflow/workbench?workflowId=${workflowId}`))}
+                        aria-pressed={workbenchOpen}
+                        onClick={onWorkbenchClick ?? (() => confirmNavigate(() => router.push(`/workflow/${workflowId}?workbench=1`)))}
                     >
                         <Sparkles className="w-4 h-4" />
                         工作台
@@ -420,7 +427,7 @@ export const WorkflowEditorHeader = ({
                 </Button>
 
                 {/* Save button (only shown when editing the draft) */}
-                {!isViewingHistoricalVersion && (
+                {!isViewingHistoricalVersion && !isCandidatePreview && (
                     <Button
                         onClick={handleSave}
                         disabled={!isDirty || savingWorkflow}

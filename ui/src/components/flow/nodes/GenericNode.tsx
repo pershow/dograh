@@ -491,7 +491,7 @@ export const GenericNode = memo(({ data, selected, id, type }: GenericNodeProps)
         id,
         additionalData,
     });
-    const { saveWorkflow, tools, documents, recordings } = useWorkflow();
+    const { saveWorkflow, tools, documents, recordings, readOnly } = useWorkflow();
     const { bySpecName } = useNodeSpecs();
     const { config: appConfig } = useAppConfig();
     const spec = bySpecName.get(type);
@@ -656,7 +656,7 @@ export const GenericNode = memo(({ data, selected, id, type }: GenericNodeProps)
                 )}
             </NodeContent>
 
-            <NodeToolbar isVisible={selected} position={Position.Right}>
+            <NodeToolbar isVisible={selected && !readOnly} position={Position.Right}>
                 <div className="flex flex-col gap-1">
                     <Button onClick={() => setOpen(true)} variant="outline" size="icon">
                         <Edit />

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 import type { WorkflowVersionResponse } from '@/client/types.gen';
+import type { Candidate } from "@/components/agent-workbench/types";
 
 import RenderWorkflow from './RenderWorkflow';
 
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     versions: vi.fn(),
     updateMetadata: vi.fn(),
     save: vi.fn(),
+    workbench: vi.fn(),
+    flow: vi.fn(),
     state: {
         rfInstance: { current: null },
         nodes: [], edges: [], workflowValidationErrors: [],
@@ -36,7 +39,22 @@ vi.mock('@/client/sdk.gen', () => ({
     updateWorkflowVersionMetadataApiV1WorkflowWorkflowIdVersionsDefinitionIdMetadataPatch: mocks.updateMetadata,
 }));
 vi.mock('./hooks/useWorkflowState', () => ({ useWorkflowState: () => ({ ...mocks.state, saveWorkflow: mocks.save }) }));
-vi.mock('@/components/flow/renderer', () => ({ useNodeSpecs: () => ({ specs: [] }) }));
+vi.mock('@/components/agent-workbench/AgentWorkbench', () => ({ AgentWorkbench: (props: {
+    onPreviewChange: (candidate?: Candidate) => void; onClose: () => void;
+    onAdopted: () => void; adoptDisabledReason?: string;
+}) => {
+    mocks.workbench(props);
+    return <div>
+        <button onClick={() => props.onPreviewChange({id: 'candidate-1', name: 'Candidate', summary: '', code: '', fingerprint: 'abc', snapshot: {
+            name: 'Candidate', workflow_configurations: {}, template_context_variables: {},
+            workflow_json: {nodes: [{id: 'c1', type: 'agentNode', position: {x: 0, y: 0}, data: {name: 'Candidate node'}}], edges: []},
+        }})}>Preview candidate</button>
+        <button onClick={() => props.onPreviewChange(undefined)}>Current draft</button>
+        <button onClick={props.onClose}>Close workbench</button>
+        <button disabled={!!props.adoptDisabledReason} onClick={props.onAdopted}>Apply candidate</button>
+    </div>;
+} }));
+vi.mock('@/components/flow/renderer' , () => ({ useNodeSpecs: () => ({ specs: [] }) }));
 vi.mock('@/context/OnboardingContext', () => ({ useOnboarding: () => ({ hasCompletedAction: () => true }) }));
 vi.mock('@/components/lead-forms/HireExpertNudge', () => ({ HireExpertNudge: () => null }));
 vi.mock('@/components/flow/AddNodePanel', () => ({ default: () => null }));
@@ -57,7 +75,7 @@ vi.mock('@xyflow/react', () => ({
     Background: () => null,
     BackgroundVariant: { Dots: 'dots' },
     Panel: ({ children }: { children: ReactNode }) => children,
-    ReactFlow: ({ nodesDraggable, children }: { nodesDraggable: boolean; children: ReactNode }) => <div data-testid="canvas" data-editable={nodesDraggable}>{children}</div>,
+    ReactFlow: (props: { nodesDraggable: boolean; children: ReactNode }) => { mocks.flow(props); return <div data-testid="canvas" data-editable={props.nodesDraggable}>{props.children}</div>; },
 }));
 vi.mock('./components/WorkflowEditorHeader', () => ({
     WorkflowEditorHeader: ({ activeVersionLabel, onHistoryClick, onBackToDraft, saveWorkflow }: {
@@ -80,6 +98,7 @@ const version = (number: number, status: string): WorkflowVersionResponse => ({
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mocks.state.isDirty = false;
     mocks.query = 'version=3&source=campaign';
     mocks.versions.mockResolvedValue({ data: [version(21, 'draft'), version(20, 'published')] });
 });
@@ -149,4 +168,43 @@ it.each([
     fireEvent.click(screen.getByRole('button', { name: `View: ${view}` }));
 
     expect(mocks.replace).toHaveBeenCalledWith(next, { scroll: false });
+});
+
+it('previews candidates on the original canvas without changing the draft, then restores editing', () => {
+    mocks.query = 'workbench=1&session=existing';
+    render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id: '1'}} />);
+    expect(screen.queryByTestId('tester')).toBeNull();
+    expect(mocks.workbench.mock.lastCall?.[0].sessionId).toBe('existing');
+    fireEvent.click(screen.getByText('Preview candidate'));
+    expect(screen.getAllByTestId('canvas')).toHaveLength(1);
+    expect(screen.getByTestId('canvas').getAttribute('data-editable')).toBe('false');
+    const flow = mocks.flow.mock.lastCall?.[0];
+    expect(flow.nodes[0].type).toBe('agentNode');
+    expect(flow.nodeTypes.agentNode).toBeDefined();
+    expect(flow.edgeTypes.custom).toBeDefined();
+    expect(flow.deleteKeyCode).toBeNull();
+    expect(flow.onConnect).toBeUndefined();
+    fireEvent.click(screen.getByText('Save'));
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(mocks.state.setNodes).not.toHaveBeenCalled();
+    expect(mocks.state.setEdges).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Current draft'));
+    expect(screen.getByTestId('canvas').getAttribute('data-editable')).toBe('true');
+    expect(mocks.flow.mock.lastCall?.[0].nodes).toEqual(mocks.state.nodes);
+    fireEvent.click(screen.getByText('Close workbench'));
+    expect(mocks.replace).toHaveBeenCalledWith('/workflow/12?session=existing', {scroll: false});
+});
+
+it('blocks adoption over unsaved draft changes, and reloads the editor after adoption', () => {
+    mocks.query = 'workbench=1';
+    mocks.state.isDirty = true;
+    const onDraftAdopted = vi.fn();
+    const view = render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id:'1'}} onDraftAdopted={onDraftAdopted} />);
+    fireEvent.click(screen.getByText('Apply candidate'));
+    expect(onDraftAdopted).not.toHaveBeenCalled();
+    expect(mocks.workbench.mock.lastCall?.[0].adoptDisabledReason).toContain('未保存');
+    mocks.state.isDirty = false;
+    view.rerender(<RenderWorkflow workflowId={12} initialWorkflowName="Saved Agent" user={{id:'1'}} onDraftAdopted={onDraftAdopted} />);
+    fireEvent.click(screen.getByText('Apply candidate'));
+    expect(onDraftAdopted).toHaveBeenCalledOnce();
 });

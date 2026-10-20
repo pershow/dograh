@@ -201,3 +201,11 @@ npm exec -- vitest run src/app/files/DocumentUpload.test.tsx src/app/files/Docum
 本机忽略 Git 的证据：`run/workbench/content-evidence.json`、`content-probe-final.log`、`content-regression-final.log`、`content-ui-final-tests.log`、`content-files-completed.png`、`content-transcription-ready.png`、`content-recordings-completed.png`。记录用于开发验收，不能作为共享凭据或生产配置。
 
 本轮不含扫描 PDF OCR、旧 `.doc`、其他供应商文件转写适配、生产吞吐压测或真实业务知识质量评测。文件解析上限与人工文本回退见设计 9.8 节。前一节语音构建/测试/调优的真实闭环结果仍有效，本轮运行其回归测试，没有重新执行整段语音构建流程。
+
+## 2026-10-20：复用原画布与右侧工作台
+
+UI 3016 现在在原 `/workflow/{id}` 页面右侧打开工作台，复用原节点、连线、缩放和整理控件。构建、文本仿真、调优切换只改变右侧内容，附件和实时语音入口保留。旧工作台链接和新建入口均解析会话后进入此页面。
+
+在浏览器中验证了已有 Agent 的候选预览、当前草稿切换、关闭后恢复原测试面板、再次打开同一会话及恢复 3 个附件。候选预览未应用到用户草稿。API 8000 / UI 3000 未变更，API 8016 及 Worker 本轮无需重启。
+
+前端相关测试 **50 项通过**，覆盖旧链接跳转、原画布复用、候选异步响应竞态、会话与 Agent 匹配、未保存修改保护、应用候选后完整刷新、已采用版本历史重放、附件与语音上下文，以及原编辑器设置和测试面板回归。TypeScript 与变更文件的 ESLint 检查通过。本轮是界面整合验收，没有重新调用模型执行构建或语音通话；已有任务的失败状态保留。

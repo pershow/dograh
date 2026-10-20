@@ -2,7 +2,7 @@
 
 import { useParams, useSearchParams } from 'next/navigation';
 import posthog from 'posthog-js';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import RenderWorkflow from '@/app/workflow/[workflowId]/RenderWorkflow';
 import { getWorkflowApiV1WorkflowFetchWorkflowIdGet, getWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGet } from '@/client/sdk.gen';
@@ -21,7 +21,9 @@ export default function WorkflowDetailPage() {
     const searchParams = useSearchParams();
     const workflowId = Number(params.workflowId);
     const version = searchParams.get('version');
-    const requestKey = `${workflowId}:${version ?? 'current'}`;
+    const [draftRevision, setDraftRevision] = useState(0);
+    const reloadDraft = useCallback(() => setDraftRevision(value => value + 1), []);
+    const requestKey = `${workflowId}:${version ?? 'current'}:${draftRevision}`;
     const [loaded, setLoaded] = useState<{
         key: string;
         workflow: WorkflowResponse;
@@ -127,6 +129,7 @@ export default function WorkflowDetailPage() {
         return stableUser ? (
             <RenderWorkflow
                 key={requestKey}
+                onDraftAdopted={reloadDraft}
                 initialWorkflowName={workflow.name}
                 workflowId={workflow.id}
                 workflowUuid={workflow.workflow_uuid ?? undefined}

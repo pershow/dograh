@@ -188,7 +188,7 @@ export function WorkflowTable({
                                                 size="sm"
                                                 aria-label={`在工作台中继续 ${workflow.name}`}
                                                 title="恢复构建会话，查看正在执行的任务和已有结果"
-                                                onClick={() => router.push(`/workflow/workbench?workflowId=${workflow.id}`)}
+                                                onClick={() => router.push(`/workflow/${workflow.id}?workbench=1`)}
                                                 className="flex items-center gap-2"
                                             >
                                                 <Sparkles size={16} />

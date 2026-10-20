@@ -1,6 +1,8 @@
 import '@xyflow/react/dist/style.css';
 
 import {
+    applyEdgeChanges,
+    applyNodeChanges,
     Background,
     BackgroundVariant,
     Panel,
@@ -13,6 +15,8 @@ import { toast } from 'sonner';
 
 import { createWorkflowDraftApiV1WorkflowWorkflowIdCreateDraftPost, getWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGet, listDocumentsApiV1KnowledgeBaseDocumentsGet, listRecordingsApiV1WorkflowRecordingsGet, listToolsApiV1ToolsGet } from '@/client';
 import type { DocumentResponseSchema, RecordingResponseSchema, ToolResponse, WorkflowVersionResponse } from '@/client/types.gen';
+import { AgentWorkbench } from "@/components/agent-workbench/AgentWorkbench";
+import type { Candidate, WorkbenchSession } from "@/components/agent-workbench/types";
 import { useNodeSpecs } from "@/components/flow/renderer";
 import { FlowEdge, FlowNode, NodeType } from "@/components/flow/types";
 import { HireExpertNudge } from "@/components/lead-forms/HireExpertNudge";
@@ -45,6 +49,7 @@ const edgeTypes = {
 const VERSIONS_PAGE_SIZE = 10;
 
 interface RenderWorkflowProps {
+    onDraftAdopted?: () => void;
     initialWorkflowName: string;
     workflowId: number;
     workflowUuid?: string;
@@ -79,6 +84,7 @@ function RenderWorkflow(props: RenderWorkflowProps) {
 }
 
 function WorkflowEditor({
+    onDraftAdopted,
     initialWorkflowName,
     workflowId,
     workflowUuid,
@@ -94,7 +100,30 @@ function WorkflowEditor({
 }: RenderWorkflowProps) {
     const router = useRouter();
     const searchParams = useSearchParams();
-    const { confirmNavigate } = useUnsavedChangesContext();
+    const { confirmNavigate, hasDirtyChanges } = useUnsavedChangesContext();
+    const workbenchOpen = searchParams.get('workbench') === '1';
+    const [candidatePreview, setCandidatePreview] = useState<Candidate>();
+    const [previewNodes, setPreviewNodes] = useState<FlowNode[]>([]);
+    const [previewEdges, setPreviewEdges] = useState<FlowEdge[]>([]);
+    const isCandidatePreview = workbenchOpen && !!candidatePreview;
+    const handlePreviewChange = useCallback((candidate: Candidate | undefined) => {
+        setCandidatePreview(candidate);
+        setPreviewNodes(structuredClone(candidate?.snapshot?.workflow_json.nodes ?? []) as FlowNode[]);
+        setPreviewEdges(structuredClone(candidate?.snapshot?.workflow_json.edges ?? []) as FlowEdge[]);
+    }, []);
+    const setWorkbenchOpen = useCallback((open: boolean) => {
+        const query = new URLSearchParams(searchParams.toString());
+        if (open) query.set('workbench', '1');
+        else query.delete('workbench');
+        router.replace(`/workflow/${workflowId}?${query.toString()}`, { scroll: false });
+        if (!open) handlePreviewChange(undefined);
+    }, [router, searchParams, workflowId, handlePreviewChange]);
+    const handleSessionReady = useCallback((session: WorkbenchSession) => {
+        if (searchParams.get('session') === session.id) return;
+        const query = new URLSearchParams(searchParams.toString());
+        query.set('session', session.id);
+        router.replace(`/workflow/${workflowId}?${query.toString()}`, { scroll: false });
+    }, [router, searchParams, workflowId]);
     const { specs } = useNodeSpecs();
     const { hasCompletedAction } = useOnboarding();
     const [isPhoneCallDialogOpen, setIsPhoneCallDialogOpen] = useState(false);
@@ -169,6 +198,7 @@ function WorkflowEditor({
         onNodesChange,
         onDelete,
     } = useWorkflowState({
+        readOnly: isCandidatePreview,
         initialWorkflowName,
         workflowId,
         initialFlow,
@@ -187,12 +217,13 @@ function WorkflowEditor({
             ...Object.values(NodeType),
             ...specs.map((spec) => spec.name),
             ...nodes.map((node) => node.type),
+            ...previewNodes.map((node) => node.type),
             ...(initialFlow?.nodes ?? []).map((node) => node.type),
         ]);
         return Object.fromEntries(
             Array.from(typeNames).map((typeName) => [typeName, GenericNode]),
         );
-    }, [initialFlow?.nodes, nodes, specs]);
+    }, [initialFlow?.nodes, nodes, previewNodes, specs]);
 
     // Derive hasDraft from the current version status
     const hasDraft = currentVersionStatus === "draft";
@@ -361,6 +392,8 @@ function WorkflowEditor({
         return true;
     }, [activeVersionId, versions, hasDraft, initialSelectedVersion]);
 
+    const canvasReadOnly = isViewingHistoricalVersion || isCandidatePreview;
+
     useEffect(() => {
         if (!isViewingHistoricalVersion) {
             return;
@@ -459,12 +492,13 @@ function WorkflowEditor({
     }, [isDirty, isViewingHistoricalVersion, settingsSaving, workflowValidationErrors.length]);
 
     const handleOpenTester = useCallback(() => {
+        setWorkbenchOpen(false);
         if (window.innerWidth >= 1280) {
             setIsTesterRailOpen(true);
             return;
         }
         setIsTesterSheetOpen(true);
-    }, []);
+    }, [setWorkbenchOpen]);
 
     const shouldShowWebCallOnboarding = useMemo(() => {
         return (initialTotalRuns ?? 0) === 0 && !hasCompletedAction('web_call_started');
@@ -481,13 +515,13 @@ function WorkflowEditor({
     }, []);
 
     useEffect(() => {
-        if (hasAutoOpenedTester.current || !openTesterOnLoad || !shouldShowWebCallOnboarding || testerDisabledReason) {
+        if (workbenchOpen || hasAutoOpenedTester.current || !openTesterOnLoad || !shouldShowWebCallOnboarding || testerDisabledReason) {
             return;
         }
 
         handleOpenTester();
         hasAutoOpenedTester.current = true;
-    }, [handleOpenTester, openTesterOnLoad, shouldShowWebCallOnboarding, testerDisabledReason]);
+    }, [handleOpenTester, openTesterOnLoad, shouldShowWebCallOnboarding, testerDisabledReason, workbenchOpen]);
 
     // Fetch documents, tools, and recordings once for the entire workflow
     useEffect(() => {
@@ -534,8 +568,8 @@ function WorkflowEditor({
 
     const displayNodes = useMemo(
         () =>
-            nodes.map((node) =>
-                node.id === activeRuntimeNodeId
+            (isCandidatePreview ? previewNodes : nodes).map((node) =>
+                !isCandidatePreview && node.id === activeRuntimeNodeId
                     ? {
                           ...node,
                           data: {
@@ -545,7 +579,7 @@ function WorkflowEditor({
                       }
                     : node,
             ),
-        [activeRuntimeNodeId, nodes],
+        [activeRuntimeNodeId, nodes, previewNodes, isCandidatePreview],
     );
 
     const handleRuntimeNodeTransition = useCallback(
@@ -577,10 +611,10 @@ function WorkflowEditor({
     // Cmd+S, node edit dialogs, stale doc/tool cleanup, etc.
     // Uses the save response to immediately update version label and hasDraft.
     const guardedSaveWorkflow = useCallback(async (updateWorkflowDefinition?: boolean) => {
-        if (isViewingHistoricalVersion) return;
+        if (canvasReadOnly) return;
         const result = await saveWorkflow(updateWorkflowDefinition);
         if (result) await applySavedVersion(result);
-    }, [saveWorkflow, isViewingHistoricalVersion, applySavedVersion]);
+    }, [saveWorkflow, canvasReadOnly, applySavedVersion]);
 
     const renameWorkflow = useCallback(async (newName: string) => {
         // The header doesn't render the pencil until the page has mounted with
@@ -611,25 +645,25 @@ function WorkflowEditor({
         tools,
         updateTool,
         recordings,
-        readOnly: isViewingHistoricalVersion,
+        readOnly: canvasReadOnly,
     }), [
         guardedSaveWorkflow,
         documents,
         tools,
         updateTool,
         recordings,
-        isViewingHistoricalVersion,
+        canvasReadOnly,
     ]);
 
     return (
         <WorkflowProvider value={workflowContextValue}>
-            <div className="flex flex-col h-screen min-w-fit">
+            <div className="flex flex-col h-full min-h-0 min-w-0">
                 <HireExpertNudge workflowId={workflowId} />
                 {/* New Workflow Editor Header */}
                 <WorkflowEditorHeader
-                    workflowName={workflowName}
+                    workflowName={candidatePreview && isCandidatePreview ? candidatePreview.name : workflowName}
                     isDirty={isDirty}
-                    workflowValidationErrors={workflowValidationErrors}
+                    workflowValidationErrors={isCandidatePreview ? [] : workflowValidationErrors}
                     rfInstance={rfInstance}
                     workflowId={workflowId}
                     workflowUuid={workflowUuid}
@@ -637,6 +671,12 @@ function WorkflowEditor({
                     user={user}
                     onPhoneCallClick={() => setIsPhoneCallDialogOpen(true)}
                     onTestAgentClick={handleOpenTester}
+                    onWorkbenchClick={() => {
+                        setIsTesterSheetOpen(false);
+                        setWorkbenchOpen(!workbenchOpen);
+                    }}
+                    workbenchOpen={workbenchOpen}
+                    isCandidatePreview={isCandidatePreview}
                     onHistoryClick={handleOpenVersionPanel}
                     activeVersionLabel={activeVersionLabel}
                     isViewingHistoricalVersion={isViewingHistoricalVersion}
@@ -649,19 +689,19 @@ function WorkflowEditor({
 
                 {/* Workflow Canvas */}
                 <div className="flex-1 min-h-0">
-                    <div className="flex h-full min-w-0">
+                    <div className="relative flex h-full min-w-0">
                         <div className="relative min-w-0 flex-1">
                             <ReactFlow
-                                key={activeVersionId ?? 'current'}
+                                key={isCandidatePreview ? candidatePreview.id : activeVersionId ?? 'current'}
                                 nodes={displayNodes}
-                                edges={edges}
-                                onNodesChange={onNodesChange}
-                                onEdgesChange={onEdgesChange}
-                                onDelete={onDelete}
+                                edges={isCandidatePreview ? previewEdges : edges}
+                                onNodesChange={isCandidatePreview ? changes => setPreviewNodes(current => applyNodeChanges(changes, current)) : onNodesChange}
+                                onEdgesChange={isCandidatePreview ? changes => setPreviewEdges(current => applyEdgeChanges(changes, current)) : onEdgesChange}
+                                onDelete={canvasReadOnly ? undefined : onDelete}
                                 nodeTypes={nodeTypes}
                                 edgeTypes={edgeTypes}
-                                onConnect={isViewingHistoricalVersion ? undefined : onConnect}
-                                minZoom={0.2}
+                                onConnect={canvasReadOnly ? undefined : onConnect}
+                                minZoom={0.05}
                                 onInit={(instance) => {
                                     rfInstance.current = instance;
                                     // Center the workflow on load
@@ -671,11 +711,11 @@ function WorkflowEditor({
                                 }}
                                 defaultEdgeOptions={defaultEdgeOptions}
                                 defaultViewport={initialFlow?.viewport}
-                                nodesDraggable={!isViewingHistoricalVersion}
-                                nodesConnectable={!isViewingHistoricalVersion}
-                                edgesReconnectable={!isViewingHistoricalVersion}
+                                nodesDraggable={!canvasReadOnly}
+                                nodesConnectable={!canvasReadOnly}
+                                edgesReconnectable={!canvasReadOnly}
                                 zoomOnDoubleClick={false}
-                                deleteKeyCode={isViewingHistoricalVersion ? null : "Backspace"}
+                                deleteKeyCode={canvasReadOnly ? null : "Backspace"}
                             >
                                 <Background
                                     variant={BackgroundVariant.Dots}
@@ -685,7 +725,7 @@ function WorkflowEditor({
                                 />
 
                                 {/* Top-right controls (hidden when viewing history) */}
-                                {!isViewingHistoricalVersion && (
+                                {!canvasReadOnly && (
                                     <Panel position="top-right">
                                         <TooltipProvider>
                                             <div className="flex flex-col gap-2">
@@ -710,6 +750,12 @@ function WorkflowEditor({
                                 )}
                             </ReactFlow>
 
+                            {isCandidatePreview && (
+                                <div role="status" className="absolute top-4 left-4 right-4 z-10 rounded-lg border border-border bg-background/95 px-4 py-3 text-sm shadow-sm">
+                                    候选版本只读预览 · 应用到草稿后可编辑
+                                </div>
+                            )}
+
                             {/* Bottom-left controls - horizontal layout with custom buttons */}
                             <div className="absolute bottom-12 left-8 z-10 flex gap-2">
                                 <TooltipProvider>
@@ -718,6 +764,7 @@ function WorkflowEditor({
                                             <Button
                                                 variant="outline"
                                                 size="icon"
+                                                aria-label="Zoom in"
                                                 onClick={() => rfInstance.current?.zoomIn()}
                                                 className="bg-white shadow-sm hover:shadow-md h-8 w-8"
                                             >
@@ -734,6 +781,7 @@ function WorkflowEditor({
                                             <Button
                                                 variant="outline"
                                                 size="icon"
+                                                aria-label="Zoom out"
                                                 onClick={() => rfInstance.current?.zoomOut()}
                                                 className="bg-white shadow-sm hover:shadow-md h-8 w-8"
                                             >
@@ -750,6 +798,7 @@ function WorkflowEditor({
                                             <Button
                                                 variant="outline"
                                                 size="icon"
+                                                aria-label="Fit view"
                                                 onClick={() => rfInstance.current?.fitView()}
                                                 className="bg-white shadow-sm hover:shadow-md h-8 w-8"
                                             >
@@ -767,9 +816,14 @@ function WorkflowEditor({
                                                 <Button
                                                     variant="outline"
                                                     size="icon"
+                                                    aria-label="Tidy up"
                                                     onClick={() => {
-                                                        setNodes(layoutNodes(nodes, edges, 'TB', rfInstance));
-                                                        setIsDirty(true);
+                                                        if (isCandidatePreview) {
+                                                            setPreviewNodes(layoutNodes(previewNodes, previewEdges, 'TB', rfInstance));
+                                                        } else {
+                                                            setNodes(layoutNodes(nodes, edges, 'TB', rfInstance));
+                                                            setIsDirty(true);
+                                                        }
                                                     }}
                                                     className="bg-white shadow-sm hover:shadow-md h-8 w-8"
                                                 >
@@ -786,6 +840,7 @@ function WorkflowEditor({
 
                             {/* View switcher (Canvas / Model / Variables / Settings); the other views cover the canvas */}
                             {!isViewingHistoricalVersion && (
+                                <div className={isCandidatePreview ? "hidden" : undefined}>
                                 <EditorSetup
                                     view={editorView}
                                     onViewChange={setEditorView}
@@ -805,10 +860,27 @@ function WorkflowEditor({
                                     saveTemplateContextVariables={saveTemplateContextVariables}
                                     saveDictionary={saveDictionary}
                                 />
+                                </div>
                             )}
                         </div>
 
-                        {isTesterRailOpen && (
+                        {workbenchOpen && (
+                            <aside aria-label="Agent 工作台" className="absolute inset-y-0 right-0 z-20 h-full w-full border-l border-border bg-background shadow-xl md:static md:w-[440px] md:shrink-0 md:shadow-none 2xl:w-[480px]">
+                                <AgentWorkbench
+                                    key={`${workflowId}:${searchParams.get('session') || 'latest'}`}
+                                    workflowId={workflowId}
+                                    sessionId={searchParams.get('session') || undefined}
+                                    onPreviewChange={handlePreviewChange}
+                                    onSessionReady={handleSessionReady}
+                                    onAdopted={onDraftAdopted}
+                                    onClose={() => setWorkbenchOpen(false)}
+                                    adoptDisabledReason={isDirty || hasDirtyChanges || settingsSaving
+                                        ? "草稿有未保存的修改，请先返回当前草稿保存，再应用候选版本。"
+                                        : isViewingHistoricalVersion ? "请先返回当前草稿，再应用候选版本。" : undefined}
+                                />
+                            </aside>
+                        )}
+                        {!workbenchOpen && isTesterRailOpen && (
                             <aside className="hidden h-full w-[400px] shrink-0 border-l border-border xl:block">
                                 <WorkflowTesterPanel
                                     workflowId={workflowId}
@@ -840,7 +912,7 @@ function WorkflowEditor({
                 </div>
 
                 <AddNodePanel
-                    isOpen={isAddNodePanelOpen}
+                    isOpen={isAddNodePanelOpen && !canvasReadOnly}
                     onNodeSelect={handleNodeSelect}
                     onClose={() => setIsAddNodePanelOpen(false)}
                     nodes={nodes}

@@ -100,6 +100,7 @@ function specAllowInterrupt(
 export type SavedVersion = { versionNumber?: number; versionStatus?: string };
 
 interface UseWorkflowStateProps {
+    readOnly?: boolean;
     /**
      * Called after a settings, variables or dictionary save with the version
      * it landed in: saving a published workflow turns it into a draft.
@@ -122,6 +123,7 @@ interface UseWorkflowStateProps {
 }
 
 export const useWorkflowState = ({
+    readOnly = false,
     initialWorkflowName,
     workflowId,
     initialFlow,
@@ -283,6 +285,7 @@ export const useWorkflowState = ({
     // Set up keyboard shortcuts for undo/redo
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (readOnly) return;
             // Check if we're in an input field
             const target = e.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
@@ -310,7 +313,7 @@ export const useWorkflowState = ({
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, canUndo, canRedo]);
+    }, [undo, redo, canUndo, canRedo, readOnly]);
 
     const handleNodeSelect = useCallback((nodeType: string) => {
         if (!rfInstance.current) return;
@@ -394,7 +397,7 @@ export const useWorkflowState = ({
 
     // Save workflow function. Returns version info from the API response.
     const saveWorkflow = useCallback(async (updateWorkflowDefinition: boolean = true): Promise<SavedVersion | undefined> => {
-        if (!user?.id || !rfInstance.current) return;
+        if (readOnly || !user?.id || !rfInstance.current) return;
         // Read nodes/edges from the Zustand store (synchronously up-to-date)
         // and viewport from the ReactFlow instance to build the flow object.
         // This avoids a race condition where rfInstance.toObject() may return
@@ -485,6 +488,7 @@ export const useWorkflowState = ({
         validateWorkflow,
         applyWorkflowErrors,
         specs,
+        readOnly,
     ]);
 
     // Set up keyboard shortcut for save (Cmd/Ctrl + S)

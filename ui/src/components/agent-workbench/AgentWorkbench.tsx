@@ -1,16 +1,5 @@
 "use client";
-import "@xyflow/react/dist/style.css";
-
 import {
-  Background,
-  Controls,
-  Handle,
-  type NodeProps,
-  Position,
-  ReactFlow,
-} from "@xyflow/react";
-import {
-  ArrowLeft,
   ArrowUp,
   Bot,
   Check,
@@ -19,13 +8,12 @@ import {
   Loader2,
   Mic,
   Paperclip,
-  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
@@ -75,18 +63,6 @@ function result<T>(response: {
   if (!response.data) throw new Error("服务未返回数据");
   return response.data.data as T;
 }
-function PreviewNode({ data }: NodeProps) {
-  return (
-    <div className={styles.node}>
-      <Handle type="target" position={Position.Top} />
-      <div className={styles.nodeType}>{String(data.nodeType)}</div>
-      <strong>{String(data.name || "Node")}</strong>
-      <p>{String(data.prompt || data.greeting || "").slice(0, 180)}</p>
-      <Handle type="source" position={Position.Bottom} />
-    </div>
-  );
-}
-const nodeTypes = { preview: PreviewNode };
 const statusText: Record<string, string> = {
   queued: "排队中",
   running: "进行中",
@@ -101,9 +77,19 @@ const statusText: Record<string, string> = {
 export function AgentWorkbench({
   workflowId,
   sessionId,
+  onPreviewChange,
+  onSessionReady,
+  onAdopted,
+  onClose,
+  adoptDisabledReason,
 }: {
   workflowId?: number;
   sessionId?: string;
+  onPreviewChange?: (candidate: Candidate | undefined) => void;
+  onSessionReady?: (session: WorkbenchSession) => void;
+  onAdopted?: () => void;
+  onClose?: () => void;
+  adoptDisabledReason?: string;
 }) {
   const {
     user,
@@ -113,7 +99,7 @@ export function AgentWorkbench({
   } = useAuth();
   const router = useRouter();
   const [state, setState] = useState<WorkbenchState>();
-  const [session, setSession] = useState<string>(sessionId || "");
+  const [session, setSession] = useState<string>("");
   const [events, setEvents] = useState<WorkbenchEvent[]>([]);
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
@@ -211,9 +197,11 @@ export function AgentWorkbench({
     init.current
       .then((value) => {
         if (disposed) return;
+        if (workflowId && value.workflow_id !== workflowId)
+          throw new Error("此工作台会话不属于当前 Agent。");
         setSession(value.id);
-        if (!sessionId)
-          router.replace(`/workflow/workbench?session=${value.id}`);
+        if (onPreviewChange) onSessionReady?.(value);
+        else router.replace(`/workflow/${value.workflow_id}?workbench=1&session=${value.id}`);
       })
       .catch((error) => {
         if (!disposed) setError(error.message);
@@ -221,7 +209,7 @@ export function AgentWorkbench({
     return () => {
       disposed = true;
     };
-  }, [authLoading, user, workflowId, sessionId, redirectToLogin, router]);
+  }, [authLoading, user, workflowId, sessionId, redirectToLogin, router, onPreviewChange, onSessionReady]);
   useEffect(() => {
     if (authLoading || !user || !session) return;
     void reload();
@@ -277,11 +265,12 @@ export function AgentWorkbench({
       return;
     }
     let disposed = false;
+    setCandidate(undefined);
     getCandidate({ path: { session_id: session, candidate_id: candidateId } })
       .then((r) => {
         if (!disposed) setCandidate(result<Candidate>(r));
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => { if (!disposed) setError(e.message); });
     return () => {
       disposed = true;
     };
@@ -291,11 +280,15 @@ export function AgentWorkbench({
     const completed = events
       .filter(
         (e) =>
-          e.type === "task.completed" && e.sequence > completedCursor.current,
+          ["task.completed", "candidate.adopted"].includes(e.type) && e.sequence > completedCursor.current,
       )
       .at(-1);
     if (!completed) return;
     completedCursor.current = completed.sequence;
+    if (completed.type === "candidate.adopted") {
+      setCandidateId("");
+      return;
+    }
     const output = completed.payload.output as Record<string, unknown>;
     if (typeof output?.candidate_id === "string")
       setCandidateId(output.candidate_id);
@@ -317,29 +310,9 @@ export function AgentWorkbench({
       setBusy(false);
     }
   };
-  const graph =
-    candidate?.snapshot?.workflow_json || state?.target.workflow_json;
-  const nodes = useMemo(
-    () =>
-      (graph?.nodes || []).map((n) => ({
-        ...n,
-        type: "preview",
-        data: { ...n.data, nodeType: n.type },
-        draggable: false,
-      })),
-    [graph],
-  );
-  const edges = useMemo(
-    () =>
-      (graph?.edges || []).map((e) => ({
-        ...e,
-        type: "smoothstep",
-        label: String(
-          (e.data as Record<string, unknown>)?.label || e.label || "",
-        ),
-      })),
-    [graph],
-  );
+  useEffect(() => {
+    onPreviewChange?.(candidate?.id === candidateId ? candidate : undefined);
+  }, [candidate, candidateId, onPreviewChange]);
   const selectedSuite = state?.suites.find((s) => s.id === suiteId);
   const evaluations =
     state?.evaluations.filter(
@@ -411,7 +384,7 @@ export function AgentWorkbench({
       "candidate.adopted",
     ].includes(e.type),
   );
-  if (!state)
+  if (!state || !onPreviewChange)
     return (
       <div className={styles.loading}>
         {error ? (
@@ -422,60 +395,31 @@ export function AgentWorkbench({
             <p>正在准备工作台…</p>
           </>
         )}
+        {onClose && <Button variant="ghost" onClick={onClose}>关闭工作台</Button>}
         <Link href="/workflow">返回 Agents</Link>
       </div>
     );
   return (
     <div className={styles.workbench}>
       <header className={styles.header}>
-        <Link href="/workflow" aria-label="返回 Agents">
-          <ArrowLeft size={20} />
-        </Link>
-        <strong>{candidate?.name || state.target.name}</strong>
-        <span className={styles.pill}>Agent Workbench</span>
-        <div className={styles.headerActions}>
-          <Link href={`/workflow/${state.session.workflow_id}`}>
-            打开原编辑器
-          </Link>
-          <Button
-            disabled={!candidateId || locked}
-            onClick={() =>
-              action(async () => {
-                result(
-                  await adopt({
-                    path: { session_id: session, candidate_id: candidateId },
-                  }),
-                );
-                setNotice("已应用到草稿。可在原编辑器中继续编辑、测试和发布。");
-              })
-            }
-          >
-            <Check size={15} />
-            应用到草稿
-          </Button>
-        </div>
+        <Sparkles size={18} />
+        <strong>Agent 工作台</strong>
+        <Button variant="ghost" size="icon" aria-label="关闭工作台" onClick={onClose}>
+          <X size={18} />
+        </Button>
       </header>
       <div className={styles.toolbar}>
-        <nav>
+        <nav aria-label="工作台功能">
           {[
-            ["canvas", "流程画布"],
+            ["canvas", "构建"],
             ["tests", "文本仿真"],
-            ["tuning", "调优记录"],
+            ["tuning", "调优"],
           ].map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key as typeof tab)}
-              aria-pressed={tab === key}
-            >
+            <button key={key} onClick={() => setTab(key as typeof tab)} aria-pressed={tab === key}>
               {label}
             </button>
           ))}
         </nav>
-        <span className={styles.subtle}>候选版本 · 应用后进入草稿</span>
-        <Link href={`/workflow/${state.session.workflow_id}`}>
-          <Settings2 size={15} />
-          Agent 配置
-        </Link>
       </div>
       {active && (
         <p role="status" className="border-b bg-muted/40 px-6 py-2 text-sm text-muted-foreground">
@@ -483,79 +427,48 @@ export function AgentWorkbench({
           可从 Voice Agents 列表中此 Agent 的「工作台」返回，继续查看进度和结果。
         </p>
       )}
+      <div className={styles.versionbar}>
+        <label>
+          画布版本
+          <select value={candidateId} aria-label="候选版本" onChange={(e) => setCandidateId(e.target.value)}>
+            <option value="">当前草稿</option>
+            {state.candidates.map((c, i) => (
+              <option key={c.id} value={c.id}>{state.candidates.length - i} · {c.name}</option>
+            ))}
+          </select>
+        </label>
+        <Button size="sm" variant="outline" disabled={!candidate || candidate.id !== candidateId || locked || !!adoptDisabledReason}
+          title={adoptDisabledReason}
+          onClick={() => action(async () => {
+            result(await adopt({path: {session_id: session, candidate_id: candidateId}}));
+            setCandidateId("");
+            setCandidate(undefined);
+            onPreviewChange(undefined);
+            setNotice("已应用到草稿，可继续编辑、测试和发布。");
+            onAdopted?.();
+          })}>
+          <Check size={14} />应用到草稿
+        </Button>
+      </div>
+      {adoptDisabledReason && <p className={styles.testHelp}>{adoptDisabledReason}</p>}
+      {candidate && (
+        <details className={styles.candidateSummary}>
+          <summary>候选版本说明 · 只读预览</summary>
+          <p>{candidate.summary}</p>
+          <details><summary>查看代码</summary><pre>{candidate.code}</pre></details>
+        </details>
+      )}
       <div className={styles.body}>
-        <main className={styles.main}>
-          <div className={styles.versionbar}>
-            <label>
-              候选版本{" "}
-              <select
-                value={candidateId}
-                aria-label="候选版本"
-                onChange={(e) => setCandidateId(e.target.value)}
-              >
-                <option value="">当前草稿</option>
-                {state.candidates.map((c, i) => (
-                  <option key={c.id} value={c.id}>
-                    {state.candidates.length - i} · {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={locked || !candidateId || !suiteId}
-                onClick={runTests}
-              >
-                <FlaskConical size={14} />
-                运行文本仿真
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={locked || !candidateId || !suiteId}
-                onClick={runTune}
-              >
-                <Sparkles size={14} />
-                调优
-              </Button>
-            </div>
+        {tab !== "canvas" && <main className={styles.main}>
+          <div className={styles.runActions}>
+            <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={runTests}>
+              <FlaskConical size={14} />运行文本仿真
+            </Button>
+            <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={runTune}>
+              <Sparkles size={14} />开始调优
+            </Button>
+            {(!candidateId || !suiteId) && <p className={styles.subtle}>请先选择候选版本和测试集。</p>}
           </div>
-          {tab === "canvas" && (
-            <div className={styles.canvas}>
-              {nodes.length ? (
-                <ReactFlow
-                  key={candidateId || "draft"}
-                  nodes={nodes}
-                  edges={edges}
-                  nodeTypes={nodeTypes}
-                  nodesConnectable={false}
-                  nodesDraggable={false}
-                  fitView
-                  fitViewOptions={{ padding: 0.3 }}
-                >
-                  <Background color="#ddd" gap={18} />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
-              ) : (
-                <div className={styles.empty}>
-                  <Bot size={34} />
-                  <h2>从一个需求，开始构建</h2>
-                  <p>
-                    描述业务目标，或上传话术、流程和测试资料。
-                    <br />
-                    Codex 会生成可检查的流程与测试用例。
-                  </p>
-                  <div className={styles.steps}>
-                    <span>01 构建</span>
-                    <span>02 仿真</span>
-                    <span>03 调优</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
           {tab === "tests" && (
             <div className={styles.tests}>
               <div className={styles.suitebar}>
@@ -726,25 +639,16 @@ export function AgentWorkbench({
               )}
             </div>
           )}
-          {candidate && (
-            <div className={styles.candidateSummary}>
-              <Sparkles size={15} />
-              <p>{candidate.summary}</p>
-              <details>
-                <summary>查看代码</summary>
-                <pre>{candidate.code}</pre>
-              </details>
-            </div>
-          )}
-        </main>
+        </main>}
         <aside
-          className={styles.assistant}
+          className={`${styles.assistant} ${tab !== "canvas" ? styles.compact : ""}`}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
             void addFiles(Array.from(e.dataTransfer.files));
           }}
         >
+          {tab === "canvas" && <>
           <div className={styles.assistantTitle}>
             <span className={styles.botIcon}>
               <Bot size={20} />
@@ -892,6 +796,7 @@ export function AgentWorkbench({
             )}
             <div ref={bottom} />
           </div>
+          </>}
           <div className={styles.composer}>
             {(error || syncError) && (
               <div role="alert" className={styles.error}>
