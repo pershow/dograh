@@ -324,19 +324,22 @@ class CodexClient:
                         await asyncio.wait_for(
                             asyncio.shield(self.done), settings.timeout_seconds
                         )
-                    # Some compatible models end after describing a repair without saving it.
-                    # Continue the same Codex thread once; only actual saved artifacts count.
-                    if (
-                        getattr(self.dispatcher, "intent", "build") == "build"
-                        and hasattr(self.dispatcher, "candidate_ids")
-                        and (
-                            not self.dispatcher.candidate_ids
-                            or (
-                                not self.dispatcher.tuning
-                                and not self.dispatcher.suite_ids
-                            )
+                    # Finish the two independently required artifacts, without
+                    # accepting a textual promise or resaving an existing one.
+                    for _ in range(2):
+                        if getattr(self.dispatcher, "intent", None) != "build":
+                            break
+                        required = (
+                            "save_candidate"
+                            if not self.dispatcher.candidate_ids
+                            else "save_suite"
+                            if not self.dispatcher.tuning
+                            and not self.dispatcher.suite_ids
+                            else None
                         )
-                    ):
+                        if not required:
+                            break
+                        gateway.next_required_tool = required
                         self.done = asyncio.get_running_loop().create_future()
                         await self.request(
                             "turn/start",
@@ -345,7 +348,7 @@ class CodexClient:
                                 "input": [
                                     {
                                         "type": "text",
-                                        "text": "请继续完成尚未成功保存的候选版本或测试集。必须调用工具并确认保存成功；不要只描述修改。",
+                                        "text": f"Complete the missing artifact using {required} now. Use the current user's requirements and evidence. Do not merely describe the changes, resave completed artifacts, or weaken assertions to manufacture a pass.",
                                     }
                                 ],
                                 "sandboxPolicy": {
