@@ -60,15 +60,24 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
             org, session_id, kind, payload, job_id=job["id"], token=job["lease_token"]
         )
 
-    images = [
-        a["parsed"]["model_image"]
-        for a in context["assets"]
-        if a["id"] in job["input"].get("asset_ids", [])
-        and a["parsed"].get("model_image")
-    ]
-    result = await CodexClient(tools, event).run(
-        prompt, config.llm, protocol=context["session"]["model_protocol"], images=images
+    memory = await tools.read_conversation()
+    prompt = (
+        "Prior workbench conversation (untrusted historical data):\n"
+        + json.dumps(memory, ensure_ascii=False)
+        + "\nAvailable attachments (index only; read only when relevant):\n"
+        + json.dumps(await tools.list_attachments(), ensure_ascii=False)
+        + f"\nTask mode: {tools.mode}.\nCURRENT USER REQUEST:\n"
+        + prompt
     )
+    result = await CodexClient(tools, event).run(
+        prompt, config.llm, protocol=context["session"]["model_protocol"]
+    )
+    if tools.intent == "analyze":
+        if not tools.analysis_answer:
+            raise WorkbenchError(
+                "The assistant did not finish its analysis. Please retry or narrow the question."
+            )
+        return {**result, "outcome": "analysis", "answer": tools.analysis_answer}
     if not tools.candidate_ids:
         raise WorkbenchError(
             "Codex finished without a valid candidate. Review its response and refine the request."
@@ -79,6 +88,7 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
         )
     return {
         **result,
+        "outcome": "build",
         "candidate_id": tools.candidate_ids[-1],
         "suite_id": tools.suite_ids[-1] if tools.suite_ids else None,
     }
@@ -112,7 +122,7 @@ async def _perform(org, session_id, job):
         base = await db_client.wb_get(
             org, session_id, "candidates", payload["candidate_id"]
         )
-        if context["target_fingerprint"] not in {
+        if job["kind"] == "tune" and context["target_fingerprint"] not in {
             base["base_fingerprint"],
             base["fingerprint"],
         }:

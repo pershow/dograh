@@ -102,11 +102,11 @@ API 请求示例：
 
 面板默认宽度上限为 520px，顶部「展开工作台」可扩展到 780px（同时受视口及编辑器可用宽度限制），原画布仍在左侧。展开只改变容器宽度，不重新创建会话或断开语音。构建对话占据剩余高度，独立滚动；阅读历史时不自动跳回底部，可点击「回到最新消息」继续跟随。
 
-删除占据整行的后台任务说明，保留各页签都可见的单行进度与取消操作。模型协议及连接检查放在顶部「工作台设置」中；候选摘要、Variables 和代码通过版本旁的信息按钮打开。附件只占一行，点击附件数量打开完整列表、选择引用或上传文件，弹层不会挤压对话区。文字和语音继续共享所选附件。
+删除占据整行的后台任务说明，保留各页签都可见的单行进度与取消操作。模型协议及连接检查放在顶部「工作台设置」中；候选摘要、Variables 和代码通过版本旁的信息按钮打开。附件只占一行，点击附件数量打开完整列表、选择引用或上传文件，弹层不会挤压对话区。文字和语音共享会话资料库；勾选只标记本次重点，内容按需读取。
 
 文本仿真与调优页默认收起空的文字输入框，为结果保留阅读空间；有未发送文字或语音连接时保持展开。测试场景使用下拉选择，完整对话和断言纵向阅读。调优页也显示当前测试集，测试集选项带序号以区分同名历史版本；点击「查看推荐版本」同时选择该任务对应的候选及测试集，避免显示另一测试集的空结果。
 
-关闭面板会清理浏览器侧语音连接与轮询，已提交的任务继续由后台 Worker 执行。重新打开恢复同一会话中的任务、候选、测试结果和上次指令引用的附件。候选已经应用时，重放历史完成事件不会再次切回旧候选预览。
+关闭面板会清理浏览器侧语音连接与轮询，已提交的任务继续由后台 Worker 执行。重新打开恢复同一会话中的任务、候选、测试结果和资料库，不再重复勾选上次指令的附件。候选已经应用时，重放历史完成事件不会再次切回旧候选预览。
 
 工作台刷新得到的已保存目标快照与编辑器初始快照不一致时，重新读取草稿，解决其他标签页应用后原画布仍显示旧节点的问题。比较包含名称、图、配置和变量，忽略 JSON 键顺序。存在未保存编辑、未发送文字、保存请求或语音会话时保留现场并提示同步，不自动重载。
 
@@ -120,9 +120,21 @@ API 请求示例：
 
 文本仿真以候选默认值作为初始上下文，再由每条用例的 `initial_context` 覆盖。测试专用姓名等只放在用例上下文，不回写候选。普通通话沿用原有变量传入策略。
 
+### 3.1.4 运行分析与连续对话（2026-10-20）
+
+输入区新增 Agent Runs 列表，可选择某次运行或分析最新运行，也可直接追问“刚才为什么这样回复”。这里的运行记录来自 `workflow_runs.purpose=normal`，与文本仿真评测分开。服务端同时校验组织、工作台会话和 workflow_id，不能通过输入其他 Agent 的运行编号越权。
+
+`read_agent_run` 返回运行编号、时间、definition_id、分段证据和分页游标。对话从该运行记录对应的存储后端下载；变量包含 initial_context 与 gathered_context；日志按相同事件正文归组，保留次数、首末时间及原始索引，`logs_raw` 可查看完整顺序。缺少转写、下载失败、版本缺失都显式报告，不用当前草稿替代；运行引用可变 draft 时提示内容可能已经改变。敏感配置字段在送入模型前脱敏。单段最多 24,000 字符，转写读取上限 2,000,000 字符并标记截断。
+
+每条任务在现有 `WorkbenchJob.output.history_before` 保存入队时事件边界。Codex 虽然使用隔离的临时线程，但启动时恢复之前的用户与助手消息、语音转写、任务状态和证据来源；最近消息保留更多文本，较早消息截短并可分页回查，不把未来事件或模型内部推理混入历史。语音重连也恢复相同会话历史。现有事件表继续保存原文，无新增表或数据库迁移。
+
+指令支持 `mode=auto|analyze|build`。自动模式按当前意图选择；仅分析模式不暴露保存候选、保存测试集等修改工具。分析必须通过 `finish_analysis` 提交最终回答，只有进度说明不算成功；必要时在同一 Codex 线程续问一次，网关仅对这一次请求指定完成工具，仍无结论则失败。Chat 适配层区分带工具调用的 commentary 与最终回答。构建模式保留候选和测试集的保存要求，调优保留冻结测试集和回归检查。运行诊断发现基础设施故障时应先指出故障，不能虚构为话术缺陷。
+
+已实际读取的运行和附件通过 `evidence.read` 显示在聊天中，可跳转运行详情。附件可用不等于本次已读；分析不修改草稿，候选仍需用户应用后才进入草稿。
+
 ### 3.2 附件
 
-允许 TXT、MD、CSV、JSON、PDF、DOCX、XLSX、PNG、JPEG、WebP。单文件最大 20 MiB，每条指令最多引用 5 个附件。附件绑定组织和会话，读取工具只能读取本任务选择的附件。
+允许 TXT、MD、CSV、JSON、PDF、DOCX、XLSX、PNG、JPEG、WebP。单文件最大 20 MiB，每条指令最多标记 5 份重点附件。附件绑定组织和会话；已解析资料在本会话内可按需读取，不再要求每轮重复勾选。发送成功后清除本次重点，保留资料库。默认只给模型文件索引；文本通过读取工具分页返回，图片只在调用读取工具后作为图片结果返回，不再每轮自动附上像素。
 
 | 格式 | 解析与限制 |
 | --- | --- |
@@ -174,10 +186,10 @@ MVP 的夹具 schema 由测试作者显式提供，不能证明线上工具 sche
 - 使用已有登录鉴权、组织模型连接、STT/TTS 服务工厂、SmallWebRTC 和 ICE/TURN 配置。
 - 浏览器发送麦克风轨道；服务端 STT 形成完整话语，LLM 调用工作台工具，TTS 播报结果。
 - 语音与文字共享会话、附件、当前候选/测试集选择及任务状态。
-- 语音工具：`submit_instruction`、`get_status`、`read_attachment`、`run_tests`、`tune_agent`、`cancel_task`。
+- 语音工具：`submit_instruction`、`get_status`、`read_attachment`、`list_agent_runs`、`read_agent_run`、`read_conversation`、`run_tests`、`tune_agent`、`cancel_task`。
 - 上传完成并勾选的附件随 `context` 消息同步；服务端校验组织、会话、解析状态以及候选/测试集归属，原子替换上下文后返回 `context.applied`。界面确认收到相同选择后显示已同步。无效选择返回 `context.error` 并暂停工具执行，直到收到有效选择，避免继续使用旧附件。
-- `read_attachment` 分页读取实际选中文本，每页最多 8,000 字符；未选中、未解析或其他会话的文件不可读。图片只返回元数据，语音助手不能声称已经读懂图像；构建任务仍按现有视觉模型能力处理图片。
-- 文字提交后保留附件选择，语音中新增或取消附件也会更新后续命令。选择属于当前页面状态，刷新后需重新勾选；文件本身持久保存。
+- `read_attachment` 按需读取会话资料库的文本，每页最多 8,000 字符；未解析或其他会话的文件不可读。图片只返回元数据，语音助手不能声称已经读懂图像；构建任务仍按现有视觉模型能力处理图片。
+- 文字提交后清除本次附件重点，语音可继续按需读取会话资料；刷新或重连会恢复持久对话历史，文件无需重新上传。
 - 语音命令携带当前候选、测试集和附件；没有显式候选时使用最近成功任务推荐的候选，不选用被调优回归拒绝的版本。任务提交只回传任务编号、类型与状态，结果通过 `get_status` 查询，避免把整份内部任务记录交给语音模型。
 - 可恢复的供应商错误显示提示并允许底层重试；致命错误才断开。语音转写原样保留，包括识别错误，实际执行以工具参数和持久任务结果为准。
 - 关闭语音或打断播报不取消后台任务；只有明确取消命令才取消任务。
@@ -222,7 +234,8 @@ MVP 的夹具 schema 由测试作者显式提供，不能证明线上工具 sche
 | GET `/sessions/{id}` | 当前草稿、候选、附件、任务、测试集、评测 |
 | PATCH `/sessions/{id}` | 配置构建协议 |
 | GET `/sessions/{id}/events?after=N` | 每次最多 200 条持久事件，序号递增 |
-| POST `/sessions/{id}/instructions` | 提交构建/修改指令、附件 ID 和幂等键 |
+| POST `/sessions/{id}/instructions` | 提交指令、mode（auto / analyze / build）、重点附件 ID 和幂等键 |
+| GET `/sessions/{id}/agent-runs` | 当前 Agent 最近 20 次正常运行，排除工作台仿真 |
 | POST `/sessions/{id}/assets` | multipart 上传并解析 |
 | POST `/sessions/{id}/assets/{asset}/retry` | 重试解析 |
 | GET `/sessions/{id}/candidates/{candidate}` | 查看候选快照与代码 |
@@ -234,15 +247,18 @@ MVP 的夹具 schema 由测试作者显式提供，不能证明线上工具 sche
 | POST `/sessions/{id}/voice-tool` | 语音命令的同构 HTTP 入口 |
 | WS `/sessions/{id}/voice` | 语音信令、上下文选择、转写、工具结果 |
 
-事件包括 `task.queued/started/completed/failed/cancelled`、`codex.started`、`tool.started/failed`、`assistant.message`、`asset.uploaded/ready/failed`、`candidate.created/adopted`、`suite.created`、`evaluation.started/updated`、`voice.transcript`。界面每 2 秒同步状态；尚未实现服务端事件推送。
+事件包括 `task.queued/started/completed/failed/cancelled`、`codex.started`、`tool.started/failed`、`assistant.message`、`asset.uploaded/ready/failed`、`candidate.created/adopted`、`suite.created`、`evaluation.started/updated`、`voice.transcript`、`evidence.read`。界面每 2 秒同步状态；尚未实现服务端事件推送。
 
 Codex 内部工具：
 
 | 工具 | 输入和边界 |
 | --- | --- |
-| `get_context` | 脱敏 SDK 代码、组织工具/文档/凭据元数据、最近需求、当前附件清单 |
+| `get_context` | 脱敏 SDK 代码、组织工具/文档/凭据元数据、双向对话历史、会话资料索引 |
 | `list_node_types` / `get_node_type` | 真实节点规格、字段和范例 |
-| `read_attachment` | 已选择附件 ID、offset、limit；返回文本与来源位置 |
+| `list_attachments` / `read_attachment` | 会话资料索引；按 ID、offset、limit 读取文本与来源位置，图片返回独立像素项 |
+| `list_agent_runs` / `read_agent_run` | 当前 Agent 的实际运行；读取概览、对话、变量、合并日志、原始日志或运行版本，分页并注明运行编号 |
+| `read_conversation` | 历史用户消息、助手回答、语音转写和任务结果，按 before 序号向前分页 |
+| `set_task_intent` / `finish_analysis` | 自动模式判定分析或构建；提交分析结论，分析不要求候选和测试集 |
 | `validate_candidate` | SDK code；AST 和实际图校验，不落库 |
 | `save_candidate` | SDK code + summary；再次校验，保存不可变快照 |
 | `save_suite` | 声明式 SimulationSuite；调优阶段不可用 |
@@ -260,7 +276,7 @@ Codex 内部工具：
 | `api/db/agent_workbench_client.py` / `db_client.py` / `models.py` | 组织查询、任务租约、候选、事件、原子采用与模型 |
 | `api/services/agent_workbench/codex_client.py` | Codex JSON-RPC 进程生命周期、动态工具调度、取消清理 |
 | `model_gateway.py` | 两种上游协议、凭据隔离、工具限制与用量预算 |
-| `tools.py` | 节点发现、附件读取、SDK 校验、候选和测试集保存 |
+| `tools.py` / `context.py` | 节点发现、按需资料、Agent Runs 证据、双向记忆、SDK 校验与候选保存 |
 | `attachments.py` / `file_parser.py` | 私有存储、格式校验、独立解析进程 |
 | `jobs.py` / `api/tasks/agent_workbench.py` | 独立队列、outbox、构建/评测/调优状态机 |
 | `evaluation.py` / `evaluation_policy.py` | 真实文本仿真、确定性断言、效果隔离 |

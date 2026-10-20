@@ -27,6 +27,7 @@ from api.schemas.agent_workbench import (
 )
 from api.services.agent_workbench.attachments import parse_attachment, upload_attachment
 from api.services.agent_workbench.config import WorkbenchSettings
+from api.services.agent_workbench.context import list_agent_runs
 from api.services.agent_workbench.dependencies import dependency_report
 from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.jobs import enqueue
@@ -106,6 +107,15 @@ async def workbench_create_session(body: CreateSession, user: User, _: Enabled):
 async def workbench_session(session_id: str, user: User, _: Enabled):
     return public_data(
         await db_client.wb_context(user.selected_organization_id, session_id)
+    )
+
+
+@router.get("/sessions/{session_id}/agent-runs", response_model=WorkbenchResponse)
+async def workbench_agent_runs(
+    session_id: str, user: User, _: Enabled, limit: int = Query(default=20, ge=1, le=20)
+):
+    return WorkbenchResponse(
+        data=await list_agent_runs(user.selected_organization_id, session_id, limit)
     )
 
 

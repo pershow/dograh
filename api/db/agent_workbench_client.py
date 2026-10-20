@@ -248,6 +248,82 @@ class AgentWorkbenchClient(BaseDBClient):
                 await self._wb_fence(db, session_id, job_id, token)
             await self._wb_event(db, session, kind, payload)
 
+    async def wb_conversation(self, org, session_id, *, before=None, limit=40):
+        """Backward pagination; a task's enqueue sequence is its history boundary."""
+        async with self.async_session() as db:
+            await self._wb_session(db, org, session_id)
+            query = select(WorkbenchEventModel).where(
+                WorkbenchEventModel.session_id == session_id,
+                WorkbenchEventModel.type.in_(
+                    [
+                        "task.queued",
+                        "assistant.message",
+                        "voice.transcript",
+                        "task.completed",
+                        "task.failed",
+                        "task.cancelled",
+                        "candidate.adopted",
+                        "evidence.read",
+                    ]
+                ),
+            )
+            if before is not None:
+                query = query.where(WorkbenchEventModel.sequence < before)
+            rows = (
+                await db.scalars(
+                    query.order_by(WorkbenchEventModel.sequence.desc()).limit(limit + 1)
+                )
+            ).all()
+            page = rows[:limit]
+            return {
+                "events": [record(row) for row in reversed(page)],
+                "before": page[-1].sequence if len(rows) > limit else None,
+            }
+
+    async def wb_agent_runs(self, org, session_id, *, run_id=None, limit=20):
+        """Agent Runs only; simulation runs and other agents are never exposed."""
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            query = (
+                select(WorkflowRunModel)
+                .join(WorkflowModel, WorkflowModel.id == WorkflowRunModel.workflow_id)
+                .where(
+                    WorkflowModel.organization_id == org,
+                    WorkflowRunModel.workflow_id == session.workflow_id,
+                    WorkflowRunModel.purpose == "normal",
+                )
+            )
+            if run_id is not None:
+                query = query.where(WorkflowRunModel.id == run_id)
+            rows = (
+                await db.scalars(
+                    query.order_by(
+                        WorkflowRunModel.created_at.desc(), WorkflowRunModel.id.desc()
+                    ).limit(limit)
+                )
+            ).all()
+            return [record(row) for row in rows]
+
+    async def wb_run_definition(self, org, session_id, run_id):
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            definition = await db.scalar(
+                select(WorkflowDefinitionModel)
+                .join(
+                    WorkflowRunModel,
+                    WorkflowRunModel.definition_id == WorkflowDefinitionModel.id,
+                )
+                .join(WorkflowModel, WorkflowModel.id == WorkflowRunModel.workflow_id)
+                .where(
+                    WorkflowModel.organization_id == org,
+                    WorkflowRunModel.workflow_id == session.workflow_id,
+                    WorkflowDefinitionModel.workflow_id == session.workflow_id,
+                    WorkflowRunModel.id == run_id,
+                    WorkflowRunModel.purpose == "normal",
+                )
+            )
+            return record(definition) if definition else None
+
     async def wb_enqueue(self, org, session_id, kind, payload, key):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
@@ -284,7 +360,11 @@ class AgentWorkbenchClient(BaseDBClient):
                 if payload.get(field):
                     await self._wb_item(db, table, session_id, payload[field])
             row = WorkbenchJobModel(
-                session_id=session_id, kind=kind, input=payload, idempotency_key=key
+                session_id=session_id,
+                kind=kind,
+                input=payload,
+                idempotency_key=key,
+                output={"history_before": session.event_sequence + 1},
             )
             db.add(row)
             await db.flush()
@@ -565,7 +645,9 @@ class AgentWorkbenchClient(BaseDBClient):
             job = await self._wb_fence(db, session_id, job_id, token)
             snapshot = job.output.get("model_configuration_snapshot")
             if not isinstance(snapshot, dict) or snapshot.get("version") != 3:
-                raise WorkbenchError("Freeze the task model configuration before evaluation", 409)
+                raise WorkbenchError(
+                    "Freeze the task model configuration before evaluation", 409
+                )
             candidate = await self._wb_item(db, "candidates", session_id, candidate_id)
             run = WorkflowRunModel(
                 name="Workbench simulation",

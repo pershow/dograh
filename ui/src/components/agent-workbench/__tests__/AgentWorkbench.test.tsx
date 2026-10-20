@@ -6,7 +6,7 @@ import type { WorkbenchState } from '../types';
 
 const mocks = vi.hoisted(() => ({
   replace: vi.fn(), capabilities: vi.fn(), create: vi.fn(), session: vi.fn(), events: vi.fn(),
-  candidate: vi.fn(), adopt: vi.fn(), voice: vi.fn(), dependencies: vi.fn(),
+  runs: vi.fn(), instruct: vi.fn(), candidate: vi.fn(), adopt: vi.fn(), voice: vi.fn(), dependencies: vi.fn(),
   auth: { user: { id: '1' }, loading: false, getAccessToken: vi.fn(), redirectToLogin: vi.fn() },
 }));
 vi.mock('../workbench.module.css', () => ({ default: {} }));
@@ -14,6 +14,8 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: mocks.replace }
 vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
 vi.mock('../useWorkbenchVoice', () => ({ useWorkbenchVoice: mocks.voice }));
 vi.mock('@/client/sdk.gen', () => ({
+  workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet: mocks.runs,
+  workbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPost: mocks.instruct,
   workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet: mocks.capabilities,
   workbenchCreateSessionApiV1AgentWorkbenchSessionsPost: mocks.create,
   workbenchSessionApiV1AgentWorkbenchSessionsSessionIdGet: mocks.session,
@@ -40,9 +42,40 @@ beforeEach(() => {
   mocks.events.mockResolvedValue(response({ events: [] }));
   mocks.candidate.mockResolvedValue(response(candidate));
   mocks.adopt.mockResolvedValue(response({}));
+  mocks.instruct.mockResolvedValue(response({}));
+  mocks.runs.mockResolvedValue(response({runs: [{id: 42, created_at: "2026-10-20", state: "completed", has_transcript: true}]}));
   mocks.dependencies.mockResolvedValue(response({ ready: true, issues: [], services: [] }));
   mocks.voice.mockReturnValue({ status: 'off', start: vi.fn(), stop: vi.fn() });
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+it('analyzes a selected Agent Run without asking for a candidate and surfaces actual evidence', async () => {
+  mocks.events.mockResolvedValueOnce(response({ events: [
+    {sequence: 1, type: 'evidence.read', payload: {source: 'agent_runs', run_id: 42, section: 'transcript'}},
+    {sequence: 2, type: 'task.completed', payload: {output: {outcome: 'analysis'}}},
+  ]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: 'Agent Runs 运行记录'}));
+  fireEvent.click(await screen.findByRole('button', {name: '分析'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledOnce());
+  expect(mocks.instruct.mock.calls[0][0].body).toMatchObject({mode: 'analyze', asset_ids: []});
+  expect(mocks.instruct.mock.calls[0][0].body.text).toContain('#42');
+  expect(await screen.findByText('分析已完成。可以继续追问，或提出修改要求。')).toBeTruthy();
+  expect(screen.getByRole('link', {name: /已读取运行 #42/}).getAttribute('href')).toBe('/workflow/7/run/42');
+});
+
+it('clears attachment focus after sending while retaining the session library', async () => {
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '资料附件，已选择 0 个'}));
+  fireEvent.click(await screen.findByRole('checkbox', {name: 'SOP.txt'}));
+  fireEvent.keyDown(screen.getByRole('dialog', {name: '资料附件'}), {key: 'Escape'});
+  await waitFor(() => expect(screen.queryByRole('dialog', {name: '资料附件'})).toBeNull());
+  fireEvent.change(screen.getByRole('textbox', {name: '构建需求'}), {target: {value: 'Use this rule'}});
+  fireEvent.click(screen.getByRole('button', {name: '发送构建需求'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledOnce());
+  expect(mocks.instruct.mock.calls[0][0].body.asset_ids).toEqual(['asset']);
+  await screen.findByRole('button', {name: '资料附件，已选择 0 个'});
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual([]);
 });
 
 it('redirects old workbench bookmarks into the original editor with the same session', async () => {
@@ -51,12 +84,12 @@ it('redirects old workbench bookmarks into the original editor with the same ses
   expect(mocks.create).not.toHaveBeenCalled();
 });
 
-it('restores attachments for voice and text, previews in the host canvas, and reports adoption', async () => {
+it('retains the attachment library without restoring previous focus, previews in the host canvas, and reports adoption', async () => {
   const preview = vi.fn();
   const adopted = vi.fn();
   render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={preview} onAdopted={adopted} />);
   await waitFor(() => expect(preview).toHaveBeenCalledWith(candidate));
-  expect(mocks.voice.mock.lastCall?.[2]).toEqual(['asset']);
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual([]);
   expect(screen.getByRole('textbox', { name: '构建需求' })).toBeTruthy();
   expect(screen.getByRole('button', { name: '实时语音' })).toBeTruthy();
   expect(mocks.replace).not.toHaveBeenCalled();
@@ -135,12 +168,11 @@ it('opens settings and attachments without losing the input or voice context', a
   expect((await screen.findByRole('combobox', {name: '构建模型协议'}) as HTMLSelectElement).value).toBe('chat');
   fireEvent.keyDown(screen.getByRole('dialog', {name: '工作台设置'}), {key: 'Escape'});
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', {name: '工作台设置'})));
-  fireEvent.click(screen.getByRole('button', {name: '资料附件，已选择 1 个'}));
+  fireEvent.click(screen.getByRole('button', {name: '资料附件，已选择 0 个'}));
   const attachment = await screen.findByRole('checkbox', {name: 'SOP.txt'});
-  expect((attachment as HTMLInputElement).checked).toBe(true);
+  expect((attachment as HTMLInputElement).checked).toBe(false);
   fireEvent.click(attachment);
-  expect(mocks.voice.mock.lastCall?.[2]).toEqual([]);
-  fireEvent.click(attachment);
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual(['asset']);
   fireEvent.keyDown(screen.getByRole('dialog', {name: '资料附件'}), {key: 'Escape'});
   await waitFor(() => expect(screen.queryByRole('dialog', {name: '资料附件'})).toBeNull());
   fireEvent.click(screen.getByRole('button', {name: '文本仿真'}));
@@ -197,7 +229,7 @@ it('preserves the composing session when expanding the workbench', async () => {
   expect(expand).toHaveBeenCalledWith(true);
   view.rerender(<AgentWorkbench {...props} expanded />);
   expect((screen.getByRole('textbox', {name: '构建需求'}) as HTMLTextAreaElement).value).toBe('Unsent changes');
-  expect(mocks.voice.mock.lastCall?.[2]).toEqual(['asset']);
+  expect(mocks.voice.mock.lastCall?.[2]).toEqual([]);
   expect(screen.getByRole('button', {name: '收起工作台'})).toBeTruthy();
   expect(mocks.create).not.toHaveBeenCalled();
   expect(mocks.candidate).toHaveBeenCalledOnce();

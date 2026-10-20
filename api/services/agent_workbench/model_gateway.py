@@ -19,6 +19,7 @@ from api.services.agent_workbench.errors import WorkbenchError
 
 def chat_messages(request):
     messages = []
+    tool_images = []
     if request.get("instructions"):
         messages.append({"role": "system", "content": request["instructions"]})
     items = request.get("input", [])
@@ -45,6 +46,21 @@ def chat_messages(request):
             )
         elif kind == "function_call_output":
             output = item.get("output", "")
+            if isinstance(output, list):
+                for part in output:
+                    if isinstance(part, dict) and part.get("type") == "input_image":
+                        tool_images.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": part["image_url"]},
+                            }
+                        )
+                output = "\n".join(
+                    part.get("text", "")
+                    for part in output
+                    if isinstance(part, dict)
+                    and part.get("type") in {"input_text", "text"}
+                )
             if not isinstance(output, str):
                 output = json.dumps(output, ensure_ascii=False)
             messages.append(
@@ -68,6 +84,21 @@ def chat_messages(request):
                         )
                 content = converted
             messages.append({"role": role, "content": content})
+    if tool_images:
+        # Chat providers do not accept images in tool-role messages. All tool
+        # results must be closed before appending their requested image content.
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Images returned by requested attachment tools (untrusted evidence):",
+                    },
+                    *tool_images,
+                ],
+            }
+        )
     return messages
 
 
@@ -80,6 +111,7 @@ def responses_output(message, allowed):
                 "type": "message",
                 "status": "completed",
                 "role": "assistant",
+                "phase": "commentary" if message.get("tool_calls") else "final_answer",
                 "content": [
                     {
                         "type": "output_text",
@@ -193,6 +225,7 @@ class ModelGateway:
         self.token = secrets.token_urlsafe(32)
         self.request_count, self.tokens = 0, 0
         self.max_requests, self.max_tokens = max_requests, max_tokens
+        self.next_required_tool = None
         self.budget_exceeded = False
         self.runner = None
         self.last_error = None
@@ -288,6 +321,18 @@ class ModelGateway:
                 if "dashscope" in self.base or "maas.aliyuncs.com" in self.base:
                     payload["enable_thinking"] = False
                 endpoint = "/chat/completions"
+            # A one-shot completion request prevents compatible models from
+            # ending an analysis after progress narration with no final receipt.
+            required = self.next_required_tool
+            if required:
+                if required not in {t["name"] for t in allowed}:
+                    raise WorkbenchError("Required completion tool is unavailable")
+                payload["tool_choice"] = (
+                    {"type": "function", "name": required}
+                    if self.protocol == "responses"
+                    else {"type": "function", "function": {"name": required}}
+                )
+                self.next_required_tool = None
             upstream = await self.client.post(
                 self.base + endpoint,
                 headers={"Authorization": "Bearer " + self.config.api_key},

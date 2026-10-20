@@ -32,7 +32,7 @@ ALLOWED = {
 async def read_selected_attachment(
     org, session_id, selected_ids, asset_id, offset=0, limit=24000
 ):
-    """Both voice and Codex read only explicitly selected, scoped, parsed data."""
+    """Read a ready asset from the caller's scoped session-library allowlist."""
     if asset_id not in selected_ids:
         raise WorkbenchError("Attachment was not selected for this task")
     if (

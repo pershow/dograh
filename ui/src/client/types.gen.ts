@@ -199,6 +199,8 @@ export type AppendTextChatMessageRequest = {
 
 /**
  * Assertion
+ *
+ * node_visited.value accepts a node ID or an exact, unique node name.
  */
 export type Assertion = {
     /**
@@ -2535,6 +2537,10 @@ export type Instruction = {
      * Candidate Id
      */
     candidate_id?: string | null;
+    /**
+     * Mode
+     */
+    mode?: 'auto' | 'analyze' | 'build';
     /**
      * Text
      */
@@ -6613,7 +6619,7 @@ export type VoiceToolRequest = {
     /**
      * Name
      */
-    name: 'submit_instruction' | 'get_status' | 'read_attachment' | 'cancel_task' | 'run_tests' | 'tune_agent';
+    name: 'submit_instruction' | 'get_status' | 'read_attachment' | 'cancel_task' | 'run_tests' | 'tune_agent' | 'list_agent_runs' | 'read_agent_run' | 'read_conversation';
     /**
      * Arguments
      */
@@ -16529,6 +16535,55 @@ export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses 
 };
 
 export type WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponse = WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses[keyof WorkbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatchResponses];
+
+export type WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/agent-runs';
+};
+
+export type WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetError = WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetErrors[keyof WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetErrors];
+
+export type WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetResponse = WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetResponses[keyof WorkbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGetResponses];
 
 export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetData = {
     body?: never;

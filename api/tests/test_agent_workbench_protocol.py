@@ -14,6 +14,57 @@ from api.services.agent_workbench.model_gateway import (
 from api.services.agent_workbench.tools import WorkbenchTools
 
 
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+async def test_required_completion_tool_is_scoped_to_one_request(protocol):
+    import json
+
+    seen = []
+
+    def upstream(request):
+        seen.append(json.loads(request.content))
+        if protocol == "responses":
+            return httpx.Response(
+                200, json={"status": "completed", "output": [], "usage": {}}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "Done"}, "finish_reason": "stop"}]
+            },
+        )
+
+    async with ModelGateway(
+        SimpleNamespace(
+            model="test", base_url="https://model.example/v1", api_key="private"
+        ),
+        ["finish_analysis"],
+        protocol=protocol,
+    ) as gateway:
+        await gateway.client.aclose()
+        gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        gateway.next_required_tool = "finish_analysis"
+        async with httpx.AsyncClient() as client:
+            for _ in range(2):
+                response = await client.post(
+                    gateway.url + "/responses",
+                    headers={"Authorization": "Bearer " + gateway.token},
+                    json={
+                        "input": "finish",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "finish_analysis",
+                                "parameters": {"type": "object"},
+                            }
+                        ],
+                    },
+                )
+                assert response.status_code == 200
+    choice = seen[0]["tool_choice"]
+    assert (choice.get("function") or choice)["name"] == "finish_analysis"
+    assert "tool_choice" not in seen[1]
+
+
 @pytest.mark.parametrize("limit", ["requests", "tokens"])
 async def test_budget_error_is_nonretryable_reports_usage_and_stops_upstream(limit):
     requests = []
@@ -217,7 +268,7 @@ def test_chat_preserves_call_ids_and_developer_instructions():
 
 def test_nested_suite_schema_refs_are_resolvable():
     tools = WorkbenchTools(
-        1, "session", {}, {"target": {}, "target_fingerprint": "hash"}
+        1, "session", {"input": {}}, {"target": {}, "target_fingerprint": "hash"}
     )
     schema = next(s["inputSchema"] for s in tools.specs() if s["name"] == "save_suite")
     suite = {

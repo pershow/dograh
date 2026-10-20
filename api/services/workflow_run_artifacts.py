@@ -139,13 +139,16 @@ async def upload_workflow_run_artifacts(
             )
 
 
-def _read_transcript_file(path: str) -> str:
+def _read_transcript_file(path: str, max_characters: int | None = None) -> str:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+        return f.read(max_characters + 1) if max_characters is not None else f.read()
 
 
 async def download_run_transcript_text(
-    *, transcript_url: str | None, storage_backend: str
+    *,
+    transcript_url: str | None,
+    storage_backend: str,
+    max_characters: int | None = None,
 ) -> str:
     """Return the stored transcript text for a run.
 
@@ -173,7 +176,7 @@ async def download_run_transcript_text(
                 f"downloaded from {storage_backend} storage"
             )
 
-        return await asyncio.to_thread(_read_transcript_file, tmp_path)
+        return await asyncio.to_thread(_read_transcript_file, tmp_path, max_characters)
     finally:
         if tmp_path is not None:
             try:

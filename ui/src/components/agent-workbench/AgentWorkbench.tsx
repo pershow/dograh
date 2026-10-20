@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
+  workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet as getAgentRuns,
   workbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPost as cancel,
   workbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGet as getCandidate,
   workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet as getCapabilities,
@@ -130,6 +131,13 @@ export function AgentWorkbench({
   const [candidate, setCandidate] = useState<Candidate>();
   const [suiteId, setSuiteId] = useState("");
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [instructionMode, setInstructionMode] = useState<"auto" | "analyze" | "build">("auto");
+  const [runsOpen, setRunsOpen] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [agentRuns, setAgentRuns] = useState<{
+    id: number; created_at: string; state: string; definition_id: number | null;
+    has_transcript: boolean;
+  }[]>([]);
   const [dependencies, setDependencies] = useState<{
     ready: boolean;
     issues: unknown[];
@@ -286,22 +294,7 @@ export function AgentWorkbench({
     if (!choiceInitialized.current && state) {
       choiceInitialized.current = true;
       if (state.candidates[0]) setCandidateId(state.candidates[0].id);
-      // Restore the submitted attachment context when returning to this session.
-      // Evaluations have no asset selection; use the most recent build/tune input.
-      const submitted = state.jobs.find((j) =>
-        Array.isArray(j.input.asset_ids),
-      );
-      const assetIds = submitted?.input.asset_ids;
-      if (Array.isArray(assetIds))
-        setSelectedAssets(
-          assetIds
-            .filter(
-              (id): id is string =>
-                typeof id === "string" &&
-                state.assets.some((a) => a.id === id && a.status === "ready"),
-            )
-            .slice(0, 5),
-        );
+      // Uploaded materials remain available on demand; old focus is not resent.
     }
   }, [state]);
   useEffect(() => {
@@ -428,6 +421,35 @@ export function AgentWorkbench({
       );
       setTab("tuning");
     });
+  const sendInstruction = (instruction: string, mode = instructionMode) =>
+    action(async () => {
+      result(await instruct({
+        path: { session_id: session },
+        body: {
+          text: instruction, mode, candidate_id: candidateId || null,
+          asset_ids: selectedAssets, idempotency_key: crypto.randomUUID(),
+        },
+      }));
+      setText("");
+      setSelectedAssets([]);
+      setTab("canvas");
+      setRunsOpen(false);
+    });
+  const openRuns = async (open: boolean) => {
+    setRunsOpen(open);
+    if (!open || authLoading || !user || !session) return;
+    setRunsLoading(true);
+    try {
+      const data = result<{ runs: typeof agentRuns }>(
+        await getAgentRuns({ path: { session_id: session } }),
+      );
+      setAgentRuns(data.runs);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "运行记录读取失败");
+    } finally {
+      setRunsLoading(false);
+    }
+  };
   const composerExpanded =
     tab === "canvas" || composerOpen || !!text || voice.status !== "off";
   const messages = events.filter((e) =>
@@ -439,6 +461,7 @@ export function AgentWorkbench({
       "task.failed",
       "task.cancelled",
       "candidate.adopted",
+      "evidence.read",
     ].includes(e.type),
   );
   if (!state || !onPreviewChange)
@@ -969,6 +992,19 @@ export function AgentWorkbench({
               </div>
             )}
             {messages.map((e) => {
+              if (e.type === "evidence.read")
+                return (
+                  <div key={e.sequence} className={styles.evidence}>
+                    {e.payload.source === "agent_runs" ? (
+                      <Link href={`/workflow/${state.session.workflow_id}/run/${e.payload.run_id}`} target="_blank">
+                        <FileText size={12} /> 已读取运行 #{String(e.payload.run_id)}
+                        · {({ transcript: "对话", variables: "变量", logs: "日志", logs_raw: "原始日志", definition: "运行版本", overview: "概览" } as Record<string, string>)[String(e.payload.section)] || String(e.payload.section)}
+                      </Link>
+                    ) : (
+                      <span><Paperclip size={12} /> 按需读取 · {String(e.payload.name)}</span>
+                    )}
+                  </div>
+                );
               const input = e.payload.input as
                 | Record<string, unknown>
                 | undefined;
@@ -984,7 +1020,9 @@ export function AgentWorkbench({
                           : "调优 Agent"),
                     )
                   : e.type === "task.completed"
-                    ? "任务已完成，可查看候选版本或测试结果。"
+                    ? (e.payload.output as Record<string, unknown>)?.outcome === "analysis"
+                      ? "分析已完成。可以继续追问，或提出修改要求。"
+                      : "任务已完成，可查看候选版本或测试结果。"
                     : e.type === "task.failed"
                       ? String(e.payload.error)
                       : e.type === "task.cancelled"
@@ -1056,6 +1094,32 @@ export function AgentWorkbench({
               </p>
             )}
             <div className={styles.composerContext}>
+              <Popover open={runsOpen} onOpenChange={(open) => void openRuns(open)}>
+                <PopoverTrigger asChild>
+                  <button className={styles.attachmentButton} aria-label="Agent Runs 运行记录">
+                    <FileText size={14} /> Agent Runs <ChevronUp size={12} />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent side="top" align="start" className={styles.popover}>
+                  <h3>Agent Runs · 最近运行</h3>
+                  <p className={styles.subtle}>读取这个 Agent 的实际对话、变量和日志，分析后可继续提出修改要求。</p>
+                  <Button size="sm" disabled={locked || runsLoading || !agentRuns.length}
+                    onClick={() => void sendInstruction("请分析 Agent Runs 中最新一次运行的对话、变量和日志，指出问题、证据和调优建议。先只分析，不修改 Agent。", "analyze")}>
+                    分析最新运行
+                  </Button>
+                  {runsLoading ? <p>正在读取…</p> : !agentRuns.length ? <p>这个 Agent 还没有运行记录。</p> :
+                    agentRuns.map((run) => (
+                      <div className={styles.runRow} key={run.id}>
+                        <Link href={`/workflow/${state.session.workflow_id}/run/${run.id}`} target="_blank">
+                          <strong>#{run.id}</strong> · {new Date(run.created_at).toLocaleString()}
+                          <small>{run.state} · {run.has_transcript ? "有对话记录" : "暂无已保存对话"}</small>
+                        </Link>
+                        <Button size="sm" variant="outline" disabled={locked}
+                          onClick={() => void sendInstruction(`请分析 Agent Runs 运行 #${run.id} 的对话、变量和日志，给出问题依据和调优建议。先只分析，不修改 Agent。`, "analyze")}>分析</Button>
+                      </div>
+                    ))}
+                </PopoverContent>
+              </Popover>
               <Popover>
                 <PopoverTrigger asChild>
                   <button
@@ -1063,7 +1127,7 @@ export function AgentWorkbench({
                     aria-label={`资料附件，已选择 ${selectedAssets.length} 个`}
                   >
                     <Paperclip size={14} />
-                    附件 <b>{selectedAssets.length}</b>
+                    资料 <b>{state.assets.length}</b>
                     <ChevronUp size={12} />
                   </button>
                 </PopoverTrigger>
@@ -1073,9 +1137,9 @@ export function AgentWorkbench({
                   className={`${styles.popover} ${styles.assets}`}
                   aria-label="资料附件"
                 >
-                  <h3>资料附件 · 已选择 {selectedAssets.length}/5</h3>
+                  <h3>会话资料 · 本次重点 {selectedAssets.length}/5</h3>
                   <p className={styles.subtle}>
-                    已选资料同时用于文字和语音交互。单个文件最大 20 MiB。
+                    上传后保留在本会话，文字和语音都可按需读取。勾选仅标记本次重点，不会每轮附上全文。单个文件最大 20 MiB。
                   </p>
                   {!state.assets.length && (
                     <p className={styles.subtle}>
@@ -1151,7 +1215,7 @@ export function AgentWorkbench({
                   ? selectedAssets
                       .map((id) => state.assets.find((a) => a.id === id)?.name)
                       .join(" · ")
-                  : "支持拖入文件、粘贴图片"}
+                  : "对话保留 · 资料按需读取"}
               </span>
               {tab !== "canvas" &&
                 composerExpanded &&
@@ -1213,6 +1277,13 @@ export function AgentWorkbench({
                 >
                   <Paperclip size={18} />
                 </button>
+                <select aria-label="助手任务模式" className={styles.intentSelect}
+                  value={instructionMode} disabled={locked}
+                  onChange={(e) => setInstructionMode(e.target.value as typeof instructionMode)}>
+                  <option value="auto">自动判断</option>
+                  <option value="analyze">仅分析</option>
+                  <option value="build">构建修改</option>
+                </select>
                 <button
                   className={voice.status !== "off" ? styles.voiceActive : ""}
                   onClick={() =>
@@ -1230,22 +1301,7 @@ export function AgentWorkbench({
                   size="sm"
                   disabled={locked || !text.trim()}
                   aria-label="发送构建需求"
-                  onClick={() =>
-                    action(async () => {
-                      result(
-                        await instruct({
-                          path: { session_id: session },
-                          body: {
-                            text: text.trim(),
-                            candidate_id: candidateId || null,
-                            asset_ids: selectedAssets,
-                            idempotency_key: crypto.randomUUID(),
-                          },
-                        }),
-                      );
-                      setText("");
-                    })
-                  }
+                  onClick={() => void sendInstruction(text.trim())}
                 >
                   {busy ? (
                     <Loader2 size={17} className="animate-spin" />
@@ -1258,7 +1314,7 @@ export function AgentWorkbench({
             {voice.status === "connected" && (
               <small role="status" className={styles.composerHint}>
                 {voice.contextSynced
-                  ? `正在使用麦克风 · 已同步 ${selectedAssets.length} 个附件`
+                  ? `正在使用麦克风 · 会话资料可按需读取`
                   : "正在同步附件和版本选择，请稍候…"}
               </small>
             )}

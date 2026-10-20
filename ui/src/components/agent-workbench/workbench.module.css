@@ -701,3 +701,30 @@ div.protocol {
     display: none;
   }
 }
+.evidence {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  padding: 3px 12px;
+  overflow-wrap: anywhere;
+}
+.evidence a, .evidence span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.evidence a:hover { text-decoration: underline; }
+.runRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.runRow small { display: block; opacity: .7; margin-top: 3px; }
+.intentSelect {
+  max-width: 100px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+}

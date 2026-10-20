@@ -97,7 +97,7 @@ async def test_sdk_tools_register_defaults_and_keep_tuning_baseline(
     tools = module.WorkbenchTools(
         1,
         "session",
-        {"id": "job", "lease_token": "lease"},
+        {"id": "job", "lease_token": "lease", "input": {"mode": "build"}},
         {"target": baseline, "target_fingerprint": "base"},
         tuning=tuning,
     )

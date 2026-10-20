@@ -9,6 +9,69 @@ from api.db.models import OrganizationModel, UserModel, WorkflowModel
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 
 
+async def test_run_evidence_is_scoped_to_session_agent_and_excludes_simulations(
+    db_session, wb, async_session
+):
+    from api.db.models import WorkflowRunModel
+
+    org, user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    workflow_id = context["session"]["workflow_id"]
+    other = await db_session.wb_create_session(org, user, name="Other agent")
+    rows = [
+        WorkflowRunModel(
+            workflow_id=workflow_id, name="real", mode="smallwebrtc", purpose="normal"
+        ),
+        WorkflowRunModel(
+            workflow_id=workflow_id,
+            name="simulation",
+            mode="smallwebrtc",
+            purpose="evaluation",
+        ),
+        WorkflowRunModel(
+            workflow_id=other["workflow_id"],
+            name="other",
+            mode="smallwebrtc",
+            purpose="normal",
+        ),
+    ]
+    async_session.add_all(rows)
+    await async_session.flush()
+    assert [r["id"] for r in await db_session.wb_agent_runs(org, sid)] == [rows[0].id]
+    assert await db_session.wb_agent_runs(org, sid, run_id=rows[2].id) == []
+    assert await db_session.wb_agent_runs(org, sid, run_id=rows[1].id) == []
+    assert await db_session.wb_run_definition(org, sid, rows[2].id) is None
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_agent_runs(org + 999, sid)
+
+
+async def test_conversation_restores_both_roles_and_freezes_history_at_enqueue(
+    db_session, wb
+):
+    org, _user, sid = wb
+    await db_session.wb_emit(
+        org, sid, "voice.transcript", {"role": "user", "text": "hello"}
+    )
+    await db_session.wb_emit(
+        org, sid, "assistant.message", {"text": "remembered response"}
+    )
+    await db_session.wb_emit(org, sid, "tool.started", {"name": "not conversation"})
+    job = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "follow-up"}, "memory"
+    )
+    before = job["output"]["history_before"]
+    await db_session.wb_emit(
+        org, sid, "voice.transcript", {"role": "user", "text": "future"}
+    )
+    page = await db_session.wb_conversation(org, sid, before=before, limit=1)
+    assert page["events"][0]["payload"]["text"] == "remembered response"
+    older = await db_session.wb_conversation(org, sid, before=page["before"], limit=1)
+    assert older["events"][0]["payload"]["text"] == "hello"
+    assert older["before"] is None
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_conversation(org + 999, sid)
+
+
 @pytest.fixture
 async def db_session(async_session, db_connection):
     from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -66,7 +129,9 @@ async def test_reopening_workflow_restores_same_session_and_job(db_session, wb, 
     org, user, sid = wb
     context = await db_session.wb_context(org, sid)
     await db_session.wb_settings(org, sid, "responses")
-    suite = await db_session.wb_save_suite(org, sid, {"name": "Saved suite", "cases": []})
+    suite = await db_session.wb_save_suite(
+        org, sid, {"name": "Saved suite", "cases": []}
+    )
     job = await db_session.wb_enqueue(
         org, sid, "build", {"text": "Build my agent"}, "original-build"
     )
@@ -126,7 +191,10 @@ async def test_cross_session_references_and_adoption_conflict(
     job = await db_session.wb_claim(org, sid, job["id"])
     snapshot = copy.deepcopy(context["target"])
     snapshot["name"] = "Built agent"
-    snapshot["template_context_variables"] = {"company": "From the request", "customer": ""}
+    snapshot["template_context_variables"] = {
+        "company": "From the request",
+        "customer": "",
+    }
     candidate = await db_session.wb_save_candidate(
         org,
         sid,

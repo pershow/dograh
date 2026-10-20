@@ -22,6 +22,7 @@ class SessionSettings(StrictModel):
 
 class Instruction(StrictModel):
     candidate_id: str | None = None
+    mode: Literal["auto", "analyze", "build"] = "auto"
     text: str = Field(min_length=1, max_length=24000)
     asset_ids: list[str] = Field(default_factory=list, max_length=5)
     idempotency_key: str = Field(min_length=1, max_length=128)
@@ -154,6 +155,9 @@ class VoiceToolRequest(VoiceSelection):
         "cancel_task",
         "run_tests",
         "tune_agent",
+        "list_agent_runs",
+        "read_agent_run",
+        "read_conversation",
     ]
     arguments: dict = Field(default_factory=dict)
 

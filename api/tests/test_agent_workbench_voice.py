@@ -12,6 +12,14 @@ from api.services.agent_workbench.errors import WorkbenchError
 @pytest.fixture
 def context(monkeypatch):
     state = {
+        "assets": [
+            {
+                "id": "a",
+                "name": "rules.md",
+                "status": "ready",
+                "parsed": {"kind": "text"},
+            }
+        ],
         "jobs": [
             {
                 "id": "tune",
@@ -47,6 +55,7 @@ def context(monkeypatch):
     monkeypatch.setattr(
         voice_commands, "enqueue", AsyncMock(return_value={"id": "job"})
     )
+    monkeypatch.setattr(voice_commands.db_client, "wb_emit", AsyncMock())
     return state
 
 
@@ -120,10 +129,23 @@ async def test_status_reports_only_selected_evaluations_and_selected_file_metada
         VoiceToolRequest(name="get_status", call_id="call", asset_ids=["a"]),
     )
     assert result["selection"]["attachments"] == [
-        {"id": "a", "name": "rules.md", "kind": "text"}
+        {"id": "a", "name": "rules.md", "kind": "text", "focused": True}
     ]
     assert [e["id"] for e in result["evaluations"]] == ["accepted-eval"]
     get.assert_awaited_once_with(8, "session", "assets", "a")
+
+
+async def test_voice_status_distinguishes_analysis_from_build_and_returns_bounded_answer(
+    context,
+):
+    context["jobs"][0]["output"] = {"outcome": "analysis", "answer": "x" * 5000}
+    context["jobs"][0]["input"] = {"mode": "analyze"}
+    result = await voice_commands.voice_command(
+        8, "session", VoiceToolRequest(name="get_status", call_id="status")
+    )
+    job = result["jobs"][0]
+    assert job["mode"] == "analyze" and job["output"]["outcome"] == "analysis"
+    assert len(job["output"]["answer"]) == 4000
 
 
 async def test_attachment_reader_is_selected_scoped_paginated_and_never_returns_object_keys(
@@ -145,7 +167,7 @@ async def test_attachment_reader_is_selected_scoped_paginated_and_never_returns_
     request = VoiceToolRequest(
         name="read_attachment",
         call_id="call",
-        asset_ids=["a"],
+        asset_ids=[],
         arguments={"asset_id": "a"},
     )
     first = await voice_commands.voice_command(8, "session", request)
