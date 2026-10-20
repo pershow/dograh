@@ -37,9 +37,11 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
+import { referencedVariables } from "@/lib/workflowVariables";
 
 import type {
   Candidate,
+  Snapshot,
   WorkbenchEvent,
   WorkbenchSession,
   WorkbenchState,
@@ -80,6 +82,7 @@ export function AgentWorkbench({
   onPreviewChange,
   onSessionReady,
   onAdopted,
+  onTargetChange,
   onClose,
   adoptDisabledReason,
 }: {
@@ -88,6 +91,7 @@ export function AgentWorkbench({
   onPreviewChange?: (candidate: Candidate | undefined) => void;
   onSessionReady?: (session: WorkbenchSession) => void;
   onAdopted?: () => void;
+  onTargetChange?: (snapshot: Snapshot, canReload: boolean) => void;
   onClose?: () => void;
   adoptDisabledReason?: string;
 }) {
@@ -164,6 +168,9 @@ export function AgentWorkbench({
     suiteId,
     reload,
   );
+  useEffect(() => {
+    if (state) onTargetChange?.(state.target, !text.trim() && voice.status === "off" && !busy);
+  }, [state, text, voice.status, busy, onTargetChange]);
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
@@ -455,6 +462,26 @@ export function AgentWorkbench({
         <details className={styles.candidateSummary}>
           <summary>候选版本说明 · 只读预览</summary>
           <p>{candidate.summary}</p>
+          {candidate.snapshot && (
+            <details>
+              <summary>Variables · 应用时随候选写入草稿</summary>
+              <p>默认值用于仿真和编辑器测试；空值需要补充，或在每次通话中传入。</p>
+              <dl>
+                {Object.entries({
+                  ...Object.fromEntries(referencedVariables(
+                    candidate.snapshot.workflow_json.nodes,
+                    candidate.snapshot.workflow_json.edges,
+                  ).map(name => [name, ""])),
+                  ...candidate.snapshot.template_context_variables,
+                }).map(([name, value]) => (
+                  <div key={name} className="mb-2">
+                    <dt className="font-mono">{name}</dt>
+                    <dd className="whitespace-pre-wrap break-words">{String(value ?? "").trim() || "待填写 / 每次通话传入"}</dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          )}
           <details><summary>查看代码</summary><pre>{candidate.code}</pre></details>
         </details>
       )}

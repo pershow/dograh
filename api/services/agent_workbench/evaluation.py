@@ -67,7 +67,10 @@ async def evaluate(org, session_id, job, candidate_id, suite_id, model_configura
                 job["id"],
                 job["lease_token"],
                 candidate_id,
-                case.initial_context,
+                {
+                    **(candidate["snapshot"].get("template_context_variables") or {}),
+                    **case.initial_context,
+                },
             )
             for message in [None, *case.user_messages]:
                 await db_client.wb_heartbeat(

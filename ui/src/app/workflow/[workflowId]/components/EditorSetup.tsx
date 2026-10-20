@@ -4,11 +4,12 @@ import { Braces, Brain, Settings, Workflow } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo } from "react";
 
-import type { FlowNode } from "@/components/flow/types";
+import type { FlowEdge, FlowNode } from "@/components/flow/types";
 import { useWorkflowModelOverride } from "@/components/model-connections/useWorkflowModelOverride";
 import { WorkflowModelPicker } from "@/components/model-connections/WorkflowModelPicker";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useUnsavedChanges, useUnsavedChangesContext } from "@/context/UnsavedChangesContext";
+import { referencedVariables } from "@/lib/workflowVariables";
 import { resolveWorkflowConfigurations } from "@/types/workflow-configurations";
 
 import { TemplateVariablesSection, WorkflowSettingsSections, type WorkflowSettingsState } from "../settings/WorkflowSettingsSections";
@@ -20,25 +21,13 @@ export function isEditorView(value: string | null | undefined): value is EditorV
     return (EDITOR_VIEWS as readonly string[]).includes(value ?? "");
 }
 
-// `{{name}}` references in prompts and other node text. Filters and dotted
-// paths are left alone: an undercount is better than a false warning.
-const VARIABLE_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+export { referencedVariables } from "@/lib/workflowVariables";
 
-/** Template variable names referenced anywhere in the node definitions. */
-export function referencedVariables(nodes: FlowNode[]): string[] {
-    const names = new Set<string>();
-    for (const node of nodes) {
-        const text = JSON.stringify(node.data ?? {});
-        for (const match of text.matchAll(VARIABLE_PATTERN)) names.add(match[1]);
-    }
-    return [...names].sort();
-}
-
-export function describeVariables(variables: Record<string, string>, nodes: FlowNode[]): { text: string; missing: string[] } {
+export function describeVariables(variables: Record<string, string>, nodes: FlowNode[], edges: FlowEdge[] = []): { text: string; missing: string[] } {
     // Values written through the API may not be strings.
     const hasValue = (value: unknown) => String(value ?? "").trim() !== "";
     const set = Object.values(variables).filter(hasValue).length;
-    const missing = referencedVariables(nodes).filter(name => !Object.hasOwn(variables, name) || !hasValue(variables[name]));
+    const missing = referencedVariables(nodes, edges).filter(name => !Object.hasOwn(variables, name) || !hasValue(variables[name]));
     if (set === 0 && missing.length === 0) return { text: "No variables", missing };
     return { text: missing.length ? `${set} set, ${missing.length} missing` : `${set} set`, missing };
 }
@@ -68,9 +57,10 @@ type EditorSetupProps = WorkflowSettingsState & {
     workflowName: string;
     workflowUuid?: string | null;
     nodes: FlowNode[];
+    edges?: FlowEdge[];
 };
 
-export function EditorSetup({ view, onViewChange, onSavingChange, workflowId, workflowName, workflowUuid, nodes, ...state }: EditorSetupProps) {
+export function EditorSetup({ view, onViewChange, onSavingChange, workflowId, workflowName, workflowUuid, nodes, edges, ...state }: EditorSetupProps) {
     const { confirmNavigate, dirtySections } = useUnsavedChangesContext();
     const { workflowConfigurations, templateContextVariables, saveWorkflowConfigurations, saveTemplateContextVariables } = state;
     // The configurations and variables arrive together; until then the
@@ -87,7 +77,8 @@ export function EditorSetup({ view, onViewChange, onSavingChange, workflowId, wo
         onSavingChange?.(pendingSave);
         return () => onSavingChange?.(false);
     }, [pendingSave, onSavingChange]);
-    const variables = useMemo(() => describeVariables(templateContextVariables, nodes), [templateContextVariables, nodes]);
+    const variables = useMemo(() => describeVariables(templateContextVariables, nodes, edges), [templateContextVariables, nodes, edges]);
+    const references = useMemo(() => referencedVariables(nodes, edges), [nodes, edges]);
 
     const switchView = (next: EditorView) => {
         // The model editor stays mounted across views, so only the other
@@ -130,7 +121,7 @@ export function EditorSetup({ view, onViewChange, onSavingChange, workflowId, wo
                 {variables.missing.length > 0 && <p className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" role="status">
                     Prompts reference {variables.missing.map(name => `{{${name}}}`).join(", ")} but no value is set. Set them here to use during test calls.
                 </p>}
-                <TemplateVariablesSection templateContextVariables={templateContextVariables} onSave={saveTemplateContextVariables} />
+                <TemplateVariablesSection templateContextVariables={templateContextVariables} referencedNames={references} onSave={saveTemplateContextVariables} />
             </div>
         </section>}
 

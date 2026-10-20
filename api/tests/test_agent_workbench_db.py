@@ -126,6 +126,7 @@ async def test_cross_session_references_and_adoption_conflict(
     job = await db_session.wb_claim(org, sid, job["id"])
     snapshot = copy.deepcopy(context["target"])
     snapshot["name"] = "Built agent"
+    snapshot["template_context_variables"] = {"company": "From the request", "customer": ""}
     candidate = await db_session.wb_save_candidate(
         org,
         sid,
@@ -146,6 +147,10 @@ async def test_cross_session_references_and_adoption_conflict(
     assert not saved["unchanged"]
     workflow = await async_session.get(WorkflowModel, context["session"]["workflow_id"])
     assert workflow.released_definition_id is None
+    assert workflow.template_context_variables == snapshot["template_context_variables"]
+    assert (await db_session.wb_context(org, sid))["target"][
+        "template_context_variables"
+    ] == snapshot["template_context_variables"]
     assert (await db_session.wb_adopt(org, sid, candidate["id"]))["unchanged"]
     workflow.name = "Concurrent manual edit"
     await async_session.flush()

@@ -12,6 +12,11 @@ from api.schemas.agent_workbench import SimulationSuite
 from api.services.agent_workbench.attachments import read_selected_attachment
 from api.services.agent_workbench.dependencies import prepare_models
 from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.variables import (
+    VARIABLE_UPDATES_SCHEMA,
+    candidate_variables,
+    variable_report,
+)
 from api.services.configuration.masking import (
     mask_workflow_definition,
     merge_workflow_api_keys,
@@ -79,16 +84,20 @@ class WorkbenchTools:
             ),
             tool(
                 "validate_candidate",
-                "Validate complete @dograh/sdk TypeScript using the AST parser and real graph validator, without saving.",
-                {"code": {"type": "string", "maxLength": 200000}},
+                "Validate complete @dograh/sdk TypeScript and template defaults without saving. Report missing business variables.",
+                {
+                    "code": {"type": "string", "maxLength": 200000},
+                    "template_context_variables": VARIABLE_UPDATES_SCHEMA,
+                },
                 ["code"],
             ),
             tool(
                 "save_candidate",
-                "Validate and save an immutable candidate. Does not overwrite drafts or publish.",
+                "Validate and save an immutable candidate including template defaults. Referenced variables without values are registered as empty rows. Does not overwrite drafts or publish.",
                 {
                     "code": {"type": "string", "maxLength": 200000},
                     "summary": {"type": "string", "maxLength": 4000},
+                    "template_context_variables": VARIABLE_UPDATES_SCHEMA,
                 },
                 ["code", "summary"],
             ),
@@ -144,6 +153,17 @@ class WorkbenchTools:
         )
         return {
             "code": code,
+            **variable_report(self.base),
+            "variable_guidance": (
+                "Pass template_context_variables to validate_candidate and save_candidate; "
+                "the SDK code only describes the graph. Preserve existing defaults. "
+                "Use evidence-backed business defaults, never invented contact details "
+                "or sample values. Register unknown values as empty strings and tell the "
+                "user what to fill in or supply per call. Put test-only values in each "
+                "simulation case's initial_context. current_time[_IANA_timezone] and "
+                "current_weekday[_IANA_timezone] are built in. current_date is not built "
+                "in; use current_time or ask for an explicit business date."
+            ),
             "workflow_id": self.context["session"]["workflow_id"],
             "model_dependencies": self.context.get("model_dependencies"),
             "tools": [
@@ -198,7 +218,7 @@ class WorkbenchTools:
             )
         return result
 
-    async def _validate(self, code):
+    async def _validate(self, code, template_context_variables=None):
         parsed = await asyncio.wait_for(parse_code(code), 20)
         if not parsed.get("ok"):
             raise WorkbenchError(
@@ -252,14 +272,23 @@ class WorkbenchTools:
             **copy.deepcopy(self.base),
             "name": (parsed.get("workflowName") or self.base["name"])[:120],
             "workflow_json": graph,
+            "template_context_variables": candidate_variables(
+                graph,
+                self.base.get("template_context_variables"),
+                template_context_variables,
+            ),
         }
 
-    async def validate_candidate(self, code):
-        snapshot = await self._validate(code)
-        return {"valid": True, "node_count": len(snapshot["workflow_json"]["nodes"])}
+    async def validate_candidate(self, code, template_context_variables=None):
+        snapshot = await self._validate(code, template_context_variables)
+        return {
+            "valid": True,
+            "node_count": len(snapshot["workflow_json"]["nodes"]),
+            **variable_report(snapshot),
+        }
 
-    async def save_candidate(self, code, summary):
-        snapshot = await self._validate(code)
+    async def save_candidate(self, code, summary, template_context_variables=None):
+        snapshot = await self._validate(code, template_context_variables)
         candidate = await db_client.wb_save_candidate(
             self.org,
             self.session_id,
@@ -275,6 +304,7 @@ class WorkbenchTools:
             "candidate_id": candidate["id"],
             "fingerprint": candidate["fingerprint"],
             "saved": True,
+            **variable_report(snapshot),
         }
 
     async def save_suite(self, suite):

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, expect, it, vi } from 'vitest';
 
@@ -207,4 +207,29 @@ it('blocks adoption over unsaved draft changes, and reloads the editor after ado
     view.rerender(<RenderWorkflow workflowId={12} initialWorkflowName="Saved Agent" user={{id:'1'}} onDraftAdopted={onDraftAdopted} />);
     fireEvent.click(screen.getByText('Apply candidate'));
     expect(onDraftAdopted).toHaveBeenCalledOnce();
+});
+
+it('reloads an externally adopted draft only once, after its saved snapshot actually changes', () => {
+    mocks.query = 'workbench=1';
+    const reload = vi.fn();
+    render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id:'1'}} onDraftAdopted={reload} />);
+    const snapshot = { template_context_variables: {}, workflow_configurations: {}, workflow_json: {edges: [], nodes: []}, name: 'Agent' };
+    act(() => mocks.workbench.mock.lastCall?.[0].onTargetChange(snapshot, true));
+    expect(reload).not.toHaveBeenCalled();
+    act(() => mocks.workbench.mock.lastCall?.[0].onTargetChange({ ...snapshot, template_context_variables: {company: 'Provided'} }, true));
+    act(() => mocks.workbench.mock.lastCall?.[0].onTargetChange({ ...snapshot, template_context_variables: {company: 'Provided'} }, true));
+    expect(reload).toHaveBeenCalledOnce();
+});
+
+it.each(['dirty', 'composing', 'historical'])('preserves %s state when another tab updates the draft', kind => {
+    mocks.query = kind === 'historical' ? 'workbench=1&version=3' : 'workbench=1';
+    mocks.state.isDirty = kind === 'dirty';
+    const reload = vi.fn();
+    render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id:'1'}} onDraftAdopted={reload}
+        initialSelectedVersion={kind === 'historical' ? version(3, 'archived') : undefined} />);
+    act(() => mocks.workbench.mock.lastCall?.[0].onTargetChange({
+        name: 'Built agent', workflow_json: {nodes: [], edges: []}, workflow_configurations: {}, template_context_variables: {},
+    }, kind !== 'composing'));
+    expect(reload).not.toHaveBeenCalled();
+    if (kind === 'composing') expect(screen.getByRole('button', {name: '同步最新草稿'}).hasAttribute('disabled')).toBe(true);
 });

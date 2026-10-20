@@ -98,3 +98,29 @@ it('keeps an adopted candidate in the draft when replaying task history', async 
   expect((screen.getByRole('combobox', {name: '候选版本'}) as HTMLSelectElement).value).toBe('');
   expect(preview).not.toHaveBeenCalledWith(candidate);
 });
+
+it('defers host draft synchronization while composing or using voice', async () => {
+  const targetChanged = vi.fn();
+  const preview = vi.fn();
+  const view = render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={preview} onTargetChange={targetChanged} />);
+  await waitFor(() => expect(targetChanged).toHaveBeenLastCalledWith(snapshot, true));
+  fireEvent.change(screen.getByRole('textbox', {name: '构建需求'}), {target: {value: 'Unsent requirements'}});
+  expect(targetChanged).toHaveBeenLastCalledWith(snapshot, false);
+  fireEvent.change(screen.getByRole('textbox', {name: '构建需求'}), {target: {value: ''}});
+  expect(targetChanged).toHaveBeenLastCalledWith(snapshot, true);
+  mocks.voice.mockReturnValue({status: 'listening', start: vi.fn(), stop: vi.fn()});
+  view.rerender(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={preview} onTargetChange={targetChanged} />);
+  expect(targetChanged).toHaveBeenLastCalledWith(snapshot, false);
+});
+
+it('previews candidate defaults and labels unresolved business values', async () => {
+  mocks.candidate.mockResolvedValue(response({...candidate, snapshot: {
+    ...snapshot, template_context_variables: {company: 'Provided company'},
+    workflow_json: {nodes: [{id: 'start', data: {prompt: '{{customer}} {{current_weekday}}'}}], edges: []},
+  }}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  await screen.findByText('Provided company');
+  expect(screen.getByText('customer')).toBeTruthy();
+  expect(screen.getByText('待填写 / 每次通话传入')).toBeTruthy();
+  expect(screen.queryByText('current_weekday')).toBeNull();
+});

@@ -60,6 +60,13 @@ describe("editor setup", () => {
         expect(describeVariables({}, [{ ...nodes[0], data: { prompt: "{{toString}}" } }] as FlowNode[])).toEqual({ text: "0 set, 1 missing", missing: ["toString"] });
     });
 
+    it("includes edge speech but excludes runtime paths, clock variables and fallbacks", () => {
+        const references = referencedVariables([
+            { data: { prompt: "{{company}} {{current_weekday}} {{current_weekday_Asia/Shanghai}} {{current_time}} {{current_time_Asia/Shanghai}} {{gathered_context.city}} {{campaign_id}} {{provider}} {{source_uuid}} {{optional | fallback:ok}}", nested: ["{{岗位}}"] } },
+        ], [{ data: { transition_speech: "{{address}}", condition: "{{company}}" } }]);
+        expect(references).toEqual(["address", "company", "岗位"]);
+    });
+
     it("offers the four views and switches on click", () => {
         const { onViewChange } = renderSetup("canvas");
         expect(within(screen.getByRole("toolbar", { name: "Editor" })).getAllByRole("tab").map(item => item.textContent)).toEqual(["Canvas", "Model", "Variables", "Settings"]);

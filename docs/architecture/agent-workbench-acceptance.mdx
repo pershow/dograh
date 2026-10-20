@@ -14,6 +14,18 @@ description: "本地真实模型、附件、文本仿真、调优、实时语音
 - 实时语音：Dograh SmallWebRTC、ElevenLabs `scribe_v2_realtime`、Qwen、已配置 ElevenLabs TTS。
 - 实测凭据来自用户指定的本地配置；不写入文档或 Git。
 
+## 2026-10-20 Variables 增量验收
+
+修复构建工具只能提交图、没有变量参数的问题。`validate_candidate` / `save_candidate` 接收变量默认值；保留已有值，自动注册未赋值的业务引用，排除内置时间、系统及嵌套路径。候选应用到草稿沿用原有事务，仿真合并候选默认值和用例上下文。
+
+在独立 `8016` 环境创建 workflow `10`（`Variables 完整链路验收`），真实 Codex / Qwen 生成候选 `4e9bf8a2-b6a6-4257-9ba7-24f00813296e` 和测试集。生成结果包含 `company=示例服务中心`、`customer=""`；未把 `current_weekday` 写成静态默认值。测试只传入 `customer=演示用户`。
+
+评测 `0ea915c8-5d97-41ae-a68d-f38b6a09f12e`，run `25`，**1/1 通过**。真实开场为“您好，我是示例服务中心，请问是演示用户吗？”，用户回复后正常结束。此结果只验证该固定用例的变量合并与运行链路。
+
+浏览器点击“应用到草稿”后，原编辑器显示两个节点，Variables 显示 `1 set, 1 missing`，存储中保留公司默认值和空客户名，测试姓名没有回写。已有招聘 Agent 的 9 个缺值引用可直接在 Variables 填写；打开页面不自动保存。另一标签页应用候选后，旧画布现在会同步已保存快照；未保存编辑、未发送文字和语音会阻止自动重载。
+
+本轮后端 **37 项**、前端 **59 项**通过，TypeScript、改动文件 ESLint、Python Ruff 与 diff 空白检查通过。截图与验收明细保留于本地 `run/workbench/workbench-variables-existing.png`、`variables-acceptance-result.json`。仅重启独立工作台 Worker，未变更 `8000` 原实例。
+
 ## 真实闭环结果
 
 | 验收项 | 结果 |

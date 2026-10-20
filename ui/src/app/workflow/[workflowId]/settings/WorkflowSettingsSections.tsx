@@ -983,14 +983,23 @@ function GeneralSection({
 export function TemplateVariablesSection({
     templateContextVariables,
     onSave,
+    referencedNames = [],
 }: {
     templateContextVariables: Record<string, string>;
     onSave: (variables: Record<string, string>) => Promise<void>;
+    referencedNames?: string[];
 }) {
     const [contextVars, setContextVars] = useState<Record<string, string>>(templateContextVariables);
     const [newKey, setNewKey] = useState("");
     const [newValue, setNewValue] = useState("");
     const [isSaving, setIsSaving] = useState(false);
+    // Old workflows may contain placeholders without registered defaults. Show
+    // these as editable rows, but don't mutate or mark the draft dirty on load.
+    const displayedVars = {
+        ...Object.fromEntries(referencedNames.map(name => [name, ""])),
+        ...contextVars,
+    };
+    const hasUnregistered = referencedNames.some(name => !Object.hasOwn(templateContextVariables, name));
 
     const isDirty = useMemo(() => {
         const pendingVars = newKey && newValue ? { ...contextVars, [newKey]: newValue } : contextVars;
@@ -1018,11 +1027,14 @@ export function TemplateVariablesSection({
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            let varsToSave = contextVars;
+            let varsToSave = displayedVars;
             if (newKey && newValue) {
                 varsToSave = { ...varsToSave, [newKey]: newValue };
             }
             await onSave(varsToSave);
+            setContextVars(varsToSave);
+            setNewKey("");
+            setNewValue("");
             toast.success(`Template variables saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save variables:", error);
@@ -1045,18 +1057,23 @@ export function TemplateVariablesSection({
             </CardHeader>
             <CardContent className="space-y-4">
                 {/* Existing Variables */}
-                {Object.entries(contextVars).length > 0 && (
+                {Object.entries(displayedVars).length > 0 && (
                     <div className="space-y-2">
                         <Label className="text-sm font-medium">Current Variables</Label>
-                        {Object.entries(contextVars).map(([key, value]) => (
+                        {Object.entries(displayedVars).map(([key, value]) => (
                             <div key={key} className="flex items-center gap-2 rounded-md border p-2">
                                 <div className="flex-1 min-w-0">
-                                    <div className="text-sm font-medium">{key}</div>
-                                    <div className="text-xs text-muted-foreground truncate">{value}</div>
+                                    <Label htmlFor={`template-variable-${key}`} className="text-sm font-medium">{key}</Label>
+                                    <Input
+                                        id={`template-variable-${key}`}
+                                        value={value}
+                                        placeholder="Not set — supply a default or pass it per call"
+                                        onChange={e => setContextVars(prev => ({ ...prev, [key]: e.target.value }))}
+                                    />
                                 </div>
-                                <Button size="sm" variant="ghost" onClick={() => handleRemove(key)}>
+                                {!referencedNames.includes(key) && <Button size="sm" variant="ghost" aria-label={`Remove variable ${key}`} onClick={() => handleRemove(key)}>
                                     <Trash2Icon className="h-4 w-4" />
-                                </Button>
+                                </Button>}
                             </div>
                         ))}
                     </div>
@@ -1092,7 +1109,7 @@ export function TemplateVariablesSection({
             </CardContent>
             <CardFooter className="justify-end gap-3 border-t pt-6">
                 {isDirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
-                <Button onClick={handleSave} disabled={isSaving || !isDirty}>
+                <Button onClick={handleSave} disabled={isSaving || (!isDirty && !hasUnregistered)}>
                     {isSaving ? "Saving..." : "Save Variables"}
                 </Button>
             </CardFooter>

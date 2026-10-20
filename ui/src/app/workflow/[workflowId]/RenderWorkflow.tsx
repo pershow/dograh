@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import { createWorkflowDraftApiV1WorkflowWorkflowIdCreateDraftPost, getWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGet, listDocumentsApiV1KnowledgeBaseDocumentsGet, listRecordingsApiV1WorkflowRecordingsGet, listToolsApiV1ToolsGet } from '@/client';
 import type { DocumentResponseSchema, RecordingResponseSchema, ToolResponse, WorkflowVersionResponse } from '@/client/types.gen';
 import { AgentWorkbench } from "@/components/agent-workbench/AgentWorkbench";
-import type { Candidate, WorkbenchSession } from "@/components/agent-workbench/types";
+import type { Candidate, Snapshot, WorkbenchSession } from "@/components/agent-workbench/types";
 import { useNodeSpecs } from "@/components/flow/renderer";
 import { FlowEdge, FlowNode, NodeType } from "@/components/flow/types";
 import { HireExpertNudge } from "@/components/lead-forms/HireExpertNudge";
@@ -47,6 +47,16 @@ const edgeTypes = {
 };
 
 const VERSIONS_PAGE_SIZE = 10;
+
+// Compare saved data independent of JSON object key order. Never compare with
+// React Flow's measured/selected node state or overwrite unsaved local edits.
+function savedSnapshotKey(value: unknown): string {
+    return JSON.stringify(value, (_key, item) => (
+        item && typeof item === 'object' && !Array.isArray(item)
+            ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]))
+            : item
+    ));
+}
 
 interface RenderWorkflowProps {
     onDraftAdopted?: () => void;
@@ -168,6 +178,15 @@ function WorkflowEditor({
     const [tools, setTools] = useState<ToolResponse[] | undefined>(undefined);
     const [recordings, setRecordings] = useState<RecordingResponseSchema[]>([]);
     const [activeRuntimeNodeId, setActiveRuntimeNodeId] = useState<string | null>(null);
+    const [externalDraftChanged, setExternalDraftChanged] = useState(false);
+    const [workbenchCanReload, setWorkbenchCanReload] = useState(true);
+    const reloadingDraft = useRef(false);
+    const savedDraftKey = useMemo(() => savedSnapshotKey({
+        name: initialWorkflowName,
+        workflow_json: { nodes: initialFlow?.nodes ?? [], edges: initialFlow?.edges ?? [] },
+        workflow_configurations: initialWorkflowConfigurations ?? {},
+        template_context_variables: initialTemplateContextVariables ?? {},
+    }), [initialWorkflowName, initialFlow, initialWorkflowConfigurations, initialTemplateContextVariables]);
 
     const {
         rfInstance,
@@ -393,6 +412,21 @@ function WorkflowEditor({
     }, [activeVersionId, versions, hasDraft, initialSelectedVersion]);
 
     const canvasReadOnly = isViewingHistoricalVersion || isCandidatePreview;
+    const handleTargetChange = useCallback((snapshot: Snapshot, canReload: boolean) => {
+        if (isViewingHistoricalVersion || !onDraftAdopted) return;
+        const changed = savedSnapshotKey({
+            name: snapshot.name,
+            workflow_json: { nodes: snapshot.workflow_json.nodes ?? [], edges: snapshot.workflow_json.edges ?? [] },
+            workflow_configurations: snapshot.workflow_configurations ?? {},
+            template_context_variables: snapshot.template_context_variables ?? {},
+        }) !== savedDraftKey;
+        setExternalDraftChanged(changed);
+        setWorkbenchCanReload(canReload);
+        if (changed && canReload && !isDirty && !hasDirtyChanges && !settingsSaving && !reloadingDraft.current) {
+            reloadingDraft.current = true;
+            onDraftAdopted();
+        }
+    }, [isViewingHistoricalVersion, savedDraftKey, isDirty, hasDirtyChanges, settingsSaving, onDraftAdopted]);
 
     useEffect(() => {
         if (!isViewingHistoricalVersion) {
@@ -686,6 +720,14 @@ function WorkflowEditor({
                     onPublished={handlePublished}
                     renameWorkflow={renameWorkflow}
                 />
+                {externalDraftChanged && (
+                    <div role="status" className="flex items-center justify-between gap-3 border-b bg-muted px-4 py-2 text-sm">
+                        <span>草稿已在其他页面更新。请先复制保留本地修改和未发送内容，并结束语音，再同步最新草稿。</span>
+                        <Button size="sm" variant="outline" disabled={!workbenchCanReload} onClick={() => confirmNavigate(() => onDraftAdopted?.())}>
+                            同步最新草稿
+                        </Button>
+                    </div>
+                )}
 
                 {/* Workflow Canvas */}
                 <div className="flex-1 min-h-0">
@@ -849,6 +891,7 @@ function WorkflowEditor({
                                     workflowName={workflowName}
                                     workflowUuid={workflowUuid}
                                     nodes={nodes}
+                                    edges={edges}
                                     workflowConfigurations={workflowConfigurations}
                                     defaultCallDispositions={defaultCallDispositions}
                                     defaultAnswerClassifierPrompt={defaultAnswerClassifierPrompt}
@@ -873,6 +916,7 @@ function WorkflowEditor({
                                     onPreviewChange={handlePreviewChange}
                                     onSessionReady={handleSessionReady}
                                     onAdopted={onDraftAdopted}
+                                    onTargetChange={handleTargetChange}
                                     onClose={() => setWorkbenchOpen(false)}
                                     adoptDisabledReason={isDirty || hasDirtyChanges || settingsSaving
                                         ? "草稿有未保存的修改，请先返回当前草稿保存，再应用候选版本。"
