@@ -101,7 +101,10 @@ async def test_sdk_tools_register_defaults_and_keep_tuning_baseline(
         {"target": baseline, "target_fingerprint": "base"},
         tuning=tuning,
     )
-    result = await tools.validate_candidate(CODE, {"company": "From the request"})
+    result = await tools.validate_candidate(
+        CODE, {"company": "From the request"}, summary="Optional description"
+    )
+    saved.assert_not_called()
     assert result["missing_variables"] == ["customer"]
     assert result["template_context_variables"] == {
         "company": "From the request",

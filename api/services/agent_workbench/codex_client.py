@@ -27,6 +27,9 @@ from get_context, preserve them, and use only user/attachment-supported values.
 Unknown business or per-contact values must remain empty and be reported as needing input.
 Use runtime built-ins for current time/weekday, never freeze today's date into defaults.
 Supply test-only variable values through each simulation case's initial_context.
+save_candidate already validates; prefer saving directly when the change is ready.
+For tuning, inspect the evidence once, read only relevant attachments/specs, then save
+a minimal repair. Do not repeatedly restate the same analysis or change the frozen suite.
 SDK is a declarative AST subset: no exports, functions, loops, assignments or arbitrary imports.
 Use ASCII unique edge labels (e.g. collect_name, end_call). Do not add export default.
 After a validation error, repair the code and retry the save before finishing.
@@ -169,6 +172,8 @@ class CodexClient:
             llm_config,
             [tool["name"] for tool in self.dispatcher.specs()],
             protocol=protocol,
+            max_requests=settings.max_model_requests,
+            max_tokens=settings.max_model_tokens,
         ) as gateway:
             with tempfile.TemporaryDirectory(
                 prefix="job-", dir=settings.root
@@ -305,6 +310,18 @@ class CodexClient:
                         raise WorkbenchError(gateway.last_error) from error
                     raise
                 finally:
+                    with contextlib.suppress(Exception):
+                        await self.on_event(
+                            "model.usage",
+                            {
+                                "protocol": protocol,
+                                "requests": gateway.request_count,
+                                "tokens": gateway.tokens,
+                                "max_requests": gateway.max_requests,
+                                "max_tokens": gateway.max_tokens,
+                                "budget_exceeded": gateway.budget_exceeded,
+                            },
+                        )
                     if self.process.returncode is None:
                         self.process.terminate()
                         try:

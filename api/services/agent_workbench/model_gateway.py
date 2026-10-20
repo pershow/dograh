@@ -177,13 +177,23 @@ def response_events(response):
 
 
 class ModelGateway:
-    def __init__(self, llm_config, allowed_tools, *, protocol="chat"):
+    def __init__(
+        self,
+        llm_config,
+        allowed_tools,
+        *,
+        protocol="chat",
+        max_requests=40,
+        max_tokens=150000,
+    ):
         if protocol not in {"chat", "responses"}:
             raise WorkbenchError("Unknown model protocol")
         self.protocol = protocol
         self.config, self.allowed = llm_config, set(allowed_tools)
         self.token = secrets.token_urlsafe(32)
         self.request_count, self.tokens = 0, 0
+        self.max_requests, self.max_tokens = max_requests, max_tokens
+        self.budget_exceeded = False
         self.runner = None
         self.last_error = None
         self.client = httpx.AsyncClient(timeout=90)
@@ -214,12 +224,27 @@ class ModelGateway:
             request.headers.get("Authorization", ""), "Bearer " + self.token
         ):
             raise web.HTTPUnauthorized()
-        self.request_count += 1
-        if self.request_count > 40 or self.tokens > 150000:
-            self.last_error = "Workbench model budget exceeded"
-            return web.json_response(
-                {"error": {"message": "Workbench model budget exceeded"}}, status=429
+        if self.request_count >= self.max_requests or self.tokens >= self.max_tokens:
+            self.budget_exceeded = True
+            limit = "request" if self.request_count >= self.max_requests else "token"
+            self.last_error = (
+                f"Workbench model {limit} budget exceeded: "
+                f"{self.request_count}/{self.max_requests} requests, "
+                f"{self.tokens}/{self.max_tokens} cumulative tokens. "
+                "Reduce task context or adjust the server WORKBENCH_MAX_MODEL_"
+                + ("REQUESTS" if limit == "request" else "TOKENS")
+                + " setting."
             )
+            return web.json_response(
+                {
+                    "error": {
+                        "code": "workbench_budget_exceeded",
+                        "message": self.last_error,
+                    }
+                },
+                status=400,
+            )
+        self.request_count += 1
         try:
             body = await request.json()
             allowed = [

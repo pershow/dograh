@@ -990,6 +990,15 @@ export function TemplateVariablesSection({
     referencedNames?: string[];
 }) {
     const [contextVars, setContextVars] = useState<Record<string, string>>(templateContextVariables);
+    const previousSavedVars = useRef(templateContextVariables);
+    useEffect(() => {
+        const previous = previousSavedVars.current;
+        // Initial editor loading or a refreshed draft must not look like an
+        // unsaved edit. Preserve values the user actually changed locally.
+        setContextVars(current => JSON.stringify(current) === JSON.stringify(previous)
+            ? templateContextVariables : current);
+        previousSavedVars.current = templateContextVariables;
+    }, [templateContextVariables]);
     const [newKey, setNewKey] = useState("");
     const [newValue, setNewValue] = useState("");
     const [isSaving, setIsSaving] = useState(false);

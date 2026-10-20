@@ -28,6 +28,8 @@ class Instruction(StrictModel):
 
 
 class Assertion(StrictModel):
+    """node_visited.value accepts a node ID or an exact, unique node name."""
+
     kind: Literal[
         "contains",
         "not_contains",

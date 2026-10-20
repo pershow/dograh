@@ -88,6 +88,11 @@ class WorkbenchTools:
                 {
                     "code": {"type": "string", "maxLength": 200000},
                     "template_context_variables": VARIABLE_UPDATES_SCHEMA,
+                    "summary": {
+                        "type": "string",
+                        "maxLength": 4000,
+                        "description": "Optional description; validation does not save it.",
+                    },
                 },
                 ["code"],
             ),
@@ -279,7 +284,9 @@ class WorkbenchTools:
             ),
         }
 
-    async def validate_candidate(self, code, template_context_variables=None):
+    async def validate_candidate(
+        self, code, template_context_variables=None, summary=None
+    ):
         snapshot = await self._validate(code, template_context_variables)
         return {
             "valid": True,

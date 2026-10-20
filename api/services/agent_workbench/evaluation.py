@@ -9,7 +9,74 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
 
 
-def check_assertions(case, transcript, events, context, completed, calls):
+def resolve_node_references(case, graph):
+    """Accept stable IDs or unique exact names, never guess an ambiguous node."""
+    nodes = graph.get("nodes", [])
+    ids = {str(node["id"]) for node in nodes}
+    references = {}
+    for assertion in case.assertions:
+        if assertion.kind != "node_visited":
+            continue
+        value = assertion.value
+        if value in ids:
+            references[value] = value
+            continue
+        matches = [
+            str(node["id"])
+            for node in nodes
+            if node.get("data", {}).get("name") == value
+        ]
+        if len(matches) != 1:
+            raise WorkbenchError(
+                f"node_visited {value!r} must identify an existing node ID or unique node name"
+            )
+        references[value] = matches[0]
+    return references
+
+
+def tuning_evidence(evaluation):
+    """Omit duplicate speech events and billing usage from each repeated model input."""
+    results = []
+    for case in evaluation["results"]:
+        messages = case.get("transcript", [])
+        # Distribute a bounded transcript allowance across all cases and turns.
+        limit = max(
+            80, 24000 // max(1, len(evaluation["results"])) // max(1, len(messages))
+        )
+        results.append(
+            {
+                "name": case["name"],
+                "status": case["status"],
+                "error": case.get("error"),
+                "assertions": case.get("assertions", []),
+                "transcript": [
+                    {
+                        **m,
+                        "text": m["text"][:limit]
+                        + ("… [truncated]" if len(m["text"]) > limit else ""),
+                    }
+                    for m in messages
+                ],
+                "visited_nodes": [
+                    {
+                        k: event.get("payload", event.get("data", {})).get(k)
+                        for k in ("node_id", "node_name", "to_node_id")
+                    }
+                    for event in case.get("events", [])
+                    if event.get("type") == "node_transition"
+                ],
+                "tool_calls": [
+                    {k: call.get(k) for k in ("name", "arguments")}
+                    for call in case.get("tool_calls", [])
+                ],
+            }
+        )
+    return results
+
+
+def check_assertions(
+    case, transcript, events, context, completed, calls, node_references=None
+):
     assistant = "\n".join(m["text"] for m in transcript if m["role"] == "assistant")
     nodes = {
         str(e.get("payload", e.get("data", {})).get("node_id", ""))
@@ -30,7 +97,7 @@ def check_assertions(case, transcript, events, context, completed, calls):
         elif kind == "not_contains":
             passed = str(value).casefold() not in assistant.casefold()
         elif kind == "node_visited":
-            passed = str(value) in nodes
+            passed = str((node_references or {}).get(value, value)) in nodes
         elif kind == "tool_called":
             passed = any(c["name"] == value for c in calls)
         elif kind == "completed":
@@ -60,6 +127,9 @@ async def evaluate(org, session_id, job, candidate_id, suite_id, model_configura
         run_id, transcript, events, turns, checkpoint = None, [], [], [], None
         completed, gathered, usage = False, {}, []
         try:
+            node_references = resolve_node_references(
+                case, candidate["snapshot"]["workflow_json"]
+            )
             policy.validate(candidate["snapshot"]["workflow_json"])
             run_id = await db_client.wb_create_run(
                 org,
@@ -115,7 +185,13 @@ async def evaluate(org, session_id, job, candidate_id, suite_id, model_configura
                 if policy.errors:
                     raise WorkbenchError("; ".join(policy.errors))
             assertions = check_assertions(
-                case, transcript, events, gathered, completed, policy.calls
+                case,
+                transcript,
+                events,
+                gathered,
+                completed,
+                policy.calls,
+                node_references,
             )
             status = "passed" if all(a["passed"] for a in assertions) else "failed"
             if not any(m["text"] for m in transcript if m["role"] == "assistant"):

@@ -7,9 +7,73 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.evaluation import (
     acceptable_improvement,
     check_assertions,
+    resolve_node_references,
+    tuning_evidence,
 )
 from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
 from api.services.agent_workbench.file_parser import parse_file
+
+
+def test_node_assertions_resolve_ids_and_unique_names_without_false_passes():
+    graph = {
+        "nodes": [
+            {"id": "10", "data": {"name": "成功结束"}},
+            {"id": "11", "data": {"name": "未经过"}},
+        ]
+    }
+    case = SimulationCase(
+        name="routing",
+        user_messages=["bye"],
+        assertions=[
+            {"kind": "node_visited", "value": "10"},
+            {"kind": "node_visited", "value": "成功结束"},
+            {"kind": "node_visited", "value": "未经过"},
+        ],
+    )
+    references = resolve_node_references(case, graph)
+    results = check_assertions(
+        case,
+        [],
+        [
+            {
+                "type": "node_transition",
+                "payload": {"node_id": "10", "node_name": "成功结束"},
+            }
+        ],
+        {},
+        True,
+        [],
+        references,
+    )
+    assert [r["passed"] for r in results] == [True, True, False]
+    graph["nodes"][1]["data"]["name"] = "成功结束"
+    with pytest.raises(WorkbenchError, match="unique node name"):
+        resolve_node_references(case, graph)
+    with pytest.raises(WorkbenchError, match="existing node ID"):
+        resolve_node_references(case, {"nodes": []})
+
+
+def test_tuning_evidence_preserves_failures_without_duplicate_event_transcripts():
+    case = {
+        "name": "routing",
+        "status": "failed",
+        "assertions": [{"kind": "node_visited", "value": "结束", "passed": False}],
+        "transcript": [{"role": "assistant", "text": "A" * 30000}],
+        "events": [
+            {"type": "bot_speech", "payload": {"text": "DUPLICATED_SPEECH"}},
+            {
+                "type": "node_transition",
+                "payload": {"node_id": "2", "node_name": "核实"},
+            },
+        ],
+        "usage": {"prompt_tokens": 1000},
+    }
+    compact = tuning_evidence({"results": [case]})[0]
+    assert compact["assertions"] == case["assertions"]
+    assert compact["visited_nodes"][0]["node_id"] == "2"
+    assert "events" not in compact and "usage" not in compact
+    assert compact["transcript"][0]["text"].endswith("[truncated]")
+    assert len(case["transcript"][0]["text"]) == 30000
 
 
 def test_parser_documents_and_malformed_files(tmp_path):

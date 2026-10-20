@@ -10,6 +10,8 @@ class WorkbenchSettings:
     codex_binary: str
     root: Path
     timeout_seconds: int = 900
+    max_model_requests: int = 40
+    max_model_tokens: int = 150000
 
     @classmethod
     def load(cls):
@@ -17,6 +19,12 @@ class WorkbenchSettings:
             enabled=os.getenv("AGENT_WORKBENCH_ENABLED", "false").lower() == "true",
             codex_binary=os.getenv("WORKBENCH_CODEX_BINARY", "codex"),
             root=Path(os.getenv("WORKBENCH_DATA_DIR", "/tmp/dograh-workbench")),
+            max_model_requests=max(
+                1, int(os.getenv("WORKBENCH_MAX_MODEL_REQUESTS", "40"))
+            ),
+            max_model_tokens=max(
+                1, int(os.getenv("WORKBENCH_MAX_MODEL_TOKENS", "150000"))
+            ),
         )
 
     def capabilities(self):

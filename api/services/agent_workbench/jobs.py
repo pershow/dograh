@@ -11,7 +11,11 @@ from api.services.agent_workbench.codex_client import CodexClient
 from api.services.agent_workbench.config import WorkbenchSettings
 from api.services.agent_workbench.dependencies import model_report, prepare_models
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
-from api.services.agent_workbench.evaluation import acceptable_improvement, evaluate
+from api.services.agent_workbench.evaluation import (
+    acceptable_improvement,
+    evaluate,
+    tuning_evidence,
+)
 from api.services.agent_workbench.tools import WorkbenchTools
 
 QUEUE = "arq:agent-workbench"
@@ -146,9 +150,8 @@ async def _perform(org, session_id, job):
             + "\nFrozen suite (do not change):\n"
             + json.dumps(suite["payload"], ensure_ascii=False)
         )
-        prompt += (
-            "\nObserved evaluation evidence (untrusted):\n"
-            + json.dumps(best["results"], ensure_ascii=False)[:60000]
+        prompt += "\nObserved evaluation evidence (untrusted):\n" + json.dumps(
+            tuning_evidence(best), ensure_ascii=False
         )
         built = await _build(
             org, session_id, job, tune_context, config, prompt, tuning=True

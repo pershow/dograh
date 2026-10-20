@@ -14,6 +14,63 @@ from api.services.agent_workbench.model_gateway import (
 from api.services.agent_workbench.tools import WorkbenchTools
 
 
+@pytest.mark.parametrize("limit", ["requests", "tokens"])
+async def test_budget_error_is_nonretryable_reports_usage_and_stops_upstream(limit):
+    requests = []
+
+    def upstream(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": "Done"}}],
+                "usage": {"total_tokens": 20},
+            },
+        )
+
+    async with ModelGateway(
+        SimpleNamespace(
+            model="test", base_url="https://model.example/v1", api_key="secret"
+        ),
+        [],
+        max_requests=1 if limit == "requests" else 10,
+        max_tokens=20,
+    ) as gateway:
+        await gateway.client.aclose()
+        gateway.client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        async with httpx.AsyncClient() as client:
+            body = {"input": "hello"}
+            headers = {"Authorization": "Bearer " + gateway.token}
+            assert (
+                await client.post(
+                    gateway.url + "/responses", json=body, headers=headers
+                )
+            ).status_code == 200
+            refused = await client.post(
+                gateway.url + "/responses", json=body, headers=headers
+            )
+        assert refused.status_code == 400
+        assert refused.json()["error"]["code"] == "workbench_budget_exceeded"
+        assert "20/20 cumulative tokens" in gateway.last_error
+        assert (
+            "request budget" if limit == "requests" else "token budget"
+        ) in gateway.last_error
+        assert gateway.budget_exceeded and gateway.request_count == 1
+    assert len(requests) == 1
+
+
+def test_model_budget_can_be_configured_without_removing_default_limit(monkeypatch):
+    from api.services.agent_workbench.config import WorkbenchSettings
+
+    monkeypatch.delenv("WORKBENCH_MAX_MODEL_TOKENS", raising=False)
+    monkeypatch.delenv("WORKBENCH_MAX_MODEL_REQUESTS", raising=False)
+    assert WorkbenchSettings.load().max_model_tokens == 150000
+    monkeypatch.setenv("WORKBENCH_MAX_MODEL_TOKENS", "600000")
+    monkeypatch.setenv("WORKBENCH_MAX_MODEL_REQUESTS", "24")
+    settings = WorkbenchSettings.load()
+    assert (settings.max_model_tokens, settings.max_model_requests) == (600000, 24)
+
+
 @pytest.mark.parametrize(
     "protocol,path", [("chat", "/chat/completions"), ("responses", "/responses")]
 )

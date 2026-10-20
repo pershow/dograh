@@ -35,3 +35,19 @@ it("can register unknown variables as empty defaults and still remove unused def
     fireEvent.click(screen.getByRole("button", { name: "Save Variables" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith({ customer: "" }));
 });
+
+it("loads saved defaults arriving after mount but preserves local edits on refresh", () => {
+    const save = vi.fn(async () => undefined);
+    const form = (variables: Record<string, string>) => <UnsavedChangesProvider><TemplateVariablesSection
+        templateContextVariables={variables} referencedNames={["company"]} onSave={save}
+    /></UnsavedChangesProvider>;
+    const view = render(form({}));
+    view.rerender(form({company: "Saved company"}));
+    expect((screen.getByLabelText("company") as HTMLInputElement).value).toBe("Saved company");
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    fireEvent.change(screen.getByLabelText("company"), {target: {value: "My local change"}});
+    view.rerender(form({company: "Another tab's edit"}));
+    expect((screen.getByLabelText("company") as HTMLInputElement).value).toBe("My local change");
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    expect(save).not.toHaveBeenCalled();
+});
