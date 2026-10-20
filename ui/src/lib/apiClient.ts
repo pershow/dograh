@@ -50,26 +50,57 @@ export const createClientConfig: CreateClientConfig = (config) => {
     };
 };
 
-let interceptorRegistered = false;
+interface AuthInterceptorState {
+    getAccessToken: () => Promise<string>;
+    onUnauthorized?: () => void;
+}
+
+const authInterceptors = new WeakMap<Client, AuthInterceptorState>();
 
 /**
  * Register a request interceptor that attaches a fresh access token
  * to every outgoing SDK request. Idempotent — safe for React strict mode.
  */
-export function setupAuthInterceptor(apiClient: Client, getAccessToken: () => Promise<string>) {
-    if (interceptorRegistered) return;
-    interceptorRegistered = true;
+export function setupAuthInterceptor(
+    apiClient: Client,
+    getAccessToken: () => Promise<string>,
+    onUnauthorized?: () => void,
+) {
+    const existing = authInterceptors.get(apiClient);
+    if (existing) {
+        // Provider remounts must not leave the interceptor reading an old token ref.
+        existing.getAccessToken = getAccessToken;
+        existing.onUnauthorized = onUnauthorized;
+        return;
+    }
+    const state = { getAccessToken, onUnauthorized };
+    authInterceptors.set(apiClient, state);
+    const authenticatedRequests = new WeakMap<Request, string>();
 
     apiClient.interceptors.request.use(async (request) => {
         if (request.headers.get('Authorization')) {
             return request;
         }
         try {
-            const token = await getAccessToken();
-            request.headers.set('Authorization', `Bearer ${token}`);
+            const token = await state.getAccessToken();
+            if (token) {
+                request.headers.set('Authorization', `Bearer ${token}`);
+                authenticatedRequests.set(request, token);
+            }
         } catch {
             // If token retrieval fails, let the request proceed without auth
         }
         return request;
+    });
+
+    apiClient.interceptors.response.use(async (response, request) => {
+        const token = authenticatedRequests.get(request);
+        if (response.status === 401 && token && state.onUnauthorized) {
+            // Ignore errors from an old session or explicitly supplied credentials.
+            // Permission errors (403) and service outages must not trigger sign-out.
+            const currentToken = await state.getAccessToken().catch(() => '');
+            if (currentToken === token) state.onUnauthorized();
+        }
+        return response;
     });
 }

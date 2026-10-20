@@ -67,7 +67,11 @@ export function OrgConfigProvider({ children }: { children: ReactNode }) {
     const hasFetchedPermissions = useRef(false);
 
     if (!auth.loading && auth.isAuthenticated) {
-        setupAuthInterceptor(client, auth.getAccessToken);
+        setupAuthInterceptor(
+            client,
+            auth.getAccessToken,
+            auth.provider === 'local' ? auth.redirectToLogin : undefined,
+        );
     }
 
     useEffect(() => {
