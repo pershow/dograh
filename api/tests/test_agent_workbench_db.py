@@ -61,6 +61,43 @@ async def test_tenant_boundary_and_input_idempotency(db_session, wb):
     ] == "responses"
 
 
+@pytest.mark.parametrize("status", ["queued", "running", "completed"])
+async def test_reopening_workflow_restores_same_session_and_job(db_session, wb, status):
+    org, user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    await db_session.wb_settings(org, sid, "responses")
+    suite = await db_session.wb_save_suite(org, sid, {"name": "Saved suite", "cases": []})
+    job = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "Build my agent"}, "original-build"
+    )
+    if status != "queued":
+        job = await db_session.wb_claim(org, sid, job["id"])
+    if status == "completed":
+        await db_session.wb_finish(
+            org, sid, job["id"], job["lease_token"], "completed", output={"saved": True}
+        )
+    events_before = await db_session.wb_events(org, sid)
+
+    # This is the same request made by either the list or editor entry.
+    reopened = await db_session.wb_create_session(
+        org, user, workflow_id=context["session"]["workflow_id"], model_protocol="chat"
+    )
+    assert reopened["id"] == sid and reopened["model_protocol"] == "responses"
+    restored = await db_session.wb_context(org, reopened["id"])
+    assert len(restored["jobs"]) == 1
+    assert restored["jobs"][0]["id"] == job["id"]
+    assert restored["jobs"][0]["status"] == status
+    assert restored["jobs"][0]["input"]["text"] == "Build my agent"
+    assert restored["suites"][0]["id"] == suite["id"]
+    assert await db_session.wb_events(org, sid) == events_before
+
+    with pytest.raises(WorkbenchError) as error:
+        await db_session.wb_create_session(
+            org + 999, user, workflow_id=context["session"]["workflow_id"]
+        )
+    assert error.value.status_code == 404
+
+
 async def test_cancellation_fences_late_worker_writes(db_session, wb):
     org, _user, sid = wb
     job = await db_session.wb_enqueue(org, sid, "build", {"text": "build"}, "new")

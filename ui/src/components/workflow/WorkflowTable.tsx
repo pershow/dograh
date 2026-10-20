@@ -8,6 +8,7 @@ import {
     Inbox,
     Pencil,
     RotateCcw,
+    Sparkles,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
@@ -18,6 +19,7 @@ import {
     updateWorkflowStatusApiV1WorkflowWorkflowIdStatusPut,
 } from '@/client/sdk.gen';
 import type { FolderResponse } from '@/client/types.gen';
+import { useWorkbenchEnabled } from '@/components/agent-workbench/useWorkbenchEnabled';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -68,6 +70,7 @@ export function WorkflowTable({
 }: WorkflowTableProps) {
     const router = useRouter();
     const organizationTimezone = useOrganizationTimezone();
+    const workbenchEnabled = useWorkbenchEnabled();
     const [isPending, startTransition] = useTransition();
     const [loadingWorkflowId, setLoadingWorkflowId] = useState<number | null>(null);
     const [movingWorkflowId, setMovingWorkflowId] = useState<number | null>(null);
@@ -179,6 +182,19 @@ export function WorkflowTable({
                                     onClick={(event) => event.stopPropagation()}
                                 >
                                     <div className="flex justify-end gap-2">
+                                        {workbenchEnabled && !showArchived && (
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                aria-label={`在工作台中继续 ${workflow.name}`}
+                                                title="恢复构建会话，查看正在执行的任务和已有结果"
+                                                onClick={() => router.push(`/workflow/workbench?workflowId=${workflow.id}`)}
+                                                className="flex items-center gap-2"
+                                            >
+                                                <Sparkles size={16} />
+                                                工作台
+                                            </Button>
+                                        )}
                                         <Button
                                             variant="outline"
                                             size="sm"

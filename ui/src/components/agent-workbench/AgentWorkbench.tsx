@@ -255,6 +255,17 @@ export function AgentWorkbench({
     if (!choiceInitialized.current && state) {
       choiceInitialized.current = true;
       if (state.candidates[0]) setCandidateId(state.candidates[0].id);
+      // Restore the submitted attachment context when returning to this session.
+      // Evaluations have no asset selection; use the most recent build/tune input.
+      const submitted = state.jobs.find(j => Array.isArray(j.input.asset_ids));
+      const assetIds = submitted?.input.asset_ids;
+      if (Array.isArray(assetIds))
+        setSelectedAssets(
+          assetIds.filter((id): id is string =>
+            typeof id === "string" &&
+            state.assets.some(a => a.id === id && a.status === "ready"),
+          ).slice(0, 5),
+        );
     }
   }, [state]);
   useEffect(() => {
@@ -466,6 +477,12 @@ export function AgentWorkbench({
           Agent 配置
         </Link>
       </div>
+      {active && (
+        <p role="status" className="border-b bg-muted/40 px-6 py-2 text-sm text-muted-foreground">
+          任务正在后台{active.status === "queued" ? "排队" : "执行"}，离开页面不会取消。
+          可从 Voice Agents 列表中此 Agent 的「工作台」返回，继续查看进度和结果。
+        </p>
+      )}
       <div className={styles.body}>
         <main className={styles.main}>
           <div className={styles.versionbar}>

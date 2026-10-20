@@ -1,16 +1,16 @@
 "use client";
 
 import { ReactFlowInstance } from "@xyflow/react";
-import { AlertCircle, ArrowLeft, Bot, Clipboard, Copy, Download, Eye, History, LoaderCircle, Menu, MoreVertical, Pencil, Phone } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, Clipboard, Copy, Download, Eye, History, LoaderCircle, Menu, MoreVertical, Pencil, Phone, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
     duplicateWorkflowEndpointApiV1WorkflowWorkflowIdDuplicatePost,
-    workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet,
 } from "@/client/sdk.gen";
 import { WorkflowError } from "@/client/types.gen";
+import { useWorkbenchEnabled } from "@/components/agent-workbench/useWorkbenchEnabled";
 import { FlowEdge, FlowNode } from "@/components/flow/types";
 import { GitHubStarBadge } from "@/components/layout/GitHubStarBadge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,6 @@ import {
 } from "@/components/ui/popover";
 import { useSidebar } from "@/components/ui/sidebar";
 import { useUnsavedChangesContext } from "@/context/UnsavedChangesContext";
-import { useAuth } from "@/lib/auth";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
 import { PublishWorkflowPopover } from "./PublishWorkflowPopover";
@@ -75,16 +74,7 @@ export const WorkflowEditorHeader = ({
     renameWorkflow,
 }: WorkflowEditorHeaderProps) => {
     const router = useRouter();
-    const { user: authUser, loading: authLoading } = useAuth();
-    const [workbenchEnabled, setWorkbenchEnabled] = useState(false);
-    useEffect(() => {
-        if (authLoading || !authUser) return;
-        let disposed = false;
-        workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet().then(response => {
-            if (!disposed && !response.error) setWorkbenchEnabled(response.data?.data.enabled === true);
-        }).catch(() => {});
-        return () => { disposed = true; };
-    }, [authLoading, authUser]);
+    const workbenchEnabled = useWorkbenchEnabled();
 
     // Leaving the editor with unsaved settings asks first.
     const { confirmNavigate } = useUnsavedChangesContext();
@@ -232,7 +222,7 @@ export const WorkflowEditorHeader = ({
     };
 
     return (
-        <div className="flex items-center justify-between w-full h-14 px-4 bg-[#1a1a1a] border-b border-[#2a2a2a]">
+        <div className="flex flex-wrap items-center justify-between gap-y-2 w-full min-h-14 px-4 py-2 bg-[#1a1a1a] border-b border-[#2a2a2a]">
             {/* Left section: Mobile menu + Back button + Workflow name */}
             <div className="flex items-center gap-3 mr-4">
                 <button
@@ -300,7 +290,7 @@ export const WorkflowEditorHeader = ({
             </div>
 
             {/* Right section: Version + status + tester/call actions + save */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
                 {/* Read-only banner when viewing a historical version */}
                 {isViewingHistoricalVersion && (
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-blue-500/30 bg-blue-500/10">
@@ -408,6 +398,18 @@ export const WorkflowEditorHeader = ({
                     </Button>
                 )}
 
+                {workbenchEnabled && (
+                    <Button
+                        variant="outline"
+                        className="flex items-center gap-2 bg-transparent border-teal-700 hover:bg-teal-950 text-teal-200"
+                        title="恢复此 Agent 的构建会话，继续查看任务、仿真测试和调优"
+                        onClick={() => confirmNavigate(() => router.push(`/workflow/workbench?workflowId=${workflowId}`))}
+                    >
+                        <Sparkles className="w-4 h-4" />
+                        工作台
+                    </Button>
+                )}
+
                 <Button
                     variant="outline"
                     className="flex items-center gap-2 bg-transparent border-[#3a3a3a] hover:bg-[#2a2a2a] text-white"
@@ -447,14 +449,6 @@ export const WorkflowEditorHeader = ({
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="bg-[#1a1a1a] border-[#3a3a3a]">
-                        {workbenchEnabled && (
-                            <DropdownMenuItem
-                                onClick={() => confirmNavigate(() => router.push(`/workflow/workbench?workflowId=${workflowId}`))}
-                                className="text-white hover:bg-[#2a2a2a] cursor-pointer"
-                            >
-                                <Bot className="w-4 h-4 mr-2" />Agent Workbench
-                            </DropdownMenuItem>
-                        )}
                         <DropdownMenuItem
                             onClick={() => confirmNavigate(() => router.push(`/workflow/${workflowId}/runs`))}
                             className="text-white hover:bg-[#2a2a2a] cursor-pointer"
