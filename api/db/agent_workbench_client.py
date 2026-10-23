@@ -19,6 +19,7 @@ from api.db.models import (
     WorkflowDefinitionModel,
     WorkflowModel,
     WorkflowRunModel,
+    WorkflowRunTextSessionModel,
 )
 from api.db.workflow_client import WorkflowClient
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
@@ -35,7 +36,7 @@ TABLES = {
 
 
 def record(row):
-    return {
+    result = {
         column.name: (
             value.isoformat()
             if isinstance(value := getattr(row, column.name), datetime)
@@ -43,6 +44,11 @@ def record(row):
         )
         for column in row.__table__.columns
     }
+    if isinstance(row, WorkbenchJobModel):
+        result["output"].pop("_run_evidence", None)
+        result["output"].pop("_requested_target", None)
+        result["output"].pop("_task_basis", None)
+    return result
 
 
 def definition_payload(workflow, definition):
@@ -126,7 +132,13 @@ class AgentWorkbenchClient(BaseDBClient):
         return workflow, draft, definition_payload(workflow, definition)
 
     async def wb_create_session(
-        self, org, user_id, workflow_id=None, name="New Agent", model_protocol="chat"
+        self,
+        org,
+        user_id,
+        workflow_id=None,
+        name="New Agent",
+        model_protocol="chat",
+        new_session=False,
     ):
         async with self.async_session() as db, db.begin():
             if workflow_id is None:
@@ -161,7 +173,7 @@ class AgentWorkbenchClient(BaseDBClient):
                     )
                     .order_by(WorkbenchSessionModel.created_at.desc())
                 )
-                if existing:
+                if existing and not new_session:
                     return record(existing)
             row = WorkbenchSessionModel(
                 organization_id=org,
@@ -172,6 +184,22 @@ class AgentWorkbenchClient(BaseDBClient):
             db.add(row)
             await db.flush()
             return record(row)
+
+    async def wb_sessions(self, org, user_id, workflow_id):
+        async with self.async_session() as db:
+            await self._wb_target(db, workflow_id, org)
+            rows = (
+                await db.scalars(
+                    select(WorkbenchSessionModel)
+                    .where(
+                        WorkbenchSessionModel.organization_id == org,
+                        WorkbenchSessionModel.user_id == user_id,
+                        WorkbenchSessionModel.workflow_id == workflow_id,
+                    )
+                    .order_by(WorkbenchSessionModel.created_at.desc())
+                )
+            ).all()
+            return [record(row) for row in rows]
 
     async def wb_settings(self, org, session_id, model_protocol):
         async with self.async_session() as db, db.begin():
@@ -189,14 +217,26 @@ class AgentWorkbenchClient(BaseDBClient):
             session.model_protocol = model_protocol
             return record(session)
 
-    async def wb_context(self, org, session_id):
+    async def wb_context(self, org, session_id, *, if_revision=None):
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
             _, _, target = await self._wb_target(db, session.workflow_id, org)
+            memory_revision = await self._wb_memory_revision(db, session)
+            revision = fingerprint(
+                {
+                    "session": record(session),
+                    "target": target,
+                    "memory_revision": memory_revision,
+                }
+            )
+            if if_revision == revision:
+                return {"unchanged": True, "revision": revision}
             result = {
+                "revision": revision,
                 "session": record(session),
                 "target": target,
                 "target_fingerprint": fingerprint(target),
+                "memory_revision": memory_revision,
             }
             for name, model in TABLES.items():
                 rows = (
@@ -241,12 +281,61 @@ class AgentWorkbenchClient(BaseDBClient):
             ).all()
             return [record(row) for row in rows]
 
+    async def wb_event_page(
+        self, org, session_id, *, after=None, before=None, limit=60
+    ):
+        """Open at the tail; independently page backward and consume new events forward."""
+        if (after is not None and before is not None) or not 1 <= limit <= 200:
+            raise WorkbenchError("Use one cursor and a page size between 1 and 200")
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            query = select(WorkbenchEventModel).where(
+                WorkbenchEventModel.session_id == session_id
+            )
+            forward = after is not None
+            if forward:
+                query = query.where(WorkbenchEventModel.sequence > after)
+            elif before is not None:
+                query = query.where(WorkbenchEventModel.sequence < before)
+            order = WorkbenchEventModel.sequence
+            rows = (
+                await db.scalars(
+                    query.order_by(order if forward else order.desc()).limit(limit + 1)
+                )
+            ).all()
+            page = rows[:limit]
+            if not forward:
+                page.reverse()
+            return {
+                "events": [record(row) for row in page],
+                "before": page[0].sequence
+                if page and not forward and len(rows) > limit
+                else None,
+                "after": page[-1].sequence
+                if page
+                else (after if forward else session.event_sequence),
+                "has_more": forward and len(rows) > limit,
+            }
+
     async def wb_emit(self, org, session_id, kind, payload, *, job_id=None, token=None):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             if job_id:
                 await self._wb_fence(db, session_id, job_id, token)
             await self._wb_event(db, session, kind, payload)
+
+    async def wb_codex_binding(self, org, session_id):
+        async with self.async_session() as db:
+            await self._wb_session(db, org, session_id)
+            return await db.scalar(
+                select(WorkbenchEventModel.payload)
+                .where(
+                    WorkbenchEventModel.session_id == session_id,
+                    WorkbenchEventModel.type == "codex.bound",
+                )
+                .order_by(WorkbenchEventModel.sequence.desc())
+                .limit(1)
+            )
 
     async def wb_conversation(self, org, session_id, *, before=None, limit=40):
         """Backward pagination; a task's enqueue sequence is its history boundary."""
@@ -260,6 +349,8 @@ class AgentWorkbenchClient(BaseDBClient):
                         "assistant.message",
                         "voice.transcript",
                         "task.completed",
+                        "task.needs_attention",
+                        "task.awaiting_input",
                         "task.failed",
                         "task.cancelled",
                         "candidate.adopted",
@@ -279,6 +370,38 @@ class AgentWorkbenchClient(BaseDBClient):
                 "events": [record(row) for row in reversed(page)],
                 "before": page[-1].sequence if len(rows) > limit else None,
             }
+
+    async def wb_run_evidence(self, org, session_id, job_id):
+        """Internal evidence memory, scoped to this session and earlier tasks."""
+        async with self.async_session() as db:
+            await self._wb_session(db, org, session_id)
+            current = await self._wb_item(db, "jobs", session_id, job_id)
+            outputs = (
+                await db.scalars(
+                    select(WorkbenchJobModel.output)
+                    .where(
+                        WorkbenchJobModel.session_id == session_id,
+                        WorkbenchJobModel.output["history_before"].as_integer()
+                        < current.output["history_before"],
+                    )
+                    .order_by(
+                        WorkbenchJobModel.output["history_before"].as_integer().desc()
+                    )
+                    .limit(20)
+                )
+            ).all()
+            pages = {}
+            for output in outputs:
+                for key, page in output.get("_run_evidence", {}).items():
+                    pages.setdefault(key, copy.deepcopy(page))
+            return pages
+
+    async def wb_remember_run_evidence(self, org, session_id, job_id, token, key, page):
+        async with self.async_session() as db, db.begin():
+            await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            pages = {**job.output.get("_run_evidence", {}), key: copy.deepcopy(page)}
+            job.output = {**job.output, "_run_evidence": pages}
 
     async def wb_agent_runs(self, org, session_id, *, run_id=None, limit=20):
         """Agent Runs only; simulation runs and other agents are never exposed."""
@@ -324,6 +447,75 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(definition) if definition else None
 
+    async def wb_diagnostic_run(self, org, session_id, run_id):
+        """Read frozen runtime evidence across this Agent's sessions, never tenants/agents."""
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            run = await db.scalar(
+                select(WorkflowRunModel).join(WorkflowModel).where(
+                    WorkflowRunModel.id == run_id,
+                    WorkflowRunModel.workflow_id == session.workflow_id,
+                    WorkflowModel.organization_id == org,
+                )
+            )
+            if run is None:
+                raise WorkbenchError("Diagnostic run not found for this Agent", 404)
+            definition = await db.scalar(select(WorkflowDefinitionModel).where(
+                WorkflowDefinitionModel.id == run.definition_id,
+                WorkflowDefinitionModel.workflow_id == session.workflow_id,
+            ))
+            case, source = None, None
+            if run.purpose == "evaluation":
+                # Run ownership has already been checked; also scope its source records.
+                evaluations = (await db.scalars(
+                    select(WorkbenchEvaluationModel).join(WorkbenchSessionModel).where(
+                        WorkbenchSessionModel.organization_id == org,
+                        WorkbenchSessionModel.workflow_id == session.workflow_id,
+                        WorkbenchEvaluationModel.job_id == (run.extra or {}).get("workbench_job_id"),
+                    ).order_by(WorkbenchEvaluationModel.created_at)
+                )).all()
+                for evaluation in evaluations:
+                    for index, result in enumerate(evaluation.results or []):
+                        if result.get("run_id") == run_id:
+                            case = copy.deepcopy(result)
+                            source = {"evaluation_id": evaluation.id, "case_index": index,
+                                      "session_id": evaluation.session_id}
+                            break
+                    if case is not None:
+                        break
+            else:
+                text_session = await db.scalar(select(WorkflowRunTextSessionModel).where(
+                    WorkflowRunTextSessionModel.workflow_run_id == run_id,
+                ))
+                if text_session:
+                    transcript, events = [], []
+                    for index, turn in enumerate((text_session.session_data or {}).get("turns", [])):
+                        for role, key in (("user", "user_message"), ("assistant", "assistant_message")):
+                            if turn.get(key):
+                                transcript.append({"role": role, "turn": index,
+                                                   "text": turn[key].get("text", "")})
+                        events.extend({**e, "turn": index} for e in turn.get("events", []))
+                    case = {"transcript": transcript, "events": events}
+            return {"run": record(run), "definition": record(definition) if definition else None,
+                    "case": case, "source": source}
+
+    async def wb_diagnostic_probes(self, org, session_id, run_ids):
+        """Reuse completed, attributable experiments after a task interruption."""
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            owned = set((await db.scalars(select(WorkflowRunModel.id).where(
+                WorkflowRunModel.id.in_(run_ids),
+                WorkflowRunModel.workflow_id == session.workflow_id,
+            ))).all())
+            if owned != set(run_ids):
+                raise WorkbenchError("Diagnostic runs not found for this Agent", 404)
+            rows = (await db.scalars(select(WorkbenchEventModel).where(
+                WorkbenchEventModel.session_id == session_id,
+                WorkbenchEventModel.type == "diagnosis.probe.completed",
+                WorkbenchEventModel.payload["run_id"].as_integer().in_(run_ids),
+            ).order_by(WorkbenchEventModel.sequence.desc()).limit(12))).all()
+            return [copy.deepcopy(row.payload) for row in reversed(rows)]
+
     async def wb_enqueue(self, org, session_id, kind, payload, key):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
@@ -353,18 +545,53 @@ class AgentWorkbenchClient(BaseDBClient):
                 asset = await self._wb_item(db, "assets", session_id, asset_id)
                 if asset.status != "ready":
                     raise WorkbenchError("An attachment is not ready")
+            target_session_id = payload.get("test_target_session_id") or session_id
+            if target_session_id != session_id:
+                if (
+                    kind != "build"
+                    or payload.get("mode") != "test"
+                    or not payload.get("candidate_id")
+                ):
+                    raise WorkbenchError("跨会话版本只能用于只读测试。", 422)
+                source_session = await self._wb_session(db, org, target_session_id)
+                if source_session.workflow_id != session.workflow_id:
+                    raise WorkbenchError("测试版本必须属于同一个 Agent。", 409)
             for field, table in (
                 ("candidate_id", "candidates"),
                 ("suite_id", "suites"),
             ):
                 if payload.get(field):
-                    await self._wb_item(db, table, session_id, payload[field])
+                    await self._wb_item(
+                        db,
+                        table,
+                        target_session_id if field == "candidate_id" else session_id,
+                        payload[field],
+                    )
+            _, _, target = await self._wb_target(db, session.workflow_id, org)
+            if payload.get("candidate_id"):
+                candidate = await self._wb_item(
+                    db, "candidates", target_session_id, payload["candidate_id"]
+                )
+                definition = await db.get(
+                    WorkflowDefinitionModel, candidate.definition_id
+                )
+                target = {
+                    "name": candidate.name,
+                    "workflow_json": definition.workflow_json,
+                    "workflow_configurations": definition.workflow_configurations,
+                    "template_context_variables": definition.template_context_variables,
+                }
             row = WorkbenchJobModel(
                 session_id=session_id,
                 kind=kind,
                 input=payload,
                 idempotency_key=key,
-                output={"history_before": session.event_sequence + 1},
+                output={
+                    "history_before": session.event_sequence + 1,
+                    "memory_revision": await self._wb_memory_revision(db, session),
+                    "_requested_target": copy.deepcopy(target),
+                    "requested_target_fingerprint": fingerprint(target),
+                },
             )
             db.add(row)
             await db.flush()
@@ -425,6 +652,21 @@ class AgentWorkbenchClient(BaseDBClient):
         ).all()
         for row in rows:
             row.status = status
+            row.results = [
+                {
+                    **result,
+                    "status": "error",
+                    "error": "测试任务已停止，已执行的对话保留；本条尚未完成。",
+                    "validity": {
+                        **result.get("validity", {}),
+                        "status": "inconclusive",
+                        "stop_reason": "interrupted",
+                    },
+                }
+                if result.get("status") == "running"
+                else result
+                for result in row.results
+            ]
 
     async def wb_finish(
         self, org, session_id, job_id, token, status, output=None, error=None
@@ -439,12 +681,19 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             job.lease_token, job.lease_until = None, None
             if status != "completed":
-                await self._wb_stop_evaluations(db, session_id, job_id, status)
+                await self._wb_stop_evaluations(
+                    db,
+                    session_id,
+                    job_id,
+                    "cancelled"
+                    if status in {"needs_attention", "awaiting_input"}
+                    else status,
+                )
             await self._wb_event(
                 db,
                 session,
                 "task." + status,
-                {"job_id": job.id, "output": job.output, "error": error},
+                {"job_id": job.id, "output": record(job)["output"], "error": error},
             )
 
     async def wb_cancel(self, org, session_id, job_id):
@@ -534,7 +783,16 @@ class AgentWorkbenchClient(BaseDBClient):
     ):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
-            await self._wb_fence(db, session_id, job_id, token)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            if job.input.get("mode") == "test" or job.output.get("intent") == "test":
+                raise WorkbenchError(
+                    "只运行测试的任务不能修改 Agent 或生成候选版本。", 409
+                )
+            await self._wb_target(db, session.workflow_id, org, lock=True)
+            if job.output.get("memory_revision") != await self._wb_memory_revision(
+                db, session
+            ):
+                raise WorkbenchError("长期要求已变更，请基于最新记忆重新构建。", 409)
             definition = WorkflowDefinitionModel(
                 workflow_id=session.workflow_id,
                 status="candidate",
@@ -565,6 +823,77 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(row)
 
+    async def wb_test_target(self, org, session_id, job_id, token):
+        """Freeze an existing version for replay; never mutate the workflow/draft."""
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            target = job.output.get("_requested_target")
+            if not target:
+                _, _, target = await self._wb_target(db, session.workflow_id, org)
+            digest = fingerprint(target)
+            candidate = await db.scalar(
+                select(WorkbenchCandidateModel)
+                .where(
+                    WorkbenchCandidateModel.session_id == session_id,
+                    WorkbenchCandidateModel.fingerprint == digest,
+                )
+                .order_by(WorkbenchCandidateModel.created_at.desc())
+                .limit(1)
+            )
+            if candidate is None:
+                definition = WorkflowDefinitionModel(
+                    workflow_id=session.workflow_id,
+                    status="candidate",
+                    is_current=False,
+                    workflow_json=target["workflow_json"],
+                    workflow_configurations=target["workflow_configurations"],
+                    template_context_variables=target["template_context_variables"],
+                )
+                db.add(definition)
+                await db.flush()
+                candidate = WorkbenchCandidateModel(
+                    session_id=session_id,
+                    job_id=job_id,
+                    definition_id=definition.id,
+                    code="// Immutable test snapshot; no generated changes",
+                    name=target["name"],
+                    summary="当前版本的只读测试快照（未修改 Agent）",
+                    fingerprint=digest,
+                    base_fingerprint=digest,
+                )
+                db.add(candidate)
+                await db.flush()
+            job.output = {
+                **job.output,
+                "intent": "test",
+                "test_candidate_id": candidate.id,
+                "test_target_fingerprint": digest,
+            }
+            await self._wb_event(
+                db,
+                session,
+                "test.progress",
+                {
+                    "job_id": job_id,
+                    "phase": "target",
+                    "text": "已固定原测试版本，只复核已有对话，不修改 Agent。"
+                    if job.input.get("review_evaluation_ids")
+                    else "已固定测试版本，只执行测试，不修改 Agent。",
+                    "candidate_id": candidate.id,
+                },
+            )
+            return {**record(candidate), "snapshot": copy.deepcopy(target)}
+
+    async def wb_job_progress(self, org, session_id, job_id, token, output, progress):
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            job.output = {**job.output, **copy.deepcopy(output)}
+            await self._wb_event(
+                db, session, "test.progress", {"job_id": job_id, **progress}
+            )
+
     async def wb_save_suite(self, org, session_id, payload, *, job_id=None, token=None):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
@@ -583,16 +912,21 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(row)
 
-    async def wb_pin_models(self, org, session_id, job_id, token, snapshot):
+    async def wb_pin_models(
+        self, org, session_id, job_id, token, snapshot, *, evaluation=False
+    ):
         async with self.async_session() as db, db.begin():
             await self._wb_session(db, org, session_id, lock=True)
             job = await self._wb_fence(db, session_id, job_id, token)
-            if job.output.get("model_configuration_snapshot"):
+            prefix = "evaluation_" if evaluation else ""
+            if job.output.get(prefix + "model_configuration_snapshot"):
+                if job.output[prefix + "model_configuration_snapshot"] == snapshot:
+                    return copy.deepcopy(job.output)
                 raise WorkbenchError("Task model configuration is already frozen", 409)
             job.output = {
                 **job.output,
-                "model_configuration_snapshot": copy.deepcopy(snapshot),
-                "model_configuration_fingerprint": fingerprint(snapshot),
+                prefix + "model_configuration_snapshot": copy.deepcopy(snapshot),
+                prefix + "model_configuration_fingerprint": fingerprint(snapshot),
             }
             return copy.deepcopy(job.output)
 
@@ -611,8 +945,9 @@ class AgentWorkbenchClient(BaseDBClient):
                 suite_id=suite_id,
                 summary={
                     "model_configuration_fingerprint": job.output.get(
-                        "model_configuration_fingerprint"
+                        "evaluation_model_configuration_fingerprint"
                     )
+                    or job.output.get("model_configuration_fingerprint")
                 },
             )
             db.add(row)
@@ -643,7 +978,9 @@ class AgentWorkbenchClient(BaseDBClient):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             job = await self._wb_fence(db, session_id, job_id, token)
-            snapshot = job.output.get("model_configuration_snapshot")
+            snapshot = job.output.get(
+                "evaluation_model_configuration_snapshot"
+            ) or job.output.get("model_configuration_snapshot")
             if not isinstance(snapshot, dict) or snapshot.get("version") != 3:
                 raise WorkbenchError(
                     "Freeze the task model configuration before evaluation", 409
@@ -663,8 +1000,9 @@ class AgentWorkbenchClient(BaseDBClient):
                     "workbench_session_id": session_id,
                     "workbench_job_id": job_id,
                     "model_configuration_fingerprint": job.output.get(
-                        "model_configuration_fingerprint"
-                    ),
+                        "evaluation_model_configuration_fingerprint"
+                    )
+                    or job.output.get("model_configuration_fingerprint"),
                 },
             )
             db.add(run)
@@ -684,6 +1022,12 @@ class AgentWorkbenchClient(BaseDBClient):
             workflow, draft, target = await self._wb_target(
                 db, session.workflow_id, org, lock=True
             )
+            job = await self._wb_item(db, "jobs", session_id, candidate.job_id)
+            memory_revision = await self._wb_memory_revision(db, session)
+            if job.output.get("memory_revision", fingerprint([])) != memory_revision:
+                raise WorkbenchError(
+                    "候选版本使用的长期要求已变更，请重新构建后再应用。", 409
+                )
             if fingerprint(target) == candidate.fingerprint:
                 return {
                     "workflow_id": workflow.id,

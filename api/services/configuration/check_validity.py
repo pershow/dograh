@@ -1,9 +1,12 @@
+import json
 from typing import Optional, TypedDict
 
 import httpx
 import openai
 from deepgram import DeepgramClient
 from groq import Groq
+from websockets.exceptions import InvalidStatus, WebSocketException
+from websockets.sync.client import connect as websocket_connect
 
 # try:
 #     from pyneuphonic import Neuphonic
@@ -12,6 +15,7 @@ from groq import Groq
 from api.schemas.ai_model_configuration import (
     EffectiveAIModelConfiguration,
 )
+from api.services.configuration.options.qwen import qwen_realtime_url
 from api.services.configuration.registry import (
     HOPPER_API_BASE_URL,
     ServiceConfig,
@@ -86,6 +90,7 @@ class UserConfigurationValidator:
             ServiceProviders.XAI.value: self._check_xai_api_key,
             ServiceProviders.LMNT.value: self._check_lmnt_api_key,
             ServiceProviders.SPEECHIFY.value: self._check_speechify_api_key,
+            ServiceProviders.QWEN.value: self._check_qwen_api_key,
         }
 
     async def validate(
@@ -294,9 +299,45 @@ class UserConfigurationValidator:
             ServiceProviders.ATLASCLOUD.value,
             ServiceProviders.HOPPER.value,
             ServiceProviders.OPENAI_REALTIME.value,
+            ServiceProviders.QWEN.value,
         ):
             return validator(provider, api_key, service_config)
         return validator(provider, api_key)
+
+    def _check_qwen_api_key(
+        self, model: str, api_key: str, service_config: ServiceConfig | None = None
+    ) -> bool:
+        if service_config is None:
+            raise ValueError("Qwen connection configuration is required")
+        url = qwen_realtime_url(service_config.base_url, service_config.model)
+        validate_user_configured_service_url(url, field_name="base_url")
+        try:
+            # The realtime handshake validates the region's credentials without
+            # sending user audio/text or generating billable speech.
+            with websocket_connect(
+                url,
+                additional_headers={"Authorization": f"Bearer {api_key}"},
+                open_timeout=10,
+                close_timeout=1,
+            ) as websocket:
+                event = json.loads(websocket.recv(timeout=10))
+                if event.get("type") != "session.created":
+                    raise ValueError("Qwen did not accept the realtime session")
+            return True
+        except InvalidStatus as exc:
+            if exc.response.status_code in (401, 403):
+                raise ValueError(
+                    "Qwen API key authorization failed. Verify the API key and "
+                    "that it belongs to the selected DashScope region."
+                ) from exc
+            raise ValueError(
+                f"Qwen connection failed (HTTP {exc.response.status_code})"
+            ) from exc
+        except (OSError, ValueError, WebSocketException) as exc:
+            raise ValueError(
+                "Could not validate the Qwen realtime connection. Check the "
+                "endpoint, model access, and network connectivity."
+            ) from exc
 
     def _check_openai_api_key(
         self, model: str, api_key: str, service_config: Optional[ServiceConfig] = None

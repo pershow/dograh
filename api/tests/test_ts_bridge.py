@@ -90,6 +90,27 @@ def _normalize(wf: dict) -> dict:
     }
 
 
+@pytest.mark.asyncio
+async def test_parallel_edges_keep_all_conditions_and_unique_ids():
+    workflow = _minimal_workflow()
+    workflow["edges"].append(
+        {
+            **workflow["edges"][0],
+            "data": {"label": "declined", "condition": "User declines"},
+        }
+    )
+    code = await generate_code(workflow)
+    parsed = await parse_code(code)
+    assert parsed["ok"], parsed
+    edges = parsed["workflow"]["edges"]
+    assert [edge["id"] for edge in edges] == ["1-2", "1-2__2"]
+    assert [edge["data"] for edge in edges] == [
+        edge["data"] for edge in workflow["edges"]
+    ]
+    reparsed = await parse_code(await generate_code(parsed["workflow"]))
+    assert reparsed["workflow"]["edges"] == edges
+
+
 def _strip_optional(annotation: Any) -> Any:
     args = tuple(arg for arg in get_args(annotation) if arg is not NoneType)
     if len(args) == 1:

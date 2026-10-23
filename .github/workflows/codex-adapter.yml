@@ -1,0 +1,80 @@
+name: Codex source adapter
+
+on:
+  pull_request:
+    paths:
+      - "codex"
+      - ".gitmodules"
+      - "api/services/codex/**"
+      - "api/services/agent_workbench/**"
+      - "api/tests/codex/**"
+      - "scripts/build_codex.py"
+      - "api/Dockerfile"
+      - ".github/workflows/codex-adapter.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-adapter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Read pinned Rust toolchain
+        id: source
+        run: |
+          python -c 'import json; print("toolchain=" + json.load(open("api/services/codex/source.json"))["rust_toolchain"])' >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.source.outputs.toolchain }}
+      - name: Build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libssl-dev clang
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: codex-linux-${{ hashFiles('api/services/codex/source.json', 'scripts/build_codex.py') }}
+      - name: Compile public source
+        run: python scripts/build_codex.py --profile dev-small
+      - name: Verify real startup protocol
+        run: python -m api.services.codex
+      - name: Install adapter test dependencies
+        run: pip install -r api/tests/codex/requirements.txt
+      - name: Verify tools and model protocol with the compiled process
+        env:
+          RUN_CODEX_SOURCE_TESTS: "1"
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -c api/pytest.ini --confcutdir=api/tests/codex api/tests/codex -q
+
+  container-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: docker/setup-buildx-action@v4
+      - name: Build Linux runtime from source
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: api/Dockerfile
+          target: codex-runtime
+          load: true
+          tags: dograh-codex-contract:local
+          cache-from: type=gha,scope=codex-source-runtime
+          cache-to: type=gha,mode=max,scope=codex-source-runtime
+      - name: Verify container startup as an unprivileged user
+        run: docker run --rm --network none dograh-codex-contract:local

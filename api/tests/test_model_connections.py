@@ -57,7 +57,11 @@ def catalog(monkeypatch):
         return row if row and row.organization_id == org else None
 
     async def get_default(org, key):
-        return SimpleNamespace(value=pointer["uuid"]) if pointer["uuid"] else None
+        return (
+            SimpleNamespace(value=pointer["uuid"])
+            if key == service.DEFAULT_KEY and pointer["uuid"]
+            else None
+        )
 
     monkeypatch.setattr(
         service.db_client,

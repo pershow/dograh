@@ -717,6 +717,10 @@ async def execute_text_chat_pending_turn(
     capture_processor = _TextChatCaptureProcessor(
         response_window, context, engine, on_event=on_event
     )
+    if evaluation_policy is not None:
+        from api.services.agent_workbench.diagnostics import install_request_capture
+
+        install_request_capture(llm, engine, capture_processor._append_event)
 
     assistant_params = LLMAssistantAggregatorParams()
     context_aggregator = LLMContextAggregatorPair(

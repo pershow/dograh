@@ -158,6 +158,7 @@ async def test_attachment_reader_is_selected_scoped_paginated_and_never_returns_
             "object_key": "hidden",
             "parsed": {
                 "text": "x" * 8000 + "price",
+                "full_text": "x" * 8000 + "price",
                 "segments": [{"location": "page 1"}],
                 "truncated": True,
             },
@@ -172,7 +173,7 @@ async def test_attachment_reader_is_selected_scoped_paginated_and_never_returns_
     )
     first = await voice_commands.voice_command(8, "session", request)
     assert len(first["text"]) == 8000 and first["next_offset"] == 8000
-    assert first["source_locations"] == ["page 1"] and first["truncated_by_parser"]
+    assert first["source_locations"] == ["page 1"] and not first["truncated_by_parser"]
     assert "object_key" not in first
     request.arguments["offset"] = first["next_offset"]
     assert (await voice_commands.voice_command(8, "session", request))[
@@ -210,7 +211,6 @@ async def test_attachment_paging_bounds(offset, limit):
 
 
 async def test_codex_validation_failure_keeps_rpc_id_and_allows_repair():
-    import asyncio
     import json
     from types import SimpleNamespace
     from unittest.mock import Mock
@@ -223,8 +223,7 @@ async def test_codex_validation_failure_keeps_rpc_id_and_allows_repair():
         )
     )
     client = CodexClient(dispatcher, AsyncMock())
-    stdout = asyncio.StreamReader()
-    for message in [
+    requests = [
         {
             "id": "bad-save",
             "method": "item/tool/call",
@@ -235,13 +234,14 @@ async def test_codex_validation_failure_keeps_rpc_id_and_allows_repair():
             "method": "item/tool/call",
             "params": {"tool": "save_candidate", "arguments": {}},
         },
-        {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
-    ]:
-        stdout.feed_data((json.dumps(message) + "\n").encode())
-    stdout.feed_eof()
+    ]
     stdin = SimpleNamespace(write=Mock(), drain=AsyncMock())
-    client.process = SimpleNamespace(stdout=stdout, stdin=stdin)
-    await client.read()
+    client.rpc.process = SimpleNamespace(stdin=stdin)
+    for message in requests:
+        await client.rpc.respond(message)
+    await client.handle_notification(
+        "turn/completed", {"turn": {"status": "completed"}}
+    )
     assert (await client.done)["status"] == "completed"
     replies = [json.loads(call.args[0]) for call in stdin.write.call_args_list]
     assert replies[0]["id"] == "bad-save" and not replies[0]["result"]["success"]

@@ -23,6 +23,10 @@ if [[ -f "$ENV_FILE" ]]; then
   set -a && . "$ENV_FILE" && set +a
 fi
 
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  python -m api.services.codex
+fi
+
 ###############################################################################
 ### 2) Run migrations
 ###############################################################################
@@ -90,6 +94,10 @@ done
 for ((i=1; i<=ARQ_WORKERS; i++)); do
   start "arq$i" python -m arq api.tasks.arq.WorkerSettings --custom-log-dict api.tasks.arq.LOG_CONFIG
 done
+
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  start workbench ./scripts/run_workbench_worker.sh
+fi
 
 ###############################################################################
 ### 5) Wait — if any service exits, tear the container down so docker restarts

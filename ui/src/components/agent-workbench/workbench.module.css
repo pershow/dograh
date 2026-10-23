@@ -216,6 +216,47 @@ div.protocol {
 .conversationLabel span {
   font-size: 10px;
 }
+.activity {
+  margin: 0 12px 14px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.activityToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 0;
+  text-align: left;
+}
+.activityToggle:hover { color: var(--foreground); }
+.activityExpanded { transform: rotate(90deg); }
+.activitySummary {
+  margin: 2px 0 0 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activitySteps {
+  margin: 6px 0 0 6px;
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
+  list-style: none;
+}
+.activitySteps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 5px 0;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.activitySteps li > div { flex: 1; min-width: 0; }
+.activitySteps li > small { flex-shrink: 0; font-size: 10px; }
+.activitySteps li[data-status="failed"] { color: var(--destructive); }
+.activitySteps li[data-status="running"] { color: var(--foreground); }
+.activityIcon { flex-shrink: 0; padding-top: 4px; }
+.activitySteps p { font-size: 11px; margin-top: 3px; }
 .welcome {
   padding: 24px 0;
 }
@@ -251,6 +292,23 @@ div.protocol {
   line-height: 1.85;
   overflow-wrap: anywhere;
   border: 1px solid var(--border);
+}
+.candidateResult {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border, #e5e5e5);
+  padding-top: 14px;
+}
+.candidateResult > p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.candidateResultActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
 }
 .userBubble {
   background: var(--muted);
@@ -713,6 +771,8 @@ div.protocol {
   gap: 5px;
 }
 .evidence a:hover { text-decoration: underline; }
+.evidence summary { cursor: pointer; padding: 4px 0; }
+.evidence[open] a, .evidence[open] span { margin: 5px 0 5px 12px; }
 .runRow {
   display: flex;
   align-items: center;
@@ -728,3 +788,32 @@ div.protocol {
   background: transparent;
   font-size: 12px;
 }
+.historyMore {
+  display: block;
+  margin: 0 auto 16px;
+  padding: 6px 12px;
+  color: var(--muted-foreground, #777);
+  font-size: 13px;
+}
+.sessionList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+.memoryPanel { width: min(620px, 95vw); max-height: 82vh; overflow-y: auto; font-size: 13px; }
+.memoryPanel h3 { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+.memoryPanel pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 8px 0; }
+.memoryPanel summary { cursor: pointer; padding: 6px 0; }
+.memoryPanel input:not([type=checkbox]), .memoryPanel select { border: 1px solid #ddd; border-radius: 5px; padding: 5px; max-width: 100%; }
+.memoryEntry { border: 1px solid #e5e5e5; border-radius: 8px; padding: 10px; margin: 10px 0; overflow-wrap: anywhere; }
+.memoryEntry small { color: #777; }
+.memoryActions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; }
+.diagnosticEvidence { margin-top: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.diagnosticEvidence summary { cursor: pointer; }
+.diagnosticEvidence p { margin: 6px 0; }
+.diagnosticEvidence table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.diagnosticEvidence th, .diagnosticEvidence td { text-align: left; vertical-align: top; padding: 6px; border-bottom: 1px solid #d5d9df; white-space: pre-wrap; }
+.diagnosticJson { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px; border: 1px solid #d5d9df; border-radius: 6px; }

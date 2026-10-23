@@ -149,6 +149,13 @@ services:
       ENVIRONMENT: "${ENVIRONMENT:-local}"
       LOG_LEVEL: "INFO"
 
+      # The image contains the pinned source build. Its entrypoint also starts
+      # the dedicated workbench queue consumer when this feature is enabled.
+      AGENT_WORKBENCH_ENABLED: "${AGENT_WORKBENCH_ENABLED:-false}"
+      WORKBENCH_ASSET_BUCKET: "${WORKBENCH_ASSET_BUCKET:-private-workbench-assets}"
+      WORKBENCH_DATA_DIR: /data/workbench
+      WORKBENCH_MODEL_CONTEXT_WINDOW: "${WORKBENCH_MODEL_CONTEXT_WINDOW:-131072}"
+
       # Set to "false" in .env to disable public signup (invite-only installs).
       ENABLE_SIGNUP: "${ENABLE_SIGNUP:-true}"
       MPS_ENABLED: "${MPS_ENABLED:-true}"
@@ -274,6 +281,8 @@ services:
 
     ports:
       - "8000:8000"
+    volumes:
+      - workbench-data:/data/workbench
     depends_on:
       postgres:
         condition: service_healthy
@@ -361,6 +370,7 @@ services:
       - app-network
 
 volumes:
+  workbench-data:
   postgres_data:
   redis_data:
   minio-data:

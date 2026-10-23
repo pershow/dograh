@@ -3,7 +3,7 @@ title: "Transcriber"
 description: "Voice Agents use STT (Speech to Text), to transcribe what the user speaks. This transcribed speech as text goes into an LLM to generate the response that gets played out to the user."
 ---
 
-Dograh platform supports Deepgram, OpenAI, Google, Azure Speech, AssemblyAI, Speechmatics, Cartesia, Gladia, Soniox, Sarvam, Smallest AI, Hugging Face, ElevenLabs, and Dograh transcribers. You can take a look at the providers documentation of which language to select for your language requirements. 
+Dograh platform supports Deepgram, OpenAI, Google, Azure Speech, AssemblyAI, Speechmatics, Cartesia, Gladia, Soniox, Sarvam, Smallest AI, Hugging Face, ElevenLabs, Qwen (DashScope), and Dograh transcribers. You can take a look at the providers documentation of which language to select for your language requirements.
 
 <Warning>
 Transcriber providers receive the data needed to transcribe speech, such as call audio, language settings, keyterms, and request metadata. Review the provider's data processing, retention, model training, and regional hosting policies before using sensitive data.
@@ -12,6 +12,14 @@ Transcriber providers receive the data needed to transcribe speech, such as call
 For locally deployed or self-hosted STT models, Dograh also supports Speaches, an OpenAI API-compatible server for streaming transcription.
 
 Example: Deepgram has their language support documentation at https://developers.deepgram.com/docs/models-languages-overview#nova-3
+
+## Qwen (DashScope)
+
+Add a **Qwen (DashScope)** provider connection with your DashScope API key, then select it for **STT** in a **BYOK** model configuration. The default model is `qwen3-asr-flash-realtime`. Choose `auto` for language detection, `zh` for Chinese, or `yue` for Cantonese.
+
+The default endpoint is `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` (Beijing). Singapore uses `wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime`. You can also enter a workspace-specific realtime endpoint. Use an API key from the same region and omit query parameters. This speech connection can also serve Qwen TTS.
+
+See the [Qwen realtime ASR reference](https://help.aliyun.com/en/model-studio/qwen-asr-realtime-client-events) for supported languages and the streaming protocol.
 
 ## Deepgram Flux language hints
 

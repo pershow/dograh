@@ -26,6 +26,7 @@ ENGINE_OWNED_CONTEXT_KEYS = frozenset(
         "answer_supervisor",
         "tool_results",
         "llm_fallback_metrics",
+        "node_routing",
         "sip_call_id",
         "extracted_variables",
         "nodes_visited",

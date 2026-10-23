@@ -5,6 +5,31 @@ description: "本地真实模型、附件、文本仿真、调优、实时语音
 
 首次验收：2026-10-16；增量实施验收：2026-10-19。对应 [MVP 技术设计](/architecture/agent-workbench-mvp)。验收使用独立本地服务，未变更另一套正在运行的 Dograh 实例，也未发布示例 Agent。以下保留首次记录，同日只读审计与后续实施分别记录。
 
+## 2026-10-23：原始依据、分层评审与只读复核
+
+本轮实施 [完整工作台资料、需求与验证方案](/architecture/agent-workbench-mvp)。原始文字、业务附件、版本来源与已确认约束形成不可变任务依据，构建覆盖检查和测试评审共用来源编号及精确引文。生成配置只用于检查实现；参考对话、历史评审和模型推测不自动成为强制业务规则。业务、配置、脚本、资料冲突、体验建议及证据不足分别记录。
+
+仅重新评审已有对话使用新的评测记录，保留旧结论、运行编号和完整实际对话；支持取消后继续未完成评审。恢复时核对原要求、来源指纹、记忆版本、评审模型和运行证据，变化时拒绝复用。批次汇总累计全部复用数量及耗时。
+
+### 真实数据验收
+
+在 Agent `12` 的独立工作台会话 `dd04b873-30a8-4adb-8172-74479311d016`，复核原评测 `3d68f137-6935-4092-b508-fa2900145a1c` 中已保存的 **20 条**实际对话。本轮没有重新运行这些对话，也没有修改、应用或发布 Agent。
+
+- 自动找回同一 Agent 旧会话中的完整 7,970 字 SOP，并结合原始修订要求建立 14 项来源；没有把这些检索结果自动确认为长期记忆。
+- 评审使用已配置的 `gpt-6.1-sol`；实际对话沿用原 `qwen3.6-plus` 运行证据。评审与原运行模型指纹分别记录。
+- 在完成 7 条后取消验收任务，续跑任务 `1f2b0297-412f-489f-97fb-ce1588600239` 完整保留这 7 条结论，只完成余下 13 条。最终评测为 `89b63684-7f86-4fc5-a37e-479ead09989a`。
+- 结果为 **19 条未通过、1 条无法判定、0 条运行错误、0 条评审未完成**。20 条中有 7 条初评被独立复核纠正，11 条包含不计入业务失败的体验建议。分类允许在同一条对话中并存，不能相加当成样本数。
+- 自动核对原评测整体指纹、20 条实际转写/事件/工具记录/运行编号、候选快照和 Agent 草稿均未变化；逐条原始依据引文均匹配冻结原文。
+- 浏览器验证任务依据展开、完整 SOP 原文读取、实时复核进度、批次结果、实际对话和分类证据可见；用户界面不展示执行框架品牌。
+
+这证明工作台执行与证据保留机制通过验收；19 条未通过仍是需要处理的 Agent 测试结果。此次新评审只验收这 20 条，不代表全部 266 条已经按新标准重新核验。原 266 条任务在完成并进入 `needs_attention` 后才更新工作进程，保留原任务结果。
+
+### 回归与部署
+
+后端 167 项隔离测试通过，覆盖来源/租户隔离、原文精确引用、当前文字要求的权威性、资料冲突、只读复核、恢复及模型冻结、需求覆盖、自动修复和批次计数。前端 11 个文件 69 项测试、TypeScript、ESLint、Ruff 与 diff 空白检查通过。测试始终使用 `api/.env.test`，实际验收使用开发环境。API 8016、UI 3016 和工作台 Worker 已加载此次修改；8000 原实例未变更。
+
+证据保存在本机 `run/workbench/source-review-verification.json`、`source-review-live.json`、`source-review-checkpoint.json`、`source-review-completed.png`、`basis-final-tests.log` 与 `basis-ui-final.log`。首次验收请求因会话默认协议返回 403；改为该连接已支持的 Responses 协议后执行成功，失败记录未删除。图片没有可靠文字依据时仍明确提示未核验；本轮未重新验收语音和外部业务系统。
+
 ## 环境
 
 - API：`http://127.0.0.1:8016`；UI：`http://localhost:3016`。
@@ -13,6 +38,43 @@ description: "本地真实模型、附件、文本仿真、调优、实时语音
 - 构建与文本运行：已提供的 `qwen3.6-27b`，Chat Completions。
 - 实时语音：Dograh SmallWebRTC、ElevenLabs `scribe_v2_realtime`、Qwen、已配置 ElevenLabs TTS。
 - 实测凭据来自用户指定的本地配置；不写入文档或 Git。
+
+## 2026-10-21：公开源码版 Codex 端到端验收
+
+本轮使用 `openai/codex` 的 `rust-v0.163.0`，commit `83086188ae0614bd882818ff1aa23f3194962012`，运行本项目 `.runtime/codex/codex-app-server`。二进制及构建记录校验通过，验收期间记录到独立工作台 Worker 启动该路径下的真实进程。仅重启 API 8016 和专用 Worker；UI 3016 使用真实浏览器，8000 原实例未改动。
+
+通过浏览器新建专用 workflow `11`（`Codex 源码端到端验收 2026-10-21`），session `e2d9814e-10cc-4399-8050-09fc34850e90`。真实模型为 Qwen `qwen3.6-27b` 的 Chat 接口；语音使用 ElevenLabs `scribe_v2_realtime` 和 `eleven_flash_v2_5`。没有使用模拟模型响应替代本轮业务验收。
+
+| 验收路径 | 实际结果 |
+| --- | --- |
+| 浏览器提交构建 | 任务 `db28883e…` 完成，保存候选 `23b7c78e…` 和测试集；14 次模型请求、114,356 累计 token |
+| 原始文本仿真 | 评测 `cc9a049a…`，run 62 / 63，**2/2 通过**：回答九点到五点，告别后结束 |
+| 新规则失败检测 | 浏览器保存新测试集 `65905999…`，要求十点到六点；原候选评测 `86b6c22e…` 为 **1/2**，时间断言失败，告别通过 |
+| 调优与回归 | 修复结束逻辑后任务 `4915fc54…` 将同一失败基线调为 **2/2**；评测 `1a4a0de3…`，无运行错误，原告别用例无回退 |
+| 测试集冻结 | 新规则测试集指纹始终为 `8809948c3938917816461de6bf3e8113e654c72e775057e00328b925455c4380`，调优没有改写断言 |
+| 草稿采用 | 浏览器采用候选 `0ffc45e0…`，画布显示新营业时间，Variables 保留 `company=青禾咨询站`；DB 核对发布指针为空 |
+| 真实语音链路 | 合成中文输入经 WebRTC / STT / Qwen 调用 `get_status`，正确取得 2/2 结果；TTS 回传 2,294 帧，累计音频能量 4,358,934,604 |
+| 语音委派 Codex | 语音调用 `submit_instruction` 创建只读分析任务 `a4ccbaf3…`，源码版 Codex 完成营业时间规则分析；7 次请求、76,406 累计 token |
+| 只读边界 | 语音分析后仍为 4 个候选，已采用草稿指纹保持 `e8a4bfa68494f3720c943961217d532ac2b06a6dbd12498972775f787cd9753c`，没有自动修改或发布 |
+| 任务取消 | 首次使用默认调优说明的任务 `05f84a64…` 被浏览器取消，随后用明确的新营业规则重新提交 |
+
+### 验收发现并修复的结束逻辑问题
+
+第一次明确规则的调优任务 `196f0384…` 最终完成，但已保存候选后仍向模型暴露分析专用的 `finish_analysis`，错误提示又笼统要求保存工件，导致 7 次工具失败和重复保存。模型还尝试在自身结束之前查询后端尚未开始的复测。
+
+现已在明确构建与调优任务中移除 `finish_analysis`；自动模式误用时，已保存工件会收到准确的结束提示。Codex 指令明确调优只需保存候选，冻结测试集由后端在当前轮次结束后执行。以原失败候选和相同规则重新验收，模型请求从 13 次降至 3 次，累计 token 从 122,520 降至 28,710，保存 1 个候选、工具失败 0 次，最终仍为 2/2。
+
+新增边界测试并复跑真实源码进程契约和工作台回归，**80 项通过**（77 项适配层/工作台测试，加 3 项 Worker 启动测试），Ruff 与 diff 空白检查通过。未重新编译 Rust；`.runtime` 保持约 296 MiB，没有恢复之前清理的 Rust 中间目录。
+
+### 本轮未覆盖及证据
+
+浏览器上传本地测试附件时，上传权限检查返回“用户未批准”。已请求重试授权，但本轮未取得后续确认；没有改用 API 或其他路径绕过。因此新附件上传、解析和源码 Codex 读取附件的组合路径不计为本轮通过。
+
+语音输入是合成语音，不是人工麦克风体验验收。真实供应商 Responses、Linux 镜像、生产部署、跨 NAT/TURN、并发和外部业务系统仍不在本轮通过范围。两条固定用例只验证本次营业时间与告别行为，不代表任意业务对话质量。
+
+另观察到现有界面的状态提示问题：排队时可能短暂显示上一任务的工具名，已取消的调优卡片仍保留“正在分析”说明；任务状态与后端取消已生效，这两处展示文案本轮未修改。
+
+本机证据保存在忽略 Git 的 `run/workbench/codex-source-e2e/`：`evidence.json`、`verification.json`、`source-processes.txt`、`voice-evidence.json`、`adopted-variables.jpg`、`final-2-of-2.jpg`。这些文件用于开发验收，不作为共享凭据或部署配置。
 
 ## 2026-10-20 工作台布局调整
 
@@ -279,3 +341,258 @@ UI 3016 现在在原 `/workflow/{id}` 页面右侧打开工作台，复用原节
 评测 `5f32c3ea…` 的两个固定用例均通过：非本人场景进入礼貌挂机节点并采集 `is_correct_person=false`；本人场景进入沟通意愿节点并采集 `is_correct_person=true`。调优任务 `21dea866…` 对同一测试集复测仍为 2/2，通过后保留候选，`rounds=[]`、`improved=false`；本轮没有为了展示改善而人为制造失败。候选未被采用，整个流程的当前草稿指纹保持不变。2/2 仅证明这两条身份确认脚本，不能替代完整招聘业务验收。
 
 后端选定回归 **71 项通过**，前端工作台 **23 项通过**；TypeScript、改动前端 ESLint 和 diff 检查通过。覆盖组织/Agent 隔离、正常运行与仿真分离、历史分页与入队边界、只读任务禁止写入、文本与语音共享资料、分析结果回传，以及 Chat/Responses 两种网关的一次性完成工具选择。
+
+## 2026-10-21 通用构建机制与同输入复测
+
+以下记录是撤销“两节点优先”策略之前的实验，不能用节点减少或生成耗时下降推断质量改善。后续纠正见下一节。
+
+业务规则只来自本次输入和候选，构建器没有写入客户名称、费用、设备分支或特定话术。此次补充原文分段完整性校验、对话阶段合并、上下文预载、逐轮测试编译、实际运行时自动评测，以及冻结测试集的自动修复。测试尚未执行完全部用户轮次就结束时判失败，不能仅凭结束标记或开场关键词判通过；原样重存与测试预期冲突会报告待处理。
+
+使用原构建任务 `434ba657…` 的同一份 7,970 字输入，SHA-256 为 `911a1e1cea0c9d45ef902cd1f68ab1837ebf8620c8ef481de02ee77a20099ced`。构建仍使用 PA `qwen3-235b-a22b-instruct`，真实文本运行使用原通话模型 `qwen3.6-27b`。
+
+| 项目 | 原候选 `21745e28…` | 新候选 `9612dd93…` |
+| --- | --- | --- |
+| 图规模 | 45 节点 / 106 连线 | 2 节点 / 1 连线 |
+| 结构化原文校验 | 原实现没有逐字分段报告 | 32/32 段原文完整保留 |
+| 生成阶段模型请求 | 11 次，297,262 累计 token | 6 次，97,915 累计 token |
+| 任务开始至生成模型用量事件 | 315.1 秒 | 73.8 秒 |
+| 独立同一套 9 场景验收 | 3/9 | 两次运行分别为 4/9、3/9 |
+
+这些耗时只统计生成阶段，不能当作完整验收提速结论：新旧自动生成的测试集不同，且新模型生成的一条测试错误地要求两轮完成仍有后续步骤的流程。该轮修复被停止，另以事先按原文核对的 9 场景复核。独立场景作为本地验收数据保存，未进入生产构建逻辑。
+
+最终自动修复任务 `56993009…` 对同一不可变测试集运行，初始 3/9；生成实际有改动的候选 `c2f85fb2…` 后复测仍为 3/9，其中一个原通过场景退步。系统拒绝推荐该修复，保留初始候选并标记待处理；本轮独立验收与修复耗时 136.26 秒，修复生成使用 2 次模型请求、46,210 累计 token。主要实测问题是提前挂机和结束原因对应话术错误，不能据此声称 SOP 执行质量提升或完整验收通过。
+
+早期迭代还遇到分段 ID、SDK 图校验、测试轮次与节点引用错误、连接中断和仅检查结束状态的弱断言。失败与中止的探针记录保留在本机 `run/workbench/`，没有计入上表的单次生成耗时。当前无统计显著性或多轮稳定性保证；测试预期的语义正确性仍需复核。候选均未应用到用户原草稿，也未发布。
+
+最终后端工作台回归 **120 项通过**，前端工作台 **19 项通过**；TypeScript、改动前端 ESLint、Ruff 与 diff 检查通过。证据包括 `run/workbench/independent-baseline.json`、`independent-paired-attempt-1.json`、`independent-paired.json` 以及对应运行日志。查看结果：工作流 24，会话 `ad34a3cb-3d7e-4819-9ba3-5d8970510aab`。
+
+## 2026-10-21 节点数量无关的构建与运行对照
+
+已移除自动构建的两节点快捷路径及强制优先调用。保留由需求决定的步骤、确认、分支和结束边界，提速限于复用上下文、避免重复调用和局部编辑。3 节点和 45 节点的 SDK 保存回归都验证了原图边界与原文完整保留。
+
+本地 Agent 12 与官方导入 Agent 13890 当前画布均有 47 个节点，可见节点名称与提示词逐项一致；这不是先前评测的 45 节点旧候选。官方 Run 747267 为 17 轮用户输入、13 个访问节点，运行配置记录 `dograh/default`；本地使用 `qwen3.6-27b`。随后核对该运行的公开 Trace，“自报家门”（observation `8388afdd38c3396e`）和“打开管理”（`cc0bcff851210f28`）的实际生成均记录 `gemini-2.5-flash`；部分路由生成仍只记录 `default`，不能据此声称每一次调用都已确认同一底层型号。
+
+用该官方记录的同一组用户输入复放当前本地图，主要操作能推进；到正常结束节点后，本地模型仍重复绑定确认话术。隔离探针中，同一结束提示词与完整历史再次产生重复话术；缩短历史或在最后一次跳转结果中增加当前节点状态，均能正确告别。运行时现在在跳转工具结果中返回目标节点 ID、名称和遵循当前节点指令的通用提示，不包含任何业务专用规则。
+
+完整复放后正常结束语恢复，预期节点序列通过。但固定脚本整体仍标记失败：官方多问了一轮开启状态，后续相同“是的”在两边指代不同，本地第 16 轮已收到最终确认并结束，脚本还剩一轮。不能将这个分数直接当作业务失败，也没有修改测试预期制造全通过。复放还出现对插问重复原话、数字解释错误，未宣称整体质量问题已解决。
+
+工作台回归 **121 项通过**，节点转换、上下文、结束与静音回归 **24 项通过**。工作台改动的 Ruff 检查通过；运行时与原有测试文件共 69 项既存 lint 提示，与 HEAD 比较没有新增。图结构、SOP 和通话模型未更换，候选未应用或发布。证据保存在本机 `run/workbench/official-agent12-replay-before.json`、`official-agent12-replay.json`、`closing-context-probe.json` 与对应测试日志。
+
+## 2026-10-22 通用自动诊断与局部修复
+
+自动构建后的修复现在使用真实运行时的逐轮证据：每条用户输入、回复、节点跳转和工具调用都关联到对应轮次。失败回复完整提供给构建模型，不再与所有通过场景平均分摊截断额度；旧评测没有轮次标记时明确保留为未定位事件，不猜测对应关系。修复输入使用原图的普通字段、冻结测试集和失败诊断，不重复发送完整 SDK 或无关历史运行记录。
+
+文本断言失败时，诊断同时列出实际回复节点和原图中包含所需内容的节点。某轮没有跳转时，不能仅修改后续节点并声称修复了当前回复。服务端还根据失败轮次涉及的非结束节点，自动补入通用执行约束：只扮演助手、当前步骤完成不等于整个任务完成、通过已有工具切换阶段、非结束节点不提前收尾、新步骤需要确认时等待新的用户回复。原 SOP 允许自动衔接的例外仍保留。这些约束不包含客户名称、数字、费率或业务分支匹配，重复修复也不会重复插入同一约束。
+
+模型保存修复时需提交 `repair_plan`，说明失败断言、原因、受影响节点、原节点提示词的精确引用和修改方式。服务端检查引用与失败项存在、所有修改节点有依据；自动修复保留原提示词、开场白、分支条件和分支话术，允许追加执行澄清，不允许静默删除。业务数值、节点和条件由当前 Agent 的原始内容提供，不内置到构建器。若冻结测试与原文冲突，保留候选并报告，不能修改测试或删掉原文来凑通过率。
+
+修复采用断言级进展判断：同一场景尚未全部通过但失败断言减少时可继续，任何已通过断言或场景倒退都不能替换最佳候选。被拒绝修改产生的新失败也并入可执行的修复诊断，不会因最佳候选中该项通过就忽略它。默认不再按两轮截断；有断言改善或新的失败证据便继续，连续两轮两者都没有时才停止。部署方仍可显式配置轮数上限。完整通过后自动独立复验一次；复验失败会进入下一轮诊断，只有连续两次完整通过才返回 `verification.confirmed=true`。结果保留每次评测 ID 和摘要，不能忽略偶发失败。
+
+第一轮实验从 Agent 12 手动修复前的原始快照重新验证，固定的 5 场景 / 36 断言由 4/5 提升至 5/5。构建模型仍为 PA `qwen3-235b-a22b-instruct`，评测运行模型为 `qwen3.6-plus`。模型用 2 次请求、47,204 累计 token、1 次字段补丁完成修复，未提供上次人工修复话术；基线测试、修复和复测合计 158.08 秒。但独立复验又出现提前告别，结果为 4/5，不能据一次通过宣称修复稳定。这次失败促成上述自动复验机制，证据为 `run/workbench/ganfan-generic-repair-repeat.json`。原 47 节点、136 分支及原提示词仍完整，期间已被用户更新的草稿未被替换。
+
+最终验证任务 `ac713dfc…` 从同一手动修复前快照开始，没有输入人工修复话术：基线 4/5；第一轮候选 5/5、复验 4/5 被拒绝；第二轮 4/5 被拒绝；第三轮候选 `722b39d0…`（工作台版本 34）连续两次 5/5、每次 36 条断言，`verification.confirmed=true`。自动循环保留新回归证据并继续处理，未改变冻结套件。总计 482.63 秒，含 6 次完整真实运行时仿真；构建模型 10 次请求、278,755 累计 token、4 次局部补丁尝试，整份工作流重新生成次数为 0。最终对 4 个失败涉及的节点补入通用执行约束，全部原节点、分支和提示词均保留。证据保存在 `run/workbench/ganfan-generic-repair.json`。
+
+行为补丁未通过原文、定位或修复计划检查时，其临时内容现在会回滚，避免下一次 `prompt_append` 把被拒绝的说明重复追加；SDK 语法和图结构错误仍保留临时稿以供局部修复。相关后端回归共 113 项通过；Ruff 和 diff 检查通过。新机制已加载到后台构建 worker，未重启正在承载通话的 API 服务，也未应用或发布验证候选。两次通过仅证明这套固定场景，不等于所有对话输入均已覆盖。
+
+## 2026-10-22 持久 Codex 会话、分页历史与需求覆盖审查
+
+工作台文字构建和分析改用原生 Codex project/thread，同一组织内一个 Agent 对应一个项目，每个工作台会话保留独立 thread。首次迁移按时间顺序导入原始请求、回复及结果记录；之后恢复同一个 thread，由 Codex 自动压缩上下文。取消每轮只取最新 12 条的做法。当前草稿、匹配候选和任务结果仍由 Dograh 提供权威状态，不从助手旧结论推断采用或发布。后续补充了下述由 Dograh 管理的来源约束记忆，不依赖原生 MemoryTool 自动提取事实。
+
+原生源代码构建的真实子进程回归验证了：75 条旧请求完整迁移，进程退出后仍恢复同一个 thread，自动压缩后的摘要继续参与后续调用，同 Agent 的新会话保持独立且共用 project，持久存储缺失时明确失败而不偷偷新建空白会话。持久线程的工具目录在模型网关按本轮权限和字段重新过滤，防止分析任务看见修改工具，或既有图编辑重新暴露整份代码生成。相关后端回归 **88 项通过**，新增审查字段约束的后续定向回归 **5 项通过**。
+
+前端只读取最新 60 个事件，向前翻页追加旧记录、按 sequence 去重，并保持原阅读锚点；后台仅增量读取新事件，资源状态使用 revision 检查。会话菜单支持新建、切换以及未发送输入保护。前端回归 **24 项通过**，TypeScript、改动前端 ESLint、Ruff 和 diff 检查通过。浏览器实测首屏为 9 个可展示消息组，向前加载后变为 16 个，旧记录没有替换新记录。Helm 默认值通过 JSON Schema 校验，Compose YAML 解析通过；本机没有 Helm 命令，未声明模板渲染验收。
+
+PA 实测揭示了两类独立问题：模型可能逐条回读旧消息，也可能将原始整体要求解释成局部要求，或把验证通过说成已采纳。前者已增加批量回读保护，只有展开已知截断记录才允许单条读取；后者不能靠会话持久化保证正确。独立需求审查要求引用用户原话、实际节点与测试，保留初次审查识别的范围，拒绝删除原断言或改变测试输入来制造通过。真实复测仍出现过错误分析，相关记录保留；不能将上下文机制通过回归等同于当前模型的语义判断已经全部正确。
+
+最终只读审查任务 `e44b7a82…` 对此前整体拟人度候选 `c21c655b…` 及其原 0/3 评测返回 `needs_attention`，原话范围被识别为 `agent`，没有宣称完整完成。审查调用 10 次模型请求、605,797 累计 token；这不是一次快速构建基准。审查建议仍偏重人设口头禅，不能据此声称它已经给出了充分的整体修复方案。工作台恢复的 thread 仍为 `01a161b8…`，草稿指纹保持 `c323bd18…`，未生成、应用或发布新的业务候选。完整本机证据为 `run/workbench/native-requirements-audit.json`，早期分析与中止探针分别保留在 `native-context-verification.json` 和 `native-context-recheck.json`。
+
+## 2026-10-22：Agent 跨会话长期记忆
+
+数据库新增 `workbench_memories`，迁移 `f29d01e5f303` 在本地开发库及独立测试库执行成功。长期要求由用户明确确认，原文、来源引用、内容哈希和替换链持久保存；模型无确认/写入记忆工具。既有用户请求和附件文本自动进入按 Agent 检索的来源索引，不把旧助手结论或用户假设标记成确认事实。已确认记忆跨会话继承、按最新 revision 覆盖旧线程摘要；SOP 原文不由摘要替代。前端新增长期记忆面板，可查看原文、来源及替换/撤销记录。
+
+真实 PA `qwen3-235b-a22b-instruct` / Codex App Server 在独立未发布测试 Agent 25 完成四轮：
+
+- 首会话识别 SOP、整体表达要求和工作日约束，拒绝把植入的助手价格/负责人推测与用户未决定问题当作已确认事实，22.80 秒。
+- 新会话使用独立 native thread、同一 project，继承 SOP 的愿意、拒绝、人工分支及原约束，19.66 秒。
+- 从另一会话把约束明确替换为允许工作日和周末后，原 thread 恢复并采纳新版本，保留拒绝/人工分支，24.44 秒。
+- 独立 Agent 26 返回没有已确认要求、SOP、价格和负责人，19.00 秒。
+
+完整记录在 `run/workbench/agent-memory-verification.json`。首次探针期间 Agent 12 的原用户会话发生候选 35 的应用事件，因此其草稿指纹改变；记录保留该并发事件，不把它误报为探针修改或“草稿未变化”。探针自身仅对测试 Agent 25/26 写入测试数据。
+
+随后在 Agent 12 新建只读会话 `df39c549…`，检索其他会话中的真实用户原文。PA 在 61.49 秒内正确识别最初要求就是整体拟人度，重复问设备仅为例子，并给出原会话来源；该次探针前后草稿指纹相同，未创建业务候选。证据 `run/workbench/agent-memory-existing-agent.json`。
+
+自动化覆盖组织/Agent 隔离、跨会话/DB facade 重建后的持久性、超出索引首页的原文检索、伪造来源拒绝、明确替换/撤销、并发 revision 冲突、旧候选阻断、长 SOP 全页读取/原文绑定、多文档同名标题与总上下文字符窗口、审查不能漏掉确认项。已有完整回归 95 项通过；随后新增多分段总字符窗口测试，相关 42 项通过（合计覆盖 96 项）。前端既有 24 项及新增记忆面板 3 项通过，浏览器实测新增和撤销成功，替换旧版本仍可查。截图 `run/workbench/agent-memory-panel.png`。
+
+这些结果验证了记忆的来源、存储、召回、纠正和检查机制，不代表任意业务 Agent 的运行质量已经全部通过。历史原文可直接查回；需要长期固定执行的要求，在面板按原文确认后才进入强制继承与覆盖检查。
+
+空记忆兼容补测：同一时间用户在 Agent 12 发起的附件仿真，出现模型把历史请求 ID 填入 memory_id/memory_ids 的重复错误。无确认记忆时，工具 schema 现不暴露这些字段，并明确原文 source_id 与确认项 memory_id 的区别；错误反馈要求保留审查发现而仅去掉错误 ID。审查另增加一次明确 submit_review 工具提交补偿，避免把模型打印的函数调用文本误认为已提交报告；历史请求过大的分页 limit 收敛到单页 60 条。新增防回归后相关 45 项通过，累计覆盖 97 项。PA 真实空记忆设计审查补测成功提交报告，工具错误为 0（`run/workbench/empty-memory-review.json`）；这只是设计审查，不是实际通话质量通过。
+
+原附件任务 `82085a9a…` 在尚无仿真执行记录时被取消，所有附件和候选保留。Worker 已加载修复，用完全相同的任务输入重新提交；任务标识和输入一致性见 `run/workbench/memory-compatible-rerun.json`。该附件仿真独立于已完成的记忆验收，不预先宣称测试通过。
+
+## 只运行测试与完整资料读取
+
+工作台增加 `test` 任务模式。自动模式先在独立临时上下文中识别当前请求；测试请求不会进入持久构建会话、历史修改任务、候选生成或自动修复循环。排队时冻结测试目标，只读测试复用相同指纹的版本，缺少版本记录时仅保存原内容的不可变测试快照，不更新草稿或发布状态。数据库拒绝测试任务调用候选修改保存接口。
+
+完整 XLSX/CSV 在无凭据、受资源约束的解析子进程内读取，验证原文件 SHA-256。模型依据本次要求选择数据表、对话列与角色标签，程序导入所有非空行并保存文件哈希、表名、列名和物理行号。传输批次不等于样本数量上限；解析错误逐条列为无法判定，不能静默漏行。普通附件按需分页读取时，也会从原文件恢复旧的截断预览。存在多列对话且当前请求未指定时，工作台返回待补充问题；“补充并继续”携带原任务标识、资料和固定版本，而非重新从任意历史需求推断目标。
+
+客户发言进入真实文本运行时，参考坐席发言仅用于独立语义评审。相邻同角色发言合并成一次输入，保留全部原文字句。每条实际执行记录包括运行编号、逐轮回复、节点事件、工具记录和模型使用量；评审通过原文行号与实际回复轮次引用，引用文字由服务端取回，避免模型改写证据。固定脚本中断、运行异常、未执行样本与评审不确定分别记录；任务执行完成不代表全部测试通过，也不等于任意真实通话的质量保证。
+
+工作台展示逐轮执行/评审进度、整个任务汇总、每批结果及原文对照。测试结果卡不显示新候选或自动修改入口。新增逐轮事件只增量更新进度，不触发每轮重新下载整个结果历史。验收需核对每条运行编号、完整来源行集合与前后草稿指纹，不使用模型声称“已执行”作为证据。
+
+中断或异常测试可以从工作台继续：保留原任务要求、附件和固定版本，校验运行模型配置指纹及逐条测试内容后，复用已完成且有实际回复的结果；运行错误和未执行用例重新执行。只有评审中断时，使用原实际对话补齐评审，不重复调用 Agent；已有完整评审但结论为证据不足或脚本错位的用例保持原结论。复用记录保留原运行编号和原评测 ID，汇总明确标示复用数量；补评同时保留原评审错误。配置变化时拒绝混合结果，原测试和原始失败记录保留。
+
+多次恢复沿原任务链寻找有效结果；同一要求、附件 ID 和文件哈希的已确认表格映射直接复用，不再调用模型重新选择测试列。流式连接的空包和心跳不算有效模型进展，连续无有效输出时触发 I/O 超时；持续产生实际输出时不施加整项任务时间预算。重复提交同一份无效结构化结果会结束该条评审并保留无法判定原因，不拖住整个批次。
+
+后续分析通过只读 `read_evaluation` 读取仿真结果，不能用普通 Agent Runs 替代。任务上下文提供真实结果索引，历史助手结论不作为凭据。最终分析涉及具体运行编号时，服务端会重新绑定实际对话、原文引用和被测版本规则，独立检查结论；没有证据的确定性断言必须修订。此检查不能把模型评审当成事实，也不能为通过测试而修改 SOP。结构化识别/评审取得有效工具回执后直接结束该步骤，避免为了生成一句结束语继续重复调用模型。
+
+通用资料验收使用超过旧预览长度的 CSV：工作台从原文件末尾正确取得校验值，新增末尾定位与字面检索后，同类查询由 66 次请求降为 3 次。歧义资料验收由工作台自行询问原始/调整后对话列，补充后执行真实运行 #474；该短示例与被测规则不一致，因此保留未通过，不宣称业务质量通过。独立证据检查在后续分析中识别并修正了“问候语不同即为配置缺陷”的错误归因。上述探针均未修改 Agent 草稿，详细证据保存在本机 `run/workbench/material-analysis-seek-live.json`、`test-clarification-valid-live.json` 和 `test-results-analysis-live.json`。
+
+
+### 全量附件实测结果（2026-10-22）
+
+工作台任务 `bba1a412-8c1c-4a91-8613-6a933a0d203e` 完成固定版本 35 的全部 266 条用例，使用原附件 `altered_conversation` 列。14 个传输批次覆盖物理行 2–267，原文件与逐条参考文本一致；266 个不同运行编号均有实际回复，运行模型为 `qwen3.6-plus`。本次恢复复用 158 条原有效结果，新执行 108 条。完整来源包含 5,486 轮客户输入，实际回放 5,348 轮；10 条因运行提前结束而未消费剩余脚本，不能宣称所有轮次均已执行。
+
+最终自动评审为通过 0、未通过 263、执行错误 0、无法判定 3；无法判定运行编号为 #521、#555、#577。实际执行完成不代表 Agent 质量通过。固定脚本与当前设备确认等步骤存在错位；人工抽查还发现评审“全程未提及工号”与实际对话不一致，因此未通过数量不能等同已确认业务缺陷。独立后续分析的证据核对已验证，但当前每条原始参考评审并不保证语义判断完全正确。
+
+测试期间另一会话对全局人设、自报家门提示词及工号变量作了修改并应用到草稿，当前草稿指纹因此不同。此测试始终使用原冻结版本，候选 35 指纹未变化；原会话候选数仍为 36，本任务没有创建候选或修改 Agent。实际证据保存在 `run/workbench/test-only-audit.json`，页面截图为 `run/workbench/workbench-test-results.png` 与 `workbench-test-evidence.png`。
+
+页面补充验证：后台标签页恢复时连续读取积压的增量事件，不重载旧历史；已结束评审不再显示生成中；资源加载迟于任务完成事件时，保持被测版本而不自动切到最新候选。后端相关回归 117 项通过，前端相关回归 58 项通过，TypeScript、ESLint、Ruff 与 diff 检查通过。
+
+### 2026-10-22: Replay evidence review and fresh rerun
+
+Reference replay reviews now distinguish satisfied behavior, script/state mismatch,
+violations of the frozen Agent's applicable requirements, and insufficient evidence.
+The fixed reference dialogue does not introduce new mandatory business rules. Both
+review passes receive every actual turn and the complete frozen graph/configuration;
+policy and transcript quotes are bound by the server to source IDs. A separate
+verification context examines every initial finding, searches for counterevidence,
+and retains the initial report plus corrections. Both passes use separate contexts of the configured workbench review model and its
+selected protocol; the Agent runtime model is not used for review. Unresolved findings remain inconclusive.
+
+These categories are nonexclusive per case: script divergence cannot erase an
+independently supported policy violation. In reference-based replays, the number of
+scripted turns consumed is informational; early completion alone is not an Agent
+failure. Explicit test assertions still apply. Historical reports remain unchanged
+and are not retrospectively labeled verified.
+
+`rerun_test_job_id` reimports the same hash-checked source and pins the original
+candidate and runtime model snapshot, but does not use the resume result cache.
+Review uses the current workbench model and protocol, so changing reviewers does not
+change the Agent under test. It creates
+new runtime runs and evaluation rows. `continue_test_job_id` retains its separate
+resume semantics. The workbench exposes “全部重新运行”, evidence categories,
+verbatim source quotations, and initial-versus-verified findings. Cross-session read-only targets require the same Agent and organization; the new
+session receives an immutable test baseline without adopting it. Neither path
+adopts a candidate, changes default model settings, or modifies the Agent.
+
+Resume distinguishes semantic uncertainty from an interrupted review. Completed
+reviews remain immutable, including inconclusive findings. If dialogue execution
+finished but its review connection failed, a new evaluation reviews those same
+transcript/events and retains the original run ID, tool calls, usage, and prior
+review error. It never calls the dialogue engine for that case. `review_pending`
+counts incomplete reviews separately from insufficient evidence. The workbench's
+resume action is hidden once neither runtime errors nor incomplete reviews remain.
+Polling requests release their in-flight lock after a transport/authentication
+stall and retry on the next interval; this does not impose a backend task deadline.
+
+### 2026-10-22: GPT full replay verification
+
+Agent 12 was tested in session `90ca654b-139d-41b0-b78f-bc1efdaacff2` using the
+unchanged snapshot of original candidate 35 (a read-only baseline numbered 1 in
+the new session). Job `f360e11a-a98f-40d9-8cd2-2dcb6836151e` created 266 distinct
+new actual runtime runs from all source rows 2–267 of `altered_conversation`, with
+no old runtime reuse and no execution errors. The dialogue model remained
+`qwen3.6-plus`; source mapping and both review passes used `gpt-6.1-sol` over the
+already configured Responses connection. Source hashes, full reference text,
+customer-message prefixes, frozen version, and unchanged Agent draft were verified.
+The source contained 5,486 customer turns; the runtime consumed 5,262, with 13
+cases ending before the fixed script was exhausted. Early completion alone is
+not treated as a policy violation.
+
+Thirty-five reviews were interrupted by provider connections (33 connection
+interruptions and two idle timeouts). Resume job
+`a48098c4-94f0-47b4-a2f6-256faa328f1e` completed those reviews, preserving all 266
+runtime records and all 231 previously completed reviews byte-for-byte in the
+audited fields. Previous review errors remain in the original evaluation and in
+the resumed case's review history. No Agent dialogue was repeated during recovery.
+
+Final review classification: 223 failed with cited Agent issues, 43 inconclusive,
+0 passed, 0 execution errors, and 0 incomplete reviews. Verification corrected
+initial findings in 41 cases. All 266 fixed scripts contained state/expectation
+mismatches and unverified behavior, so these categories overlap; they are not 266
+independent Agent failures. These are model judgments backed by source quotations,
+not a guarantee that every semantic judgment is correct or that all branches were
+exercised. Runtime replay and review recovery never altered the Agent or its SOP.
+
+Evidence: `run/workbench/gpt-replay-audit.json`,
+`gpt-review-recovery-audit.json`, and `gpt-review-recovery-findings.json`.
+The workbench displays the final 266-case summary, per-batch outcomes, actual runs,
+verbatim evidence and initial-review corrections; screenshot
+`run/workbench/gpt-replay-results.png`. Recovery regression covered 50 backend
+tests; the subsequent final focused checks covered 24 backend and 27 frontend
+tests. TypeScript, ESLint, Ruff and diff checks passed.
+
+### 2026-10-23: Requirement-review recovery and completion states
+
+Requirement review receives authoritative candidate/suite save receipts, the actual
+runtime model separately from the analysis model, and a paginated evidence index.
+It may read scoped evaluation records, attachments and node fields, but cannot mutate
+the Agent. Missing system evidence is a repairable gap. A human-input blocker must
+include a specific business/source question, its reason and sources actually checked.
+Independent gaps continue through local revision even when another question remains.
+Design review assesses whether tests can run; it cannot require future successful
+run receipts before allowing execution.
+
+`save_suite(source_job_id=...)` retains all immutable test batches from the selected
+prior task, with new runtime executions on the saved candidate. Supplemental suites
+do not replace the original corpus, and revisions cannot drop inherited suites.
+Every batch is included in verification and independent pass confirmation. An
+explicitly reviewed generated test may correct its setup/turn alignment against an
+exact original prompt quote; assertion predicates, fixtures and imported dialogues
+remain protected. `save_candidate.runtime_llm` validates an existing scoped catalog
+selection for the candidate only; it does not change organization or build defaults.
+
+Unverified build/tune tasks terminate as `needs_attention`, or `awaiting_input` when
+specific human questions remain. Automatic builds require successful requirement
+review plus independently confirmed actual tests before `completed`; the existing
+dedicated tuning endpoint requires its actual verification to pass. Both unresolved states preserve candidates and
+history, release the active job lock, and display as unfinished in the workbench.
+Read-only analysis and completed test execution retain their own completion semantics.
+
+Regression checks cover evidence retrieval, mixed human/repairable gaps, preservation
+of inherited batches, fresh execution of every batch, runtime binding, scoped settings,
+test setup correction without lowering expectations, and terminal receipt rendering.
+
+Live validation in Agent 12's existing session resumed job
+`5745d46c-ac6a-4da8-9444-defcd061de2c` against candidate 3 without another candidate
+write. The independent design review passed and actual runtime evaluation started
+with all 14 inherited batches (266 cases), using `qwen3.6-plus`. New run IDs begin
+at 912; the original draft and all 47 node IDs/136 edge endpoints remain intact.
+This is evidence of a working review-to-execution path, **not** a completed 266-case
+pass. Audit: `run/workbench/completion-fix-live-audit.json`; screenshot:
+`run/workbench/workbench-completion-fixed.png`.
+
+## Context-aware simulation validation (2026-10-23)
+
+Agent 12's existing workbench session `dd04b873-30a8-4adb-8172-74479311d016`
+uses three distinct execution modes: authentic-context single replies, dynamic
+customers, and guarded fixed scripts. Reference answers never become runtime
+output. Synthetic customer facts are separated from explicitly labelled assumptions;
+the customer cannot see candidate prompts or review criteria. Independent checks
+reject invalid replies before delivery, and invalid simulations cannot trigger
+automatic Agent repairs or enter the normal-flow pass denominator.
+
+The original sample from run 933 was used first. Fixed replay was stopped on a
+changed presupposition (run 1178); dynamic simulation produced a valid new dialogue
+(run 1179). A single reply using original source history actually ran as 1182.
+Further validation (1184) exercised customer repair and stopped on a missing
+scenario prerequisite, with its partial transcript retained as inconclusive.
+Its business review was interrupted, which is recorded separately from Agent quality.
+
+Full dynamic execution of all 266 distinct adjusted-conversation samples is queued
+as `48599f19-c93d-49ec-b5df-9347cce8eb88`, pinned to candidate
+`0caf23c0-ffa7-47d5-b541-8b90958dfc73`. This entry does not claim that the batch has
+finished or passed. The workbench displays actual new run IDs, live transcripts,
+frozen scenarios, checks, reviews and aggregate counters. Durable validation receipts
+are in `run/workbench/simulation-validation.json` and current counters in
+`run/workbench/simulation-progress.json`.

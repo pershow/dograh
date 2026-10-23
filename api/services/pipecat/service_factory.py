@@ -831,6 +831,17 @@ def create_stt_service(
             settings=AzureSTTSettings(**configurable_settings),
             sample_rate=audio_config.transport_in_sample_rate,
         )
+    elif user_config.stt.provider == ServiceProviders.QWEN.value:
+        from api.services.pipecat.qwen_stt import QwenSTTService
+
+        _validate_runtime_service_url(user_config.stt.base_url, "base_url")
+        return QwenSTTService(
+            api_key=user_config.stt.api_key,
+            base_url=user_config.stt.base_url,
+            model=user_config.stt.model,
+            language=user_config.stt.language,
+            sample_rate=audio_config.transport_in_sample_rate,
+        )
     elif user_config.stt.provider == ServiceProviders.SMALLEST.value:
         return SmallestSTTService(
             api_key=user_config.stt.api_key,
@@ -1157,6 +1168,22 @@ def create_tts_service(
         return SarvamTTSService(
             api_key=user_config.tts.api_key,
             settings=SarvamTTSSettings(**settings_kwargs),
+            text_filters=[xml_function_tag_filter],
+            skip_aggregator_types=["recording_router", "recording"],
+            silence_time_s=1.0,
+        )
+    elif user_config.tts.provider == ServiceProviders.QWEN.value:
+        from api.services.pipecat.qwen_tts import QwenTTSService
+
+        _validate_runtime_service_url(user_config.tts.base_url, "base_url")
+        return QwenTTSService(
+            api_key=user_config.tts.api_key,
+            base_url=user_config.tts.base_url,
+            model=user_config.tts.model,
+            voice=user_config.tts.voice,
+            language=user_config.tts.language,
+            speed=user_config.tts.speed,
+            sample_rate=audio_config.transport_out_sample_rate,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=1.0,

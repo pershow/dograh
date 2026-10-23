@@ -73,6 +73,16 @@ from api.services.configuration.options.google import (
     GOOGLE_VERTEX_LOCATIONS,
     GOOGLE_VERTEX_MODELS,
 )
+from api.services.configuration.options.qwen import (
+    QWEN_REALTIME_URL,
+    QWEN_REALTIME_URLS,
+    QWEN_STT_LANGUAGES,
+    QWEN_STT_MODEL,
+    QWEN_TTS_LANGUAGES,
+    QWEN_TTS_MODEL,
+    QWEN_TTS_VOICES,
+    validate_qwen_base_url,
+)
 from api.services.configuration.temperature import (
     resolve_temperature,
     temperature_field,
@@ -125,6 +135,7 @@ class ServiceProviders(str, Enum):
     LMNT = "lmnt"
     SPEECHIFY = "speechify"
     SONIOX = "soniox"
+    QWEN = "qwen"
 
 
 @dataclass(frozen=True)
@@ -186,6 +197,7 @@ class BaseServiceConfiguration(BaseModel):
         ServiceProviders.LMNT,
         ServiceProviders.SPEECHIFY,
         ServiceProviders.SONIOX,
+        ServiceProviders.QWEN,
     ]
     api_key: str | list[str]
 
@@ -434,6 +446,12 @@ CARTESIA_PROVIDER = Provider("cartesia", "Cartesia")
 XAI_PROVIDER = Provider("xai", "xAI")
 LMNT_PROVIDER = Provider("lmnt", "LMNT")
 MINIMAX_PROVIDER = Provider("minimax", "MiniMax")
+QWEN_PROVIDER = Provider(
+    "qwen",
+    "Qwen (DashScope)",
+    description="Alibaba Cloud Qwen realtime speech recognition and synthesis.",
+    provider_docs_url="https://help.aliyun.com/en/model-studio/",
+)
 SPEECHIFY_PROVIDER = Provider(
     "speechify",
     "Speechify",
@@ -2000,6 +2018,52 @@ class SpeechifyTTSConfiguration(BaseTTSConfiguration):
     )
 
 
+class QwenConnectionConfiguration(BaseServiceConfiguration):
+    base_url: str = Field(
+        default=QWEN_REALTIME_URL,
+        description=(
+            "DashScope realtime WebSocket endpoint. The API key must match its "
+            "region. Workspace-specific endpoints are also supported."
+        ),
+        json_schema_extra={"examples": QWEN_REALTIME_URLS, "allow_custom_input": True},
+    )
+
+    _validate_base_url = field_validator("base_url")(validate_qwen_base_url)
+
+
+@register_tts(provider=QWEN_PROVIDER)
+class QwenTTSConfiguration(QwenConnectionConfiguration, BaseTTSConfiguration):
+    provider: Literal[ServiceProviders.QWEN] = ServiceProviders.QWEN
+    model: str = Field(
+        default=QWEN_TTS_MODEL,
+        pattern=r"^qwen.*-tts-.*realtime(?:-.*)?$",
+        description="Qwen realtime TTS model (including dated realtime versions).",
+        json_schema_extra={"examples": [QWEN_TTS_MODEL], "allow_custom_input": True},
+    )
+    voice: str = Field(
+        default="Cherry",
+        description="Qwen voice ID supported by the selected model.",
+        json_schema_extra={
+            "examples": QWEN_TTS_VOICES,
+            "allow_custom_input": True,
+            "docs_url": "https://help.aliyun.com/en/model-studio/qwen-tts-voice-list",
+        },
+    )
+    language: str = Field(
+        default="Auto",
+        description="Synthesis language; Auto supports multilingual text.",
+        json_schema_extra={"examples": QWEN_TTS_LANGUAGES},
+    )
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, value):
+        if value not in QWEN_TTS_LANGUAGES:
+            raise ValueError("Unsupported Qwen TTS language")
+        return value
+
+
 TTSConfig = Annotated[
     Union[
         DeepgramTTSConfiguration,
@@ -2019,6 +2083,7 @@ TTSConfig = Annotated[
         XAITTSConfiguration,
         LmntTTSConfiguration,
         SpeechifyTTSConfiguration,
+        QwenTTSConfiguration,
     ],
     Field(discriminator="provider"),
 ]
@@ -2495,6 +2560,29 @@ class SmallestAISTTConfiguration(BaseSTTConfiguration):
     )
 
 
+@register_stt(provider=QWEN_PROVIDER)
+class QwenSTTConfiguration(QwenConnectionConfiguration, BaseSTTConfiguration):
+    provider: Literal[ServiceProviders.QWEN] = ServiceProviders.QWEN
+    model: str = Field(
+        default=QWEN_STT_MODEL,
+        pattern=r"^qwen.*-asr-.*realtime(?:-.*)?$",
+        description="Qwen realtime ASR model (including dated realtime versions).",
+        json_schema_extra={"examples": [QWEN_STT_MODEL], "allow_custom_input": True},
+    )
+    language: str = Field(
+        default="auto",
+        description="Recognition language; auto lets Qwen detect the language.",
+        json_schema_extra={"examples": QWEN_STT_LANGUAGES},
+    )
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, value):
+        if value not in QWEN_STT_LANGUAGES:
+            raise ValueError("Unsupported Qwen STT language")
+        return value
+
+
 STTConfig = Annotated[
     Union[
         DeepgramSTTConfiguration,
@@ -2512,6 +2600,7 @@ STTConfig = Annotated[
         AzureSpeechSTTConfiguration,
         SmallestAISTTConfiguration,
         ElevenlabsSTTConfiguration,
+        QwenSTTConfiguration,
     ],
     Field(discriminator="provider"),
 ]

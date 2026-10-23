@@ -56,6 +56,11 @@ SERVICE_COMMANDS=(
   "python -m arq api.tasks.arq.WorkerSettings --custom-log-dict api.tasks.arq.LOG_CONFIG"
 )
 
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  SERVICE_NAMES+=("workbench")
+  SERVICE_COMMANDS+=("python -m api.tasks.agent_workbench")
+fi
+
 ###############################################################################
 ### 3) Activate virtual environment
 ###############################################################################
@@ -73,6 +78,10 @@ fi
 ###############################################################################
 
 mkdir -p "$RUN_DIR"
+
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  python -m api.services.codex
+fi
 
 # Function to get all descendant PIDs of a process (children, grandchildren, etc.)
 get_descendants() {
@@ -112,7 +121,7 @@ kill_process_tree() {
   fi
 }
 
-for name in "${SERVICE_NAMES[@]}"; do
+for name in "${SERVICE_NAMES[@]}" workbench; do
   pidfile="$RUN_DIR/$name.pid"
 
   if [[ -f $pidfile ]]; then

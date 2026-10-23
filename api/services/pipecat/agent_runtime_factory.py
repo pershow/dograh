@@ -21,6 +21,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.schemas.workflow_configurations import JevNodeRoutingConfiguration
 from api.services.configuration.model_connections import ResolvedModelConfiguration
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.agent_generation_processor import (
@@ -276,6 +277,9 @@ class AgentRuntimeFactory:
         runtime.tts = tts
         runtime.recording_router = recording_router
         runtime.user_config = user_config
+        runtime.node_routing = JevNodeRoutingConfiguration.model_validate(
+            run_configs.get("node_routing") or {}
+        )
         runtime.runtime_configuration = {
             "stt_provider": call_config.stt.provider,
             "stt_model": call_config.stt.model,

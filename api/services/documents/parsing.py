@@ -10,12 +10,14 @@ class FileParsingError(ValueError):
     pass
 
 
-async def parse_local_file(path):
+async def parse_local_file(path, *, tables=False, full_text=False):
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "api.services.documents.file_parser",
         str(path),
+        *(["--tables"] if tables else []),
+        *(["--full-text"] if full_text else []),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         env={

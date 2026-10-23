@@ -9,6 +9,32 @@ from api.db.models import OrganizationModel, UserModel, WorkflowModel
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 
 
+@pytest.mark.parametrize("status", ["needs_attention", "awaiting_input"])
+async def test_unfinished_outcomes_are_durable_terminal_receipts(
+    db_session, wb, status
+):
+    org, _, sid = wb
+    queued = await db_session.wb_enqueue(org, sid, "build", {"text": "repair"}, status)
+    job = await db_session.wb_claim(org, sid, queued["id"])
+    output = {
+        "candidate_id": "saved",
+        "verification": {"status": "inconclusive", "confirmed": False},
+    }
+    await db_session.wb_finish(
+        org, sid, job["id"], job["lease_token"], status, output=output
+    )
+    stored = await db_session.wb_get(org, sid, "jobs", job["id"])
+    assert stored["status"] == status and stored["lease_token"] is None
+    page = await db_session.wb_conversation(org, sid)
+    receipt = next(e for e in page["events"] if e["type"] == "task." + status)
+    assert receipt["payload"]["output"]["candidate_id"] == "saved"
+    assert not receipt["payload"]["output"]["verification"]["confirmed"]
+    # A terminal unresolved task must not retain an active lock or block a continuation.
+    assert (
+        await db_session.wb_enqueue(org, sid, "build", {"text": "continue"}, "next")
+    )["status"] == "queued"
+
+
 async def test_run_evidence_is_scoped_to_session_agent_and_excludes_simulations(
     db_session, wb, async_session
 ):
@@ -70,6 +96,136 @@ async def test_conversation_restores_both_roles_and_freezes_history_at_enqueue(
     assert older["before"] is None
     with pytest.raises(WorkbenchError):
         await db_session.wb_conversation(org + 999, sid)
+
+
+async def test_test_only_target_is_immutable_scoped_and_cannot_save_edits(
+    db_session, wb
+):
+    org, _, sid = wb
+    before = await db_session.wb_context(org, sid)
+    queued = await db_session.wb_enqueue(
+        org, sid, "build", {"mode": "test", "text": "test"}, "test-only"
+    )
+    assert "_requested_target" not in queued["output"]
+    job = await db_session.wb_claim(org, sid, queued["id"])
+    candidate = await db_session.wb_test_target(org, sid, job["id"], job["lease_token"])
+    again = await db_session.wb_test_target(org, sid, job["id"], job["lease_token"])
+    assert candidate["id"] == again["id"]
+    assert candidate["fingerprint"] == before["target_fingerprint"]
+    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == before[
+        "target_fingerprint"
+    ]
+    with pytest.raises(WorkbenchError, match="不能修改"):
+        await db_session.wb_save_candidate(
+            org,
+            sid,
+            job["id"],
+            job["lease_token"],
+            before["target"],
+            "edit",
+            "edit",
+            before["target_fingerprint"],
+        )
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_test_target(org + 999, sid, job["id"], job["lease_token"])
+
+
+async def test_event_tail_and_backward_pages_do_not_replay_the_archive(db_session, wb):
+    org, _, sid = wb
+    for i in range(145):
+        await db_session.wb_emit(org, sid, "assistant.message", {"text": str(i)})
+    tail = await db_session.wb_event_page(org, sid, limit=60)
+    assert [e["sequence"] for e in tail["events"]] == list(range(86, 146))
+    older = await db_session.wb_event_page(org, sid, before=tail["before"], limit=60)
+    oldest = await db_session.wb_event_page(org, sid, before=older["before"], limit=60)
+    assert [
+        e["sequence"] for e in oldest["events"] + older["events"] + tail["events"]
+    ] == list(range(1, 146))
+    assert oldest["before"] is None
+    await db_session.wb_emit(org, sid, "assistant.message", {"text": "new"})
+    new = await db_session.wb_event_page(org, sid, after=tail["after"], limit=1)
+    assert [e["sequence"] for e in new["events"]] == [146]
+    assert not new["has_more"]
+    assert not (await db_session.wb_event_page(org, sid, after=146))["events"]
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_event_page(org + 999, sid)
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_event_page(org, sid, after=1, before=3)
+
+
+async def test_context_revision_skips_unchanged_archive_and_invalidates_changes(
+    db_session, wb
+):
+    org, _, sid = wb
+    original = await db_session.wb_context(org, sid)
+    assert await db_session.wb_context(org, sid, if_revision=original["revision"]) == {
+        "unchanged": True,
+        "revision": original["revision"],
+    }
+    await db_session.wb_emit(org, sid, "assistant.message", {"text": "new"})
+    assert "target" in await db_session.wb_context(
+        org, sid, if_revision=original["revision"]
+    )
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_context(org + 999, sid, if_revision=original["revision"])
+
+
+async def test_agent_sessions_share_only_the_agent_and_keep_memory_bindings_scoped(
+    db_session, wb
+):
+    org, user, sid = wb
+    workflow = (await db_session.wb_context(org, sid))["session"]["workflow_id"]
+    assert (await db_session.wb_create_session(org, user, workflow_id=workflow))[
+        "id"
+    ] == sid
+    fresh = await db_session.wb_create_session(
+        org, user, workflow_id=workflow, new_session=True
+    )
+    assert fresh["id"] != sid
+    await db_session.wb_emit(org, sid, "codex.bound", {"thread_id": "native-thread"})
+    assert (await db_session.wb_codex_binding(org, sid))["thread_id"] == "native-thread"
+    assert await db_session.wb_codex_binding(org, fresh["id"]) is None
+    assert {s["id"] for s in await db_session.wb_sessions(org, user, workflow)} == {
+        sid,
+        fresh["id"],
+    }
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_codex_binding(org + 999, sid)
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_sessions(org + 999, user, workflow)
+
+
+async def test_evidence_memory_is_private_scoped_and_survives_task_completion(
+    db_session, wb
+):
+    org, user, sid = wb
+    first = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "Analyze"}, "evidence-first"
+    )
+    first = await db_session.wb_claim(org, sid, first["id"])
+    page = {"text": "private transcript", "run": {"id": 42}}
+    await db_session.wb_remember_run_evidence(
+        org, sid, first["id"], first["lease_token"], "42:transcript", page
+    )
+    await db_session.wb_finish(org, sid, first["id"], first["lease_token"], "completed")
+    second = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "Follow up"}, "evidence-second"
+    )
+    assert await db_session.wb_run_evidence(org, sid, second["id"]) == {
+        "42:transcript": page
+    }
+    assert await db_session.wb_run_evidence(org, sid, first["id"]) == {}
+    assert "private transcript" not in str(await db_session.wb_context(org, sid))
+    assert "private transcript" not in str(await db_session.wb_events(org, sid))
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_run_evidence(org + 999, sid, second["id"])
+    other = await db_session.wb_create_session(org, user, name="Other")
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_run_evidence(org, other["id"], second["id"])
+    with pytest.raises(LeaseLost):
+        await db_session.wb_remember_run_evidence(
+            org, sid, first["id"], "expired", "42:transcript", page
+        )
 
 
 @pytest.fixture
@@ -336,6 +492,25 @@ async def test_job_model_pin_is_immutable_and_copied_into_every_run(db_session, 
         run, _ = await db_session.get_workflow_run_with_context(run_id)
         assert run.model_configuration_snapshot == snapshot
         assert run.extra["model_configuration_fingerprint"] == fingerprint(snapshot)
+    voice_snapshot = {
+        **snapshot,
+        "services": {
+            "llm": {"provider": "openai", "settings": {"model": "actual-voice"}}
+        },
+    }
+    await db_session.wb_pin_models(
+        org, sid, job["id"], job["lease_token"], voice_snapshot, evaluation=True
+    )
+    with pytest.raises(WorkbenchError, match="already frozen"):
+        await db_session.wb_pin_models(
+            org, sid, job["id"], job["lease_token"], snapshot, evaluation=True
+        )
+    run_id = await db_session.wb_create_run(
+        org, sid, job["id"], job["lease_token"], candidate["id"], {}
+    )
+    run, _ = await db_session.get_workflow_run_with_context(run_id)
+    assert run.model_configuration_snapshot == voice_snapshot
+    assert run.extra["model_configuration_fingerprint"] == fingerprint(voice_snapshot)
     await db_session.wb_finish(
         org,
         sid,
@@ -362,3 +537,86 @@ async def test_blank_creation_can_start_without_publishing(db_session, wb):
     draft = await db_session.get_draft_version(workflow.id)
     assert draft is not None and draft.status == "draft"
     assert await db_session.get_workflow_version_summaries(workflow.id, org) == []
+
+
+async def test_cross_session_test_target_keeps_same_agent_and_tenant_boundaries(
+    db_session, wb
+):
+    org, user, sid = wb
+    before = await db_session.wb_context(org, sid)
+    original = await db_session.wb_enqueue(
+        org, sid, "build", {"mode": "test", "text": "test"}, "source-test"
+    )
+    original = await db_session.wb_claim(org, sid, original["id"])
+    candidate = await db_session.wb_test_target(
+        org, sid, original["id"], original["lease_token"]
+    )
+    fresh = await db_session.wb_create_session(
+        org, user, workflow_id=before["session"]["workflow_id"], new_session=True
+    )
+    payload = {
+        "mode": "test",
+        "text": "rerun",
+        "candidate_id": candidate["id"],
+        "test_target_session_id": sid,
+    }
+    job = await db_session.wb_enqueue(org, fresh["id"], "build", payload, "new-test")
+    job = await db_session.wb_claim(org, fresh["id"], job["id"])
+    frozen = await db_session.wb_test_target(
+        org, fresh["id"], job["id"], job["lease_token"]
+    )
+    assert frozen["fingerprint"] == candidate["fingerprint"]
+    assert frozen["id"] != candidate["id"]
+    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == before[
+        "target_fingerprint"
+    ]
+    other = await db_session.wb_create_session(org, user, name="unrelated")
+    with pytest.raises(WorkbenchError, match="同一个 Agent"):
+        await db_session.wb_enqueue(org, other["id"], "build", payload, "wrong-agent")
+    await db_session.wb_cancel(org, fresh["id"], job["id"])
+    with pytest.raises(WorkbenchError, match="只读测试"):
+        await db_session.wb_enqueue(
+            org, fresh["id"], "build", {**payload, "mode": "build"}, "write"
+        )
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_enqueue(
+            org + 999, fresh["id"], "build", payload, "wrong-org"
+        )
+
+
+async def test_diagnostic_runs_cross_sessions_but_never_agent_or_tenant_boundaries(db_session, wb, async_session):
+    from api.db.models import WorkflowRunModel
+
+    org, user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    wid = context['session']['workflow_id']
+    other = await db_session.wb_create_session(org, user, name='Unrelated')
+    rows = [WorkflowRunModel(workflow_id=w, name='diagnostic', mode='smallwebrtc', purpose='evaluation')
+            for w in [wid, other['workflow_id']]]
+    async_session.add_all(rows)
+    await async_session.flush()
+    resumed = await db_session.wb_create_session(org, user, workflow_id=wid, new_session=True)
+    packet = await db_session.wb_diagnostic_run(org, resumed['id'], rows[0].id)
+    assert packet['run']['id'] == rows[0].id
+    assert packet['definition'] is None  # Never substitute today's mutable draft.
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_diagnostic_run(org, sid, rows[1].id)
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_diagnostic_run(org + 999, sid, rows[0].id)
+
+
+async def test_diagnostic_probe_receipts_survive_jobs_and_remain_session_scoped(db_session, wb, async_session):
+    from api.db.models import WorkflowRunModel
+    org, user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    wid = context['session']['workflow_id']
+    run = WorkflowRunModel(workflow_id=wid, name='receipt', mode='smallwebrtc', purpose='evaluation')
+    async_session.add(run)
+    await async_session.flush()
+    receipt = {'evidence_id': 'probe:old', 'run_id': run.id, 'results': [{'text': 'Observed'}]}
+    await db_session.wb_emit(org, sid, 'diagnosis.probe.completed', receipt)
+    assert (await db_session.wb_diagnostic_probes(org, sid, [run.id]))[0]['evidence_id'] == 'probe:old'
+    other = await db_session.wb_create_session(org, user, workflow_id=wid, new_session=True)
+    assert await db_session.wb_diagnostic_probes(org, other['id'], [run.id]) == []
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_diagnostic_probes(org + 999, sid, [run.id])

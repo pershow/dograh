@@ -5,7 +5,7 @@ import { AgentWorkbench } from '../AgentWorkbench';
 import type { WorkbenchState } from '../types';
 
 const mocks = vi.hoisted(() => ({
-  replace: vi.fn(), capabilities: vi.fn(), create: vi.fn(), session: vi.fn(), events: vi.fn(),
+  replace: vi.fn(), capabilities: vi.fn(), create: vi.fn(), session: vi.fn(), sessions: vi.fn(), events: vi.fn(),
   runs: vi.fn(), instruct: vi.fn(), candidate: vi.fn(), adopt: vi.fn(), voice: vi.fn(), dependencies: vi.fn(),
   auth: { user: { id: '1' }, loading: false, getAccessToken: vi.fn(), redirectToLogin: vi.fn() },
 }));
@@ -13,12 +13,14 @@ vi.mock('../workbench.module.css', () => ({ default: {} }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: mocks.replace }) }));
 vi.mock('@/lib/auth', () => ({ useAuth: () => mocks.auth }));
 vi.mock('../useWorkbenchVoice', () => ({ useWorkbenchVoice: mocks.voice }));
+vi.mock('../BuildModelSettings', () => ({ BuildModelSettings: ({onSaved}: {onSaved: () => void}) => <button onClick={onSaved}>保存构建模型</button> }));
 vi.mock('@/client/sdk.gen', () => ({
   workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet: mocks.runs,
   workbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPost: mocks.instruct,
   workbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGet: mocks.capabilities,
   workbenchCreateSessionApiV1AgentWorkbenchSessionsPost: mocks.create,
   workbenchSessionApiV1AgentWorkbenchSessionsSessionIdGet: mocks.session,
+  workbenchSessionsApiV1AgentWorkbenchSessionsGet: mocks.sessions,
   workbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGet: mocks.events,
   workbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGet: mocks.candidate,
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost: mocks.adopt,
@@ -39,6 +41,7 @@ beforeEach(() => {
   mocks.capabilities.mockResolvedValue(response({ enabled: true }));
   mocks.create.mockResolvedValue(response(state.session));
   mocks.session.mockResolvedValue(response(state));
+  mocks.sessions.mockResolvedValue(response({sessions: [{...state.session, created_at: '2026-10-22T00:00:00Z'}]}));
   mocks.events.mockResolvedValue(response({ events: [] }));
   mocks.candidate.mockResolvedValue(response(candidate));
   mocks.adopt.mockResolvedValue(response({}));
@@ -47,6 +50,77 @@ beforeEach(() => {
   mocks.dependencies.mockResolvedValue(response({ ready: true, issues: [], services: [] }));
   mocks.voice.mockReturnValue({ status: 'off', start: vi.fn(), stop: vi.fn() });
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+it('opens the latest page, prepends older messages without duplicates or jumping, and polls only deltas', async () => {
+  const interval = vi.spyOn(globalThis, 'setInterval');
+  const event = (sequence: number) => ({sequence, type: 'assistant.message', payload: {text: `Message ${sequence}`}, created_at: ''});
+  mocks.events.mockResolvedValueOnce(response({events: [event(100), event(101)], before: 100, after: 101}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  await screen.findByText('Message 101');
+  expect(mocks.events.mock.calls[0][0].query).toEqual({after: undefined, limit: 60});
+  const pane = screen.getByRole('region', {name: '构建对话'});
+  pane.scrollTop = 20;
+  vi.spyOn(pane, 'getBoundingClientRect').mockReturnValue({top: 100} as DOMRect);
+  const anchor = screen.getByText('Message 100').closest('[data-event-sequence]')!;
+  vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({
+    top: screen.queryByText('Message 99') ? 340 : 140, bottom: 400,
+  } as DOMRect));
+  mocks.events.mockResolvedValueOnce(response({events: [event(99), event(100)], before: 99, after: 100}));
+  fireEvent.click(screen.getByRole('button', {name: '加载更早消息'}));
+  await screen.findByText('Message 99');
+  expect(screen.getAllByText('Message 100')).toHaveLength(1);
+  expect(pane.scrollTop).toBe(220);
+  expect(mocks.events.mock.calls[1][0].query).toEqual({before: 100, limit: 60});
+  const sessionReads = mocks.session.mock.calls.length;
+  mocks.events.mockResolvedValueOnce(response({events: [event(102)], after: 102}));
+  const poll = interval.mock.calls.find(call => call[1] === 2000)![0] as () => void;
+  await act(async () => { await poll(); });
+  await screen.findByText('Message 102');
+  expect(mocks.events.mock.lastCall![0].query).toEqual({after: 101, limit: 200});
+  expect(mocks.session.mock.calls.length).toBe(sessionReads);
+  expect(pane.scrollTop).toBe(220);
+  interval.mockRestore();
+});
+
+it('catches up all pending event pages on return without reloading old history', async () => {
+  const event = (sequence: number) => ({sequence, type: 'assistant.message', payload: {text: `Catchup ${sequence}`}, created_at: ''});
+  mocks.events.mockResolvedValueOnce(response({events: [event(100)], before: 100, after: 100}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  await screen.findByText('Catchup 100');
+  const sessionReads = mocks.session.mock.calls.length;
+  mocks.events.mockResolvedValueOnce(response({events: [event(101)], after: 101, has_more: true}));
+  mocks.events.mockResolvedValueOnce(response({events: [event(102)], after: 102, has_more: false}));
+  fireEvent(document, new Event('visibilitychange'));
+  await screen.findByText('Catchup 102');
+  expect(mocks.events.mock.calls.slice(-2).map(call => call[0].query)).toEqual([
+    {after: 100, limit: 200}, {after: 101, limit: 200},
+  ]);
+  expect(mocks.session.mock.calls.length).toBe(sessionReads);
+  expect(screen.getByRole('button', {name: '加载更早消息'})).toBeTruthy();
+});
+
+it('switches independent sessions within an Agent and protects unsent input', async () => {
+  mocks.sessions.mockResolvedValue(response({sessions: [
+    {...state.session, created_at: '2026-10-22T00:00:00Z'},
+    {...state.session, id: 'another', created_at: '2026-10-21T00:00:00Z'},
+  ]}));
+  mocks.create.mockResolvedValue(response({...state.session, id: 'new-session'}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '工作台会话'}));
+  const older = await screen.findByRole('button', {name: /anothe/});
+  fireEvent.change(screen.getByRole('textbox', {name: '构建需求'}), {target: {value: 'Unsent'}});
+  expect(older.hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', {name: '新建会话'}).hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByRole('textbox', {name: '构建需求'}), {target: {value: ''}});
+  fireEvent.click(older);
+  expect(mocks.replace).toHaveBeenLastCalledWith('/workflow/7?workbench=1&session=another');
+  fireEvent.click(screen.getByRole('button', {name: '工作台会话'}));
+  fireEvent.click(await screen.findByRole('button', {name: '新建会话'}));
+  await waitFor(() => expect(mocks.create).toHaveBeenCalledWith({body: {
+    workflow_id: 7, model_protocol: 'chat', new_session: true,
+  }}));
+  await waitFor(() => expect(mocks.replace).toHaveBeenLastCalledWith('/workflow/7?workbench=1&session=new-session'));
 });
 
 it('analyzes a selected Agent Run without asking for a candidate and surfaces actual evidence', async () => {
@@ -61,7 +135,22 @@ it('analyzes a selected Agent Run without asking for a candidate and surfaces ac
   expect(mocks.instruct.mock.calls[0][0].body).toMatchObject({mode: 'analyze', asset_ids: []});
   expect(mocks.instruct.mock.calls[0][0].body.text).toContain('#42');
   expect(await screen.findByText('分析已完成。可以继续追问，或提出修改要求。')).toBeTruthy();
+  fireEvent.click(screen.getByText('已读取运行 #42 · 1 项资料'));
   expect(screen.getByRole('link', {name: /已读取运行 #42/}).getAttribute('href')).toBe('/workflow/7/run/42');
+});
+
+it('folds consecutive evidence and distinguishes reuse without merging separate turns', async () => {
+  mocks.events.mockResolvedValueOnce(response({events: [
+    ...['overview', 'transcript', 'variables', 'logs', 'logs_raw'].map((section, index) => ({sequence: index + 1, type: 'evidence.read', payload: {source: 'agent_runs', run_id: 76, section}})),
+    {sequence: 6, type: 'assistant.message', payload: {text: 'First analysis'}},
+    {sequence: 7, type: 'evidence.read', payload: {source: 'agent_runs', run_id: 76, section: 'transcript', reused: true}},
+  ]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const summary = await screen.findByText('已读取运行 #76 · 5 项资料');
+  expect(summary.closest('details')?.open).toBe(false);
+  expect(screen.getByText('复用运行 #76 · 1 项资料')).toBeTruthy();
+  fireEvent.click(summary);
+  expect(screen.getAllByRole('link', {name: /已读取运行 #76/})).toHaveLength(5);
 });
 
 it('clears attachment focus after sending while retaining the session library', async () => {
@@ -132,6 +221,31 @@ it('keeps an adopted candidate in the draft when replaying task history', async 
   expect(preview).not.toHaveBeenCalledWith(candidate);
 });
 
+it.each(['build', 'evaluate', 'needs_attention', 'awaiting_input'])('opens the candidate and matching test results from its ended %s task', async (kind) => {
+  mocks.session.mockResolvedValue(response({...state,
+    suites: [{id: 'suite', payload: {name: 'Frozen suite', cases: []}}],
+    evaluations: [{id: 'evaluation', candidate_id: 'candidate', suite_id: 'suite', status: 'completed',
+      summary: {passed: 1, failed: 1, total: 2}, results: []}],
+  }));
+  mocks.events.mockResolvedValue(response({events: [
+    {sequence: 1, type: ['needs_attention', 'awaiting_input'].includes(kind) ? `task.${kind}` : 'task.completed', payload: {output: kind === 'evaluate' ? {id: 'evaluation'} : {
+      candidate_id: 'candidate', suite_id: 'suite', evaluation_id: 'evaluation',
+      verification: {status: 'failed', passed: 1, total: 2},
+    }}, created_at: ''},
+  ]}));
+  const preview = vi.fn();
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={preview} />);
+  const card = await screen.findByRole('region', {name: '候选版本 1 · Candidate'});
+  expect(within(card).getByText('Summary')).toBeTruthy();
+  expect(within(card).getByText('自动测试：1/2 项通过')).toBeTruthy();
+  fireEvent.change(screen.getByRole('combobox', {name: '候选版本'}), {target: {value: ''}});
+  fireEvent.click(within(card).getByRole('button', {name: '查看候选'}));
+  await waitFor(() => expect(preview).toHaveBeenLastCalledWith(candidate));
+  fireEvent.click(within(card).getByRole('button', {name: '查看测试结果'}));
+  expect(await screen.findByRole('main', {name: '文本仿真结果'})).toBeTruthy();
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
 it('defers host draft synchronization while composing or using voice', async () => {
   const targetChanged = vi.fn();
   const preview = vi.fn();
@@ -166,6 +280,9 @@ it('opens settings and attachments without losing the input or voice context', a
   expect(screen.queryByRole('combobox', {name: '构建模型协议'})).toBeNull();
   fireEvent.click(screen.getByRole('button', {name: '工作台设置'}));
   expect((await screen.findByRole('combobox', {name: '构建模型协议'}) as HTMLSelectElement).value).toBe('chat');
+  const dependencyReads = mocks.dependencies.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', {name: '保存构建模型'}));
+  await waitFor(() => expect(mocks.dependencies.mock.calls.length).toBeGreaterThan(dependencyReads));
   fireEvent.keyDown(screen.getByRole('dialog', {name: '工作台设置'}), {key: 'Escape'});
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', {name: '工作台设置'})));
   fireEvent.click(screen.getByRole('button', {name: '资料附件，已选择 0 个'}));
@@ -233,4 +350,58 @@ it('preserves the composing session when expanding the workbench', async () => {
   expect(screen.getByRole('button', {name: '收起工作台'})).toBeTruthy();
   expect(mocks.create).not.toHaveBeenCalled();
   expect(mocks.candidate).toHaveBeenCalledOnce();
+});
+
+it('submits the explicit test-only mode without adopting the candidate', async () => {
+  mocks.instruct.mockResolvedValue(response({id: 'test', status: 'queued'}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const input = await screen.findByRole('textbox', {name: '构建需求'});
+  fireEvent.change(screen.getByRole('combobox', {name: '助手任务模式'}), {target: {value: 'test'}});
+  fireEvent.change(input, {target: {value: '只执行附件用例'}});
+  fireEvent.click(screen.getByRole('button', {name: '发送构建需求'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledWith(expect.objectContaining({body: expect.objectContaining({mode: 'test', text: '只执行附件用例'})})));
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it('continues a pending test clarification using its exact task reference', async () => {
+  mocks.instruct.mockResolvedValue(response({id: 'continued', status: 'queued'}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'task.completed', payload: {job_id: 'pending', output: {outcome: 'needs_input', task_mode: 'test', question: '选用哪一列对话？', candidate_id: 'candidate'}}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const answer = await screen.findByRole('textbox', {name: '补充回答'});
+  expect(screen.queryByRole('region', {name: '候选版本 1 · Candidate'})).toBeNull();
+  fireEvent.change(answer, {target: {value: '调整后对话'}});
+  fireEvent.click(screen.getByRole('button', {name: '补充并继续'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledWith(expect.objectContaining({body: expect.objectContaining({mode: 'test', continue_test_job_id: 'pending', text: '调整后对话'})})));
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it('shows all test batches without representing them as a new candidate', async () => {
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'task.completed', payload: {job_id: 'test', output: {outcome: 'test', candidate_id: 'candidate', suite_ids: ['s1','s2'], summary: {executed: 22, total: 22, passed: 18, failed: 4, error: 0, inconclusive: 0}}}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const card = await screen.findByRole('region', {name: '只运行测试结果'});
+  expect(within(card).getByText('测试结果 · 18/22 项通过')).toBeTruthy();
+  expect(within(card).getByRole('button', {name: '第 2 批结果'})).toBeTruthy();
+  expect(screen.queryByRole('region', {name: '候选版本 1 · Candidate'})).toBeNull();
+  expect(screen.getByText(/22\/22 条已实际运行/)).toBeTruthy();
+});
+
+it('keeps the tested version when resource loading finishes after its completion event', async () => {
+  let resolveResources!: (value: unknown) => void;
+  mocks.session.mockResolvedValueOnce(response(state)).mockImplementationOnce(() => new Promise(resolve => { resolveResources = resolve; }));
+  mocks.events.mockResolvedValueOnce(response({events: [{sequence: 1, type: 'task.completed', payload: {output: {outcome: 'test', candidate_id: 'candidate'}}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  await waitFor(() => expect(mocks.session).toHaveBeenCalledTimes(2));
+  await act(async () => { resolveResources(response({...state, candidates: [{...candidate, id: 'newer'}, candidate]})); });
+  await waitFor(() => expect((screen.getByRole('combobox', {name: '候选版本'}) as HTMLSelectElement).value).toBe('candidate'));
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it('resumes a cancelled test using its original task instead of starting a build', async () => {
+  mocks.instruct.mockResolvedValue(response({id: 'resumed', status: 'queued'}));
+  mocks.session.mockResolvedValue(response({...state, jobs: [{id: 'paused-test', kind: 'build', status: 'cancelled', input: {mode: 'test'}, output: {intent: 'test', evaluation_ids: ['e'], summary: {executed: 10, total: 20}}}]}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'task.cancelled', payload: {job_id: 'paused-test'}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '继续未完成或异常测试'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledWith(expect.objectContaining({body: expect.objectContaining({mode: 'test', continue_test_job_id: 'paused-test'})})));
+  expect(mocks.adopt).not.toHaveBeenCalled();
 });

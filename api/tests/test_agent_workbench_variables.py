@@ -26,6 +26,71 @@ wf.edge(start, end, { label: "done", condition: "User is finished" });
 """
 
 
+async def test_candidate_runtime_model_change_is_scoped_validated_and_preserved(
+    monkeypatch,
+):
+    from pydantic import ValidationError
+
+    for method in (
+        "get_tools_for_organization",
+        "get_documents_for_organization",
+        "get_credentials_for_organization",
+        "get_recordings",
+    ):
+        monkeypatch.setattr(module.db_client, method, AsyncMock(return_value=[]))
+    resolve = AsyncMock()
+    monkeypatch.setattr(module, "prepare_models", resolve)
+    save = AsyncMock(return_value={"id": "new", "fingerprint": "fp"})
+    monkeypatch.setattr(module.db_client, "wb_save_candidate", save)
+    baseline = {
+        "name": "Existing",
+        "workflow_json": {"nodes": [], "edges": []},
+        "workflow_configurations": {
+            "model_configuration_override": {"tts": {"settings": {"voice": "original"}}}
+        },
+    }
+    t = module.WorkbenchTools(
+        23,
+        "s",
+        {"id": "j", "lease_token": "l", "input": {"mode": "build"}},
+        {"target": baseline, "target_fingerprint": "draft"},
+    )
+    selection = {
+        "provider_connection_uuid": "d2b61aa2-b458-409e-8239-03b854529f69",
+        "settings": {"model": "requested-voice"},
+    }
+    await t.save_candidate(
+        code=CODE, summary="Requested runtime", runtime_llm=selection
+    )
+    assert resolve.await_args.args[0] == 23 and resolve.await_args.args[2] == "evaluate"
+    saved = save.await_args.args[4]["workflow_configurations"][
+        "model_configuration_override"
+    ]
+    assert saved["llm"] == selection and saved["tts"]["settings"]["voice"] == "original"
+    assert (
+        "llm" not in baseline["workflow_configurations"]["model_configuration_override"]
+    )
+    await t.save_candidate(
+        summary="Preserve runtime on later patch",
+        node_updates=[
+            {"name": "Greeting", "prompt_append": "Keep the original policy."}
+        ],
+    )
+    assert (
+        save.await_args.args[4]["workflow_configurations"][
+            "model_configuration_override"
+        ]["llm"]
+        == selection
+    )
+    save.reset_mock()
+    with pytest.raises(ValidationError):
+        await t.save_candidate(
+            summary="Invalid settings",
+            runtime_llm={**selection, "settings": {"api_key": "never-save-this"}},
+        )
+    save.assert_not_awaited()
+
+
 def test_references_match_runtime_semantics_and_cover_edges():
     graph = {
         "nodes": [
@@ -169,6 +234,7 @@ async def test_simulation_uses_candidate_defaults_and_case_overrides(monkeypatch
         ("wb_evaluation", {"id": "evaluation"}),
         ("wb_create_run", 1),
         ("wb_heartbeat", None),
+        ("wb_emit", None),
         ("wb_evaluation_result", None),
         ("update_workflow_run", None),
     ]:
@@ -180,7 +246,7 @@ async def test_simulation_uses_candidate_defaults_and_case_overrides(monkeypatch
             return_value=SimpleNamespace(
                 checkpoint={},
                 gathered_context={},
-                is_completed=True,
+                is_completed=False,
                 assistant_text="hello",
                 events=[],
                 usage={},

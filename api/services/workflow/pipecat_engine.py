@@ -35,7 +35,7 @@ from api.errors.failure import (
     failure_metadata_for_processor,
     log_failure,
 )
-from api.schemas.workflow_configurations import CallDispositionOption
+from api.schemas.workflow_configurations import CallDispositionOption, JevNodeRoutingConfiguration
 from api.services.pipecat.audio_playback import play_audio
 from api.services.pipecat.call_monitor_processor import CallMonitorProcessor
 from api.services.pipecat.call_opening import CallOpening
@@ -147,6 +147,7 @@ class PipecatEngine:
         run_transition_variable_extraction_in_background: bool = True,
         call_dispositions: Sequence[CallDispositionOption] | None = None,
         defer_final_extraction: bool = False,
+        node_routing: JevNodeRoutingConfiguration | None = None,
     ):
         self.evaluation_policy = evaluation_policy
         self._call_worker = task
@@ -177,6 +178,7 @@ class PipecatEngine:
         self._active_agent.greeting_override = (call_context_vars or {}).get(
             GREETING_OVERRIDE_CONTEXT_KEY
         )
+        self._active_agent.node_routing = node_routing or JevNodeRoutingConfiguration()
         self._agent_on_hold = False
         self._pending_agent: AgentRuntime | None = None
         self._retired_agents: list[AgentRuntime] = []
@@ -491,7 +493,16 @@ class PipecatEngine:
                                 EndTaskReason.END_CALL.value
                             )
 
-                result = {"status": "done"}
+                # The updated system prompt alone can be outweighed by earlier
+                # dialogue. Anchor the tool result to the destination so the
+                # next completion knows which node now owns the response.
+                destination = agent.workflow.nodes[transition_to_node]
+                result = {
+                    "status": "done",
+                    "current_node_id": destination.id,
+                    "current_node_name": destination.name,
+                    "instruction": "The transition is complete. Respond using the current node instructions.",
+                }
 
                 properties = FunctionCallResultProperties(
                     on_context_updated=on_context_updated,

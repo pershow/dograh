@@ -34,16 +34,44 @@ export type Job = {
   input: Record<string, unknown>;
   output: Record<string, unknown>;
 };
+export type ReviewCheck = {
+  criterion: string;
+  category: string;
+  reason: string;
+  severity?: string; layer?: string; applicability?: string; repair_target?: string;
+  citations: { id: string; quote: string; source: string; role?: string; turn?: number; path?: string; title?: string; source_kind?: string; offset?: number; content_hash?: string }[];
+};
+export type ReplayReview = {
+  status: string; reason: string; version?: number;
+  warnings?: string[]; basis_fingerprint?: string; business_status?: string; execution_status?: string; coverage?: string;
+  checks?: ReviewCheck[];
+  draft_review?: { checks: ReviewCheck[] };
+  verification?: { reviews: { check_index: number; verdict: string; reason: string; check: ReviewCheck }[] };
+};
 export type CaseResult = {
+  mode?: "scripted" | "single_step" | "dynamic";
+  history?: {role: string; text: string}[];
+  validity?: {
+    status: string; mode?: string; scope?: string; stop_reason?: string; source_turn?: number;
+    context_is_inferred?: boolean;
+    context_selection?: {node_id: string | null; reason: string; history_quote: string; ambiguous: boolean};
+    scenario?: {fingerprint: string; facts: {id: string; statement: string; provenance: string; quote: string; reason: string; applies_when?: string}[]; goals: {id: string; description: string; quote: string}[]; limitations: string[]};
+    checks?: {turn: number; verdict: string; reason: string; delivered: boolean; proposal: {text: string; simulated_action?: string}}[];
+    pending_goals?: string[];
+  };
+  run_id?: number;
+  source?: {sheet?: string; row?: number; column?: string};
+  reference_review?: ReplayReview;
   name: string;
   status: string;
   error?: string;
   transcript: { role: string; text: string }[];
-  assertions: { kind: string; value: unknown; passed: boolean }[];
+  assertions: { kind: string; value: unknown; passed: boolean; turn?: number | null; actual?: number; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
   tool_calls: unknown[];
 };
 export type Evaluation = {
   id: string;
+  job_id?: string;
   candidate_id: string;
   suite_id: string;
   status: string;
@@ -52,6 +80,8 @@ export type Evaluation = {
 };
 export type Suite = { id: string; payload: { name: string; cases: unknown[] } };
 export type WorkbenchState = {
+  memory_revision?: string;
+  revision?: string;
   session: WorkbenchSession;
   target: Snapshot;
   assets: Asset[];
@@ -65,4 +95,10 @@ export type WorkbenchEvent = {
   type: string;
   payload: Record<string, unknown>;
   created_at: string;
+};
+export type EventPage = {
+  events: WorkbenchEvent[];
+  before: number | null;
+  after: number;
+  has_more: boolean;
 };

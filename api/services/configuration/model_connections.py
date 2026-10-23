@@ -244,6 +244,29 @@ async def _connection(organization_id, uuid, *, active_only=True):
     return connection
 
 
+async def validate_service_selection(organization_id, role, selection):
+    """Validate a standalone catalog selection, scoped to an active connection."""
+    row = await _connection(organization_id, selection.provider_connection_uuid)
+    service = _service_from_selection(role, row, selection)
+    validate_service_configuration(service)
+    return service
+
+
+def _service_from_selection(role, row, selection):
+    schema = _schema(role, row.provider)
+    allowed = (
+        schema.model_fields.keys()
+        - CREDENTIAL_FIELDS
+        - CONNECTION_FIELDS
+        - {"provider"}
+    )
+    if set(selection.settings) - allowed:
+        raise _invalid(f"Unknown or non-overridable {role} setting")
+    return _build_service(
+        role, row.provider, row.credentials, row.connection_settings, selection.settings
+    )
+
+
 async def _named(organization_id, uuid):
     row = await db_client.get_named_model_configuration(organization_id, str(uuid))
     if row is None:
@@ -521,24 +544,9 @@ async def _resolve_spec(
             raise _invalid(
                 "Dograh manages its own fallbacks and cannot be a fallback target"
             )
-        schema = _schema(role, row.provider)
-        allowed = (
-            schema.model_fields.keys()
-            - CREDENTIAL_FIELDS
-            - CONNECTION_FIELDS
-            - {"provider"}
-        )
-        if set(selection.settings) - allowed:
-            raise _invalid(f"Unknown or non-overridable {role} setting")
         # Validate all saved references and settings, but only active services
         # participate in key selection, billing and snapshot execution.
-        service = _build_service(
-            role,
-            row.provider,
-            row.credentials,
-            row.connection_settings,
-            selection.settings,
-        )
+        service = _service_from_selection(role, row, selection)
         if role in active:
             services[key] = (row, service)
     for key, (row, target) in services.items():

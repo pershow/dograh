@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -30,7 +31,15 @@ ALLOWED = {
 
 
 async def read_selected_attachment(
-    org, session_id, selected_ids, asset_id, offset=0, limit=24000
+    org,
+    session_id,
+    selected_ids,
+    asset_id,
+    offset=0,
+    limit=24000,
+    *,
+    from_end=False,
+    query=None,
 ):
     """Read a ready asset from the caller's scoped session-library allowlist."""
     if asset_id not in selected_ids:
@@ -40,6 +49,12 @@ async def read_selected_attachment(
         or type(limit) is not int
         or offset < 0
         or not 1 <= limit <= 24000
+        or type(from_end) is not bool
+        or (
+            query is not None
+            and (not isinstance(query, str) or not 1 <= len(query) <= 200)
+        )
+        or (query is not None and from_end)
     ):
         raise WorkbenchError(
             "Attachment offset must be nonnegative and limit between 1 and 24000"
@@ -55,7 +70,39 @@ async def read_selected_attachment(
             "width": parsed["width"],
             "height": parsed["height"],
         }
-    text = parsed.get("text", "")
+    if parsed.get("truncated") and "full_text" not in parsed:
+        # The preview remains bounded. On-demand pages use the original file,
+        # never the old preview's silently truncated tail.
+        with tempfile.TemporaryDirectory(prefix="workbench-full-text-") as directory:
+            local = Path(directory) / ("source" + Path(asset["name"]).suffix.lower())
+            await PrivateAssetStore().download(asset["object_key"], local)
+            if (
+                local.stat().st_size > MAX_BYTES
+                or hashlib.sha256(local.read_bytes()).hexdigest() != asset["sha256"]
+            ):
+                raise WorkbenchError("Attachment integrity check failed")
+            complete = await parse_local_file(local, full_text=True)
+        parsed = {**parsed, "full_text": complete.get("text", "")}
+        await db_client.wb_asset_result(org, session_id, asset_id, parsed=parsed)
+    text = parsed.get("full_text", parsed.get("text", ""))
+    if from_end:
+        offset = max(0, len(text) - offset - limit)
+    if query is not None:
+        # Literal search, never user-supplied regular expressions. Return one
+        # bounded source page; the next exact match remains directly seekable.
+        match = re.compile(re.escape(query), re.IGNORECASE).search(text, offset)
+        if match is None:
+            return {
+                "name": asset["name"],
+                "kind": "text",
+                "text": "",
+                "offset": offset,
+                "next_offset": None,
+                "total_characters": len(text),
+                "query": query,
+                "found": False,
+            }
+        offset = max(offset, match.start() - min(limit // 4, 500))
     end = min(offset + limit, len(text))
     return {
         "name": asset["name"],
@@ -64,8 +111,19 @@ async def read_selected_attachment(
         "offset": offset,
         "next_offset": end if end < len(text) else None,
         "total_characters": len(text),
-        "truncated_by_parser": parsed.get("truncated", False),
+        "truncated_by_parser": parsed.get("truncated", False)
+        and "full_text" not in parsed,
         "source_locations": [s["location"] for s in parsed.get("segments", [])],
+        **(
+            {
+                "query": query,
+                "found": True,
+                "match_offset": match.start(),
+                "next_match_offset": match.end(),
+            }
+            if query is not None
+            else {}
+        ),
     }
 
 

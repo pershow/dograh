@@ -145,6 +145,11 @@ for ((i=1; i<=ARQ_WORKERS; i++)); do
   SERVICE_COMMANDS+=("python -m arq api.tasks.arq.WorkerSettings --custom-log-dict api.tasks.arq.LOG_CONFIG")
 done
 
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  SERVICE_NAMES+=("workbench")
+  SERVICE_COMMANDS+=("python -m api.tasks.agent_workbench")
+fi
+
 ###############################################################################
 ### 3) Activate virtual environment
 ###############################################################################
@@ -158,6 +163,10 @@ else
 fi
 
 mkdir -p "$RUN_DIR"
+
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  python -m api.services.codex
+fi
 
 NGINX_UPSTREAM_TEMPLATE="$BASE_DIR/nginx/dograh_upstream.conf.template"
 NGINX_UPSTREAM_CONF="/etc/nginx/conf.d/dograh_upstream.conf"

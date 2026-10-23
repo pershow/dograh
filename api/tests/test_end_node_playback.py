@@ -49,7 +49,10 @@ async def transition_to_end(engine):
     transition = await engine._create_transition_func("move_to_end_call", "end")
     result = AsyncMock()
     await transition(SimpleNamespace(arguments={}, result_callback=result))
-    assert result.await_args.args == ({"status": "done"},)
+    payload = result.await_args.args[0]
+    assert payload["status"] == "done"
+    assert payload["current_node_id"] == "end"
+    assert payload["current_node_name"] == "End Call"
     return result.await_args.kwargs["properties"].on_context_updated
 
 

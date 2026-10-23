@@ -48,6 +48,44 @@ const created = { ...connection("Studio voice", "elevenlabs"), configured_creden
 beforeEach(() => vi.clearAllMocks());
 
 describe("configuration modes", () => {
+    it("uses one Qwen connection for STT and TTS and saves their distinct settings", () => {
+        const qwen = { ...provider, title: "Qwen (DashScope)", credential_required: ["api_key"] };
+        const speechCatalog: ModelConnectionCatalog = { services: { ...catalog.services,
+            stt: { ...catalog.services.stt, qwen: { ...qwen, settings_schema: { properties: {
+                model: { type: "string", title: "Model", default: "qwen3-asr-flash-realtime", examples: ["qwen3-asr-flash-realtime"] },
+                language: { type: "string", title: "Language", default: "auto", examples: ["auto", "zh"] },
+            } } } },
+            tts: { ...catalog.services.tts, qwen: { ...qwen, settings_schema: { properties: {
+                model: { type: "string", title: "Model", default: "qwen3-tts-flash-realtime", examples: ["qwen3-tts-flash-realtime"] },
+                voice: { type: "string", title: "Voice", default: "Cherry", examples: ["Cherry", "Serena"], allow_custom_input: true },
+                language: { type: "string", title: "Language", default: "Auto", examples: ["Auto", "Chinese"] },
+                speed: { type: "number", title: "Speed", default: 1, minimum: 0.5, maximum: 2 },
+            } } } },
+        } };
+        const available = [...connections, connection("Qwen Beijing", "qwen")];
+        function QwenEditor() {
+            const [configuration, setConfiguration] = useState(() => emptyConfiguration(speechCatalog, available, "cascade"));
+            return <form onSubmit={event => { event.preventDefault(); onSubmit(cleanConfiguration(configuration, speechCatalog, available)); }}>
+                <ConfigurationFields catalog={speechCatalog} connections={available} configuration={configuration} onChange={setConfiguration} />
+                <button type="submit">Save</button>
+            </form>;
+        }
+        render(<QwenEditor />);
+        selectOption(providerSelect("STT"), "Qwen (DashScope) Qwen Beijing");
+        expect(within(servicePanel("STT")).getByLabelText("Model").textContent).toContain("qwen3-asr-flash-realtime");
+        selectOption(providerSelect("TTS"), "Qwen (DashScope) Qwen Beijing");
+        const ttsPanel = within(servicePanel("TTS"));
+        expect(ttsPanel.getByLabelText("Model").textContent).toContain("qwen3-tts-flash-realtime");
+        selectOption(ttsPanel.getByLabelText("Voice"), "Serena");
+        selectOption(ttsPanel.getByLabelText("Language"), "Chinese");
+        fireEvent.change(ttsPanel.getByLabelText("Speed"), { target: { value: "1.2" } });
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            stt: { provider_connection_uuid: "Qwen Beijing", settings: { model: "qwen3-asr-flash-realtime", language: "auto" } },
+            tts: { provider_connection_uuid: "Qwen Beijing", settings: { model: "qwen3-tts-flash-realtime", voice: "Serena", language: "Chinese", speed: 1.2 } },
+        }));
+    });
+
     it("offers the three modes as one choice, Dograh selected when an account exists", () => {
         render(<Editor />);
         expect(screen.getAllByRole("radio").map(item => item.getAttribute("aria-labelledby") && document.getElementById(item.getAttribute("aria-labelledby")!)?.textContent))

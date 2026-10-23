@@ -138,6 +138,18 @@ class StubClient implements SpecProvider {
 
 const client = new StubClient();
 
+it("keeps parallel branches with distinct edge identities", async () => {
+    const wf = new Workflow({ client });
+    const start = await wf.add({ type: "startCall", name: "Hello", prompt: "Hello" });
+    const end = await wf.add({ type: "endCall", name: "Bye", prompt: "Bye" });
+    for (const label of ["accepted", "declined", "busy"]) {
+        wf.edge(start, end, { label, condition: label });
+    }
+    const edges = wf.toJson().edges;
+    assert.deepEqual(edges.map(edge => edge.id), ["1-2", "1-2__2", "1-2__3"]);
+    assert.deepEqual(edges.map(edge => edge.data.label), ["accepted", "declined", "busy"]);
+});
+
 // ─── Builder + toJson round-trip ──────────────────────────────────────────
 
 describe("Workflow builder", () => {

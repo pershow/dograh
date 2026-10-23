@@ -145,6 +145,8 @@ services:
       # order TURN URIs UDP-first. Required for correct remote WebRTC.
       ENVIRONMENT: "production"
       LOG_LEVEL: "INFO"
+      AGENT_WORKBENCH_ENABLED: "${AGENT_WORKBENCH_ENABLED:-false}"
+      WORKBENCH_ASSET_BUCKET: "${WORKBENCH_ASSET_BUCKET:-private-workbench-assets}"
 
       # Public HTTPS origin (Traefik-terminated). Used for absolute URLs and
       # for verifying inbound telephony webhook signatures.

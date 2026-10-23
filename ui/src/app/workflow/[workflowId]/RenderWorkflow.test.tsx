@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 import type { WorkflowVersionResponse } from '@/client/types.gen';
 import type { Candidate } from "@/components/agent-workbench/types";
+import type { FlowEdge } from '@/components/flow/types';
 
 import RenderWorkflow from './RenderWorkflow';
 
@@ -18,7 +19,7 @@ const mocks = vi.hoisted(() => ({
     flow: vi.fn(),
     state: {
         rfInstance: { current: null },
-        nodes: [], edges: [], workflowValidationErrors: [],
+        nodes: [], edges: [] as FlowEdge[], workflowValidationErrors: [],
         workflowName: 'Agent', isDirty: false, templateContextVariables: {},
         setNodes: vi.fn(), setEdges: vi.fn(), setIsDirty: vi.fn(), setIsAddNodePanelOpen: vi.fn(),
     },
@@ -99,6 +100,7 @@ const version = (number: number, status: string): WorkflowVersionResponse => ({
 beforeEach(() => {
     vi.clearAllMocks();
     mocks.state.isDirty = false;
+    mocks.state.edges = [];
     mocks.query = 'version=3&source=campaign';
     mocks.versions.mockResolvedValue({ data: [version(21, 'draft'), version(20, 'published')] });
 });
@@ -207,6 +209,38 @@ it('blocks adoption over unsaved draft changes, and reloads the editor after ado
     view.rerender(<RenderWorkflow workflowId={12} initialWorkflowName="Saved Agent" user={{id:'1'}} onDraftAdopted={onDraftAdopted} />);
     fireEvent.click(screen.getByText('Apply candidate'));
     expect(onDraftAdopted).toHaveBeenCalledOnce();
+});
+
+it('previews every legacy parallel edge with a unique identity without mutating the candidate', () => {
+    mocks.query = 'workbench=1';
+    render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id: '1'}} />);
+    const edges = [
+        {id: '3-35', source: '3', target: '35', data: {label: 'accept', condition: 'Agreed'}},
+        {id: '3-35', source: '3', target: '35', data: {label: 'retry', condition: 'Try again'}},
+    ];
+    act(() => mocks.workbench.mock.lastCall?.[0].onPreviewChange({
+        id: 'legacy', snapshot: {workflow_json: {nodes: [], edges}},
+    }));
+    const preview = mocks.flow.mock.lastCall?.[0].edges;
+    expect(preview.map((edge: {id: string}) => edge.id)).toEqual(['3-35', '3-35__2']);
+    expect(preview.map((edge: {data: unknown}) => edge.data)).toEqual(edges.map(edge => edge.data));
+    expect(edges.map(edge => edge.id)).toEqual(['3-35', '3-35']);
+    expect(mocks.state.setEdges).not.toHaveBeenCalled();
+});
+
+it('normalizes already-mounted legacy edges before React Flow renders them', () => {
+    const edges: FlowEdge[] = [
+        {id: '3-35', source: '3', target: '35', data: {label: 'first', condition: 'First branch'}},
+        {id: '3-35', source: '3', target: '35', data: {label: 'second', condition: 'Second branch'}},
+    ];
+    mocks.state.edges = edges;
+    const view = render(<RenderWorkflow workflowId={12} initialWorkflowName="Agent" user={{id:'1'}} />);
+    const normalized = mocks.flow.mock.lastCall?.[0].edges;
+    expect(normalized.map((edge: FlowEdge) => edge.id)).toEqual(['3-35', '3-35__2']);
+    expect(normalized.map((edge: FlowEdge) => edge.data)).toEqual(edges.map(edge => edge.data));
+    view.rerender(<RenderWorkflow workflowId={12} initialWorkflowName="Renamed" user={{id:'1'}} />);
+    expect(mocks.flow.mock.lastCall?.[0].edges).toBe(normalized);
+    expect(edges.map(edge => edge.id)).toEqual(['3-35', '3-35']);
 });
 
 it('reloads an externally adopted draft only once, after its saved snapshot actually changes', () => {

@@ -1,5 +1,6 @@
 """Opt-in workbench API. Every child lookup is rooted in the authenticated org."""
 
+import asyncio
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -16,9 +17,13 @@ from fastapi.routing import APIRoute
 from api.db import db_client
 from api.db.models import UserModel
 from api.schemas.agent_workbench import (
+    BuildModelSettings,
+    BuildModelSettingsResponse,
+    ConfirmMemory,
     CreateSession,
     EvaluateRequest,
     Instruction,
+    RevokeMemory,
     SessionSettings,
     SimulationSuite,
     TuneRequest,
@@ -28,7 +33,12 @@ from api.schemas.agent_workbench import (
 from api.services.agent_workbench.attachments import parse_attachment, upload_attachment
 from api.services.agent_workbench.config import WorkbenchSettings
 from api.services.agent_workbench.context import list_agent_runs
-from api.services.agent_workbench.dependencies import dependency_report
+from api.services.agent_workbench.dependencies import (
+    BUILD_LLM_PROVIDERS,
+    dependency_report,
+    get_build_model,
+    save_build_model,
+)
 from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.jobs import enqueue
 from api.services.agent_workbench.voice_commands import voice_command
@@ -91,7 +101,35 @@ def public_data(data):
 
 @router.get("/capabilities", response_model=WorkbenchResponse)
 async def workbench_capabilities(user: User):
-    return WorkbenchResponse(data=WorkbenchSettings.load().capabilities())
+    return WorkbenchResponse(
+        data=await asyncio.to_thread(WorkbenchSettings.load().capabilities)
+    )
+
+
+@router.get(
+    "/build-model",
+    response_model=BuildModelSettingsResponse,
+    operation_id="get_workbench_build_model",
+)
+async def workbench_build_model(user: User, _: Enabled):
+    return BuildModelSettingsResponse(
+        llm=await get_build_model(user.selected_organization_id),
+        supported_providers=list(BUILD_LLM_PROVIDERS),
+    )
+
+
+@router.put(
+    "/build-model",
+    response_model=BuildModelSettingsResponse,
+    operation_id="update_workbench_build_model",
+)
+async def workbench_update_build_model(
+    body: BuildModelSettings, user: User, _: Enabled
+):
+    return BuildModelSettingsResponse(
+        llm=await save_build_model(user.selected_organization_id, body.llm),
+        supported_providers=list(BUILD_LLM_PROVIDERS),
+    )
 
 
 @router.post("/sessions", response_model=WorkbenchResponse)
@@ -103,10 +141,25 @@ async def workbench_create_session(body: CreateSession, user: User, _: Enabled):
     )
 
 
-@router.get("/sessions/{session_id}", response_model=WorkbenchResponse)
-async def workbench_session(session_id: str, user: User, _: Enabled):
+@router.get("/sessions", response_model=WorkbenchResponse)
+async def workbench_sessions(workflow_id: int, user: User, _: Enabled):
     return public_data(
-        await db_client.wb_context(user.selected_organization_id, session_id)
+        {
+            "sessions": await db_client.wb_sessions(
+                user.selected_organization_id, user.id, workflow_id
+            )
+        }
+    )
+
+
+@router.get("/sessions/{session_id}", response_model=WorkbenchResponse)
+async def workbench_session(
+    session_id: str, user: User, _: Enabled, if_revision: str | None = None
+):
+    return public_data(
+        await db_client.wb_context(
+            user.selected_organization_id, session_id, if_revision=if_revision
+        )
     )
 
 
@@ -150,14 +203,21 @@ async def workbench_dependencies(
 
 @router.get("/sessions/{session_id}/events", response_model=WorkbenchResponse)
 async def workbench_events(
-    session_id: str, user: User, _: Enabled, after: int = Query(0, ge=0)
+    session_id: str,
+    user: User,
+    _: Enabled,
+    after: int | None = Query(None, ge=0),
+    before: int | None = Query(None, ge=1),
+    limit: int = Query(60, ge=1, le=200),
 ):
     return WorkbenchResponse(
-        data={
-            "events": await db_client.wb_events(
-                user.selected_organization_id, session_id, after
-            )
-        }
+        data=await db_client.wb_event_page(
+            user.selected_organization_id,
+            session_id,
+            after=after,
+            before=before,
+            limit=limit,
+        )
     )
 
 
@@ -172,6 +232,105 @@ async def workbench_instruction(
             "build",
             body.model_dump(exclude={"idempotency_key"}),
             body.idempotency_key,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/jobs/{job_id}/basis", response_model=WorkbenchResponse
+)
+async def workbench_task_basis(
+    session_id: str,
+    job_id: str,
+    user: User,
+    _: Enabled,
+    source_id: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=12000, ge=1, le=24000),
+):
+    from api.services.agent_workbench.basis import source_page
+
+    basis = await db_client.wb_task_basis(
+        user.selected_organization_id, session_id, job_id
+    )
+    return WorkbenchResponse(data=source_page(basis, source_id, offset, limit))
+
+
+@router.get("/sessions/{session_id}/memory", response_model=WorkbenchResponse)
+async def workbench_memory(
+    session_id: str, user: User, _: Enabled, include_history: bool = False
+):
+    return WorkbenchResponse(
+        data=await db_client.wb_memory(
+            user.selected_organization_id, session_id, include_history=include_history
+        )
+    )
+
+
+@router.post("/sessions/{session_id}/memory", response_model=WorkbenchResponse)
+async def workbench_confirm_memory(
+    session_id: str, body: ConfirmMemory, user: User, _: Enabled
+):
+    return WorkbenchResponse(
+        data=await db_client.wb_confirm_memory(
+            user.selected_organization_id, session_id, user.id, **body.model_dump()
+        )
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/memory/{memory_id}/revoke", response_model=WorkbenchResponse
+)
+async def workbench_revoke_memory(
+    session_id: str, memory_id: str, body: RevokeMemory, user: User, _: Enabled
+):
+    return WorkbenchResponse(
+        data=await db_client.wb_revoke_memory(
+            user.selected_organization_id,
+            session_id,
+            user.id,
+            memory_id,
+            body.expected_revision,
+        )
+    )
+
+
+@router.get("/sessions/{session_id}/memory-sources", response_model=WorkbenchResponse)
+async def workbench_memory_sources(
+    session_id: str,
+    user: User,
+    _: Enabled,
+    source_type: Literal["request", "attachment"] = "request",
+    query: str = "",
+    offset: int = Query(0, ge=0),
+    limit: int = Query(40, ge=1, le=60),
+):
+    return WorkbenchResponse(
+        data=await db_client.wb_memory_sources(
+            user.selected_organization_id,
+            session_id,
+            source_type=source_type,
+            query=query,
+            offset=offset,
+            limit=limit,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/memory-sources/{source_id}",
+    response_model=WorkbenchResponse,
+)
+async def workbench_memory_source(
+    session_id: str,
+    source_id: str,
+    user: User,
+    _: Enabled,
+    source_type: Literal["request", "attachment"] = "request",
+):
+    return WorkbenchResponse(
+        data=await db_client.wb_memory_source(
+            user.selected_organization_id, session_id, source_type, source_id
         )
     )
 

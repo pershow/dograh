@@ -7,3 +7,7 @@ class WorkbenchError(Exception):
 class LeaseLost(WorkbenchError):
     def __init__(self):
         super().__init__("Task cancelled or worker lease expired", 409)
+
+
+class InvalidDecision(WorkbenchError):
+    """A read-only model result failed validation, not a transport failure."""

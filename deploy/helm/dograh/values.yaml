@@ -262,6 +262,30 @@ web:
   affinity: {}
 
 # -----------------------------------------------------------------------------
+# Workbench uses its own ARQ queue and the source-built Codex runtime in the
+# API image. Enabling this also enables the workbench routes on API pods.
+# -----------------------------------------------------------------------------
+workbench:
+  enabled: false
+  replicaCount: 1
+  assetBucket: private-workbench-assets
+  # Native Codex SQLite/thread storage requires durable local/POSIX storage.
+  persistence:
+    existingClaim: ""
+    storageClass: ""
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
 # ARQ background workers
 # -----------------------------------------------------------------------------
 workers:

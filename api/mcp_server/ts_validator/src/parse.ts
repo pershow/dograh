@@ -352,8 +352,14 @@ export function parseCode(
                 return;
             }
         }
+        // Distinct conditions can connect the same two nodes. React Flow uses
+        // the ID as its key, so each branch still needs its own identity.
+        const baseId = `${src.id}-${tgt.id}`;
+        const usedIds = new Set(edges.map(edge => edge.id));
+        let edgeId = baseId;
+        for (let suffix = 2; usedIds.has(edgeId); suffix++) edgeId = `${baseId}__${suffix}`;
         edges.push({
-            id: `${src.id}-${tgt.id}`,
+            id: edgeId,
             source: src.id,
             target: tgt.id,
             data: optsObj,
