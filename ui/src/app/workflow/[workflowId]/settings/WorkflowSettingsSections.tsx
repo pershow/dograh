@@ -268,6 +268,8 @@ function GeneralSection({
         workflowConfigurations.context_compaction_enabled,
     );
     const [nodeRouting, setNodeRouting] = useState(() => resolveNodeRouting(workflowConfigurations.node_routing));
+    const [routingConfidence, setRoutingConfidence] = useState(String(nodeRouting.confidence_threshold));
+    const [routingTimeout, setRoutingTimeout] = useState(String(nodeRouting.timeout_ms));
     const [ttsCacheEnabled, setTtsCacheEnabled] = useState(
         workflowConfigurations.tts_cache_enabled,
     );
@@ -322,7 +324,9 @@ function GeneralSection({
             turnStartMinWords !== workflowConfigurations.turn_start_min_words ||
             turnStopStrategy !== workflowConfigurations.turn_stop_strategy ||
             contextCompactionEnabled !== workflowConfigurations.context_compaction_enabled ||
-            JSON.stringify(nodeRouting) !== JSON.stringify(resolveNodeRouting(workflowConfigurations.node_routing)) ||
+            nodeRouting.mode !== resolveNodeRouting(workflowConfigurations.node_routing).mode ||
+            !routingConfidence.trim() || Number(routingConfidence) !== resolveNodeRouting(workflowConfigurations.node_routing).confidence_threshold ||
+            !routingTimeout.trim() || Number(routingTimeout) !== resolveNodeRouting(workflowConfigurations.node_routing).timeout_ms ||
             ttsCacheEnabled !== workflowConfigurations.tts_cache_enabled ||
             JSON.stringify(normalizedCallDispositions) !==
                 JSON.stringify(workflowConfigurations.call_dispositions) ||
@@ -333,7 +337,7 @@ function GeneralSection({
             JSON.stringify(externalPbxLeadHeaders) !==
             JSON.stringify(workflowConfigurations.external_pbx_lead_headers)
         );
-    }, [name, workflowName, ambientNoiseConfig, maxCallDuration, maxUserIdleTimeout, smartTurnStopSecs, turnStartStrategy, turnStartMinWords, turnStopStrategy, contextCompactionEnabled, nodeRouting, ttsCacheEnabled, normalizedCallDispositions, includeTranscriptEndTimestamps, externalPbxFieldMappings, externalPbxLeadHeaders, workflowConfigurations]);
+    }, [name, workflowName, ambientNoiseConfig, maxCallDuration, maxUserIdleTimeout, smartTurnStopSecs, turnStartStrategy, turnStartMinWords, turnStopStrategy, contextCompactionEnabled, nodeRouting, routingConfidence, routingTimeout, ttsCacheEnabled, normalizedCallDispositions, includeTranscriptEndTimestamps, externalPbxFieldMappings, externalPbxLeadHeaders, workflowConfigurations]);
 
     useUnsavedChanges("general", isDirty);
 
@@ -396,6 +400,13 @@ function GeneralSection({
     };
 
     const handleSave = async () => {
+        const confidence = Number(routingConfidence);
+        const timeout = Number(routingTimeout);
+        if (!routingConfidence.trim() || !Number.isFinite(confidence) || confidence < 0 || confidence > 1 ||
+            !routingTimeout.trim() || !Number.isInteger(timeout) || timeout < 50 || timeout > 5000) {
+            toast.error("Jev confidence must be 0–1 and timeout must be an integer from 50 to 5000 ms.");
+            return;
+        }
         setIsSaving(true);
         const callDispositionRowsAtSave = callDispositionRows;
         try {
@@ -410,7 +421,7 @@ function GeneralSection({
                     turn_start_min_words: turnStartMinWords,
                     turn_stop_strategy: turnStopStrategy,
                     context_compaction_enabled: contextCompactionEnabled,
-                    node_routing: nodeRouting,
+                    node_routing: { ...nodeRouting, confidence_threshold: confidence, timeout_ms: timeout },
                     tts_cache_enabled: ttsCacheEnabled,
                     call_dispositions: normalizedCallDispositions,
                     transcript_configuration: {
@@ -773,22 +784,14 @@ function GeneralSection({
                         <div className="space-y-2">
                             <Label htmlFor="node-routing-confidence">Minimum confidence</Label>
                             <Input id="node-routing-confidence" type="number" min="0" max="1" step="0.01"
-                                value={nodeRouting.confidence_threshold}
-                                onChange={event => {
-                                    const value = Number(event.target.value);
-                                    if (event.target.value && Number.isFinite(value) && value >= 0 && value <= 1)
-                                        setNodeRouting(current => ({ ...current, confidence_threshold: value }));
-                                }} />
+                                value={routingConfidence}
+                                onChange={event => setRoutingConfidence(event.target.value)} />
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="node-routing-timeout">Decision timeout (ms)</Label>
                             <Input id="node-routing-timeout" type="number" min="50" max="5000" step="50"
-                                value={nodeRouting.timeout_ms}
-                                onChange={event => {
-                                    const value = Number(event.target.value);
-                                    if (Number.isInteger(value) && value >= 50 && value <= 5000)
-                                        setNodeRouting(current => ({ ...current, timeout_ms: value }));
-                                }} />
+                                value={routingTimeout}
+                                onChange={event => setRoutingTimeout(event.target.value)} />
                         </div>
                     </div>
                 </div>
