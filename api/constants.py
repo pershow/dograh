@@ -17,6 +17,9 @@ LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
 LANGFUSE_PROJECT_ID = os.getenv("LANGFUSE_PROJECT_ID")
 
+# Optional hosted Jev classifier; credentials never belong in workflow settings.
+TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY", "").strip()
+
 # Tracing as a whole is optional, but a half-configured Langfuse silently
 # produces dead trace links, so fail loudly at import instead.
 if all([LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY]) and not (

@@ -44,6 +44,7 @@ from api.services.pipecat.event_handlers import (
     register_event_handlers,
 )
 from api.services.pipecat.in_memory_buffers import InMemoryLogsBuffer
+from api.services.pipecat.node_routing import NodeRoutingProcessor
 from api.services.pipecat.pipeline_builder import (
     build_pipeline,
     build_realtime_pipeline,
@@ -1126,6 +1127,7 @@ async def _run_pipeline_impl(
             assistant_context_aggregator,
             call_monitor_processor,
             [
+                NodeRoutingProcessor(engine),
                 AgentBridgeProcessor(
                     bus=worker_runner.bus,
                     worker_name=call_worker_name,

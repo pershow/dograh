@@ -146,6 +146,7 @@ services:
       ENVIRONMENT: "production"
       LOG_LEVEL: "INFO"
       AGENT_WORKBENCH_ENABLED: "${AGENT_WORKBENCH_ENABLED:-false}"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
       WORKBENCH_ASSET_BUCKET: "${WORKBENCH_ASSET_BUCKET:-private-workbench-assets}"
 
       # Public HTTPS origin (Traefik-terminated). Used for absolute URLs and

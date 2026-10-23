@@ -1,11 +1,21 @@
 import type {
     AmbientNoiseConfigurationDefaults,
     CallDispositionOption as GeneratedCallDispositionOption,
+    JevNodeRoutingConfiguration,
     ModelConfigurationOverride,
     WorkflowConfigurationDefaults as GeneratedWorkflowConfigurationDefaults,
 } from "@/client/types.gen";
 
 export type WorkflowConfigurationDefaults = GeneratedWorkflowConfigurationDefaults;
+
+export function resolveNodeRouting(value?: JevNodeRoutingConfiguration | null): Required<JevNodeRoutingConfiguration> {
+    return {
+        mode: value?.mode ?? "off",
+        confidence_threshold: value?.confidence_threshold ?? 0.85,
+        timeout_ms: value?.timeout_ms ?? 600,
+        model: value?.model ?? "jev-1.13.0",
+    };
+}
 
 export type AmbientNoiseConfiguration = Omit<
     AmbientNoiseConfigurationDefaults,
@@ -108,6 +118,7 @@ type WorkflowConfigurationBase = Omit<
     | "turn_stop_strategy"
     | "dictionary"
     | "context_compaction_enabled"
+    | "node_routing"
     | "tts_cache_enabled"
     | "call_dispositions"
     | "text_chat_inactivity_timeout_seconds"
@@ -127,6 +138,7 @@ export type WorkflowConfigurations = WorkflowConfigurationBase & {
     voicemail_detection?: VoicemailDetectionConfiguration;
     transcript_configuration: TranscriptConfiguration;
     context_compaction_enabled: boolean;  // Summarize context on node transitions to remove stale tool calls
+    node_routing?: JevNodeRoutingConfiguration;
     tts_cache_enabled: boolean;
     call_dispositions: CallDispositionOption[];  // Allowed terminal business outcomes
     text_chat_inactivity_timeout_seconds?: number;  // End inactive text chats after this many seconds

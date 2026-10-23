@@ -156,6 +156,9 @@ secrets:
   # secrets.existingSecret, put this under the DOGRAH_DEVOPS_SECRET key there.
   devopsSecret: ""
 
+  # Optional Jev node routing (workflow mode defaults to off).
+  typesafeApiKey: ""
+
   # Optional Langfuse tracing.
   langfuseSecretKey: ""
   langfusePublicKey: ""

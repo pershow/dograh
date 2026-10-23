@@ -154,6 +154,7 @@ services:
       AGENT_WORKBENCH_ENABLED: "${AGENT_WORKBENCH_ENABLED:-false}"
       WORKBENCH_ASSET_BUCKET: "${WORKBENCH_ASSET_BUCKET:-private-workbench-assets}"
       WORKBENCH_DATA_DIR: /data/workbench
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
       WORKBENCH_MODEL_CONTEXT_WINDOW: "${WORKBENCH_MODEL_CONTEXT_WINDOW:-131072}"
 
       # Set to "false" in .env to disable public signup (invite-only installs).
