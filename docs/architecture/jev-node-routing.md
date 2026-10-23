@@ -36,8 +36,10 @@ Equivalent workflow configuration:
 | `shadow` | Original flow proceeds immediately; Jev records a background prediction. |
 | `on` | Apply confident decisions; otherwise forward the original request to the LLM. |
 
-Connection setup and classification share the timeout budget. HTTP retries are
-disabled. Missing credentials, service errors, invalid results, low confidence
+Connections are prewarmed in the background during pipeline setup and reused
+across text turns and calls in the same worker. Cold connection waits still count
+against the decision timeout, but a timed-out turn does not cancel shared warmup.
+HTTP classification retries are disabled. Missing credentials, service errors, invalid results, low confidence
 and an explicit `uncertain` choice all retain the original flow. Cancellation
 propagates; a result from an inactive agent or outdated context cannot switch a
 node. Realtime speech-to-speech calls keep their native flow. Unsupported
@@ -46,14 +48,17 @@ characters of decision evidence also use the original flow, without truncating
 the evidence to force a decision.
 
 The implementation uses Pipecat's existing `JevClassifier` and hosted `JevClient`.
-It does not run a local AnyJev model. Each processor closes its HTTP client at
-cleanup; a voice call reuses the connection across turns.
+It does not run a local AnyJev model. Processors release their connection leases
+at cleanup. The worker closes unused pools after 240 seconds or at API shutdown;
+only the HTTP transport is shared, never conversation history or decisions.
 
 ## Comparing results
 
 Langfuse receives a `jev-node-routing` span under the same conversation/turn.
 It records classification outcome, model, confidence, threshold and classification
-latency, without adding a second conversational LLM generation. Application-issued
+latency, with the actual classification input and decision output. Connection wait,
+inference time and failure stage distinguish cold connections from slow inference.
+It does not add a second conversational LLM generation. Application-issued
 transition history uses tool-call IDs prefixed with `jev-route-`.
 
 The last 200 decisions are also saved in `gathered_context.node_routing`. Records

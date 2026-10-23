@@ -106,8 +106,13 @@ async def lifespan(app: FastAPI):
                 try:
                     await close_speech_cache()
                 finally:
-                    await loop_lag.stop()
-                    metrics.stop()
+                    from api.services.pipecat.jev_client_pool import close_jev_connections
+
+                    try:
+                        await close_jev_connections()
+                    finally:
+                        await loop_lag.stop()
+                        metrics.stop()
 
 
 app = FastAPI(

@@ -169,6 +169,92 @@ async def test_failure_falls_back_without_retry_or_context_mutation(
     assert record["outcome"] == failure
     assert "sensitive" not in json.dumps(record)
     assert classifier.choice.await_count <= 1
+    if failure == "timeout":
+        assert record["failure_phase"] == "inference"
+
+
+@pytest.mark.asyncio
+async def test_connection_timeout_does_not_cancel_warmup_or_reconnect_next_turn(
+    routing, monkeypatch
+):
+    from api.services.pipecat import jev_client_pool as pool
+
+    engine, context, router, _ = routing
+    entered, connected = asyncio.Event(), asyncio.Event()
+    client = SimpleNamespace(close=AsyncMock())
+
+    async def connect():
+        if not connected.is_set():
+            entered.set()
+            await connected.wait()
+
+    client.connect = AsyncMock(side_effect=connect)
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(pool, "JevClient", factory)
+    monkeypatch.setattr("api.constants.TYPESAFE_API_KEY", "test-credential")
+    monkeypatch.setattr(
+        "api.services.pipecat.node_routing.JevClassifier",
+        Mock(
+            side_effect=lambda **kw: SimpleNamespace(
+                client=kw["client"],
+                setup=AsyncMock(),
+                cleanup=AsyncMock(),
+                choice=AsyncMock(return_value=answer()),
+            )
+        ),
+    )
+    router._task_manager = Mock()
+    router._classifier_for = NodeRoutingProcessor._classifier_for.__get__(router)
+    next_router = None
+    try:
+        connection = router._connection_for(engine.active_agent.node_routing)
+        await entered.wait()
+        await send(router, context)
+        record = engine._gathered_context["node_routing"][-1]
+        assert record["outcome"] == "timeout"
+        assert record["failure_phase"] == "connection"
+        assert not connection.warmup.done()
+        await router.cleanup()
+        client.close.assert_not_awaited()
+
+        connected.set()
+        await connection.warmup
+        next_router = NodeRoutingProcessor(engine)
+        next_router._task_manager = Mock()
+        classifier = await next_router._classifier_for(engine.active_agent.node_routing)
+        assert classifier.client is client
+        assert factory.call_count == 1
+        result = await next_router._safe_decide(
+            engine.active_agent,
+            context,
+            next_router._record(engine.active_agent, "new"),
+        )
+        assert result.target == "agent"
+    finally:
+        await router.cleanup()
+        if next_router is not None:
+            await next_router.cleanup()
+        await pool.close_jev_connections()
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_trace_contains_decision_input_output_and_timeout_stage(
+    routing, monkeypatch
+):
+    _engine, context, router, _classifier = routing
+    span = Mock()
+    tracer = Mock()
+    tracer.start_as_current_span.return_value.__enter__ = Mock(return_value=span)
+    tracer.start_as_current_span.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(
+        "api.services.pipecat.node_routing.trace.get_tracer", Mock(return_value=tracer)
+    )
+    await send(router, context)
+    attrs = dict(call.args for call in span.set_attribute.call_args_list)
+    assert json.loads(attrs["input"])["state"]["dialogue"][-1]["content"] == "是的"
+    assert json.loads(attrs["output"])["choice"] == "edge_0"
+    assert json.loads(attrs["output"])["confidence"] == 0.95
 
 
 @pytest.mark.asyncio

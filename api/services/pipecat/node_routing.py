@@ -16,10 +16,13 @@ from loguru import logger
 from opentelemetry import trace
 
 from api import constants
+from api.services.pipecat.jev_client_pool import (
+    acquire_jev_connection,
+    release_jev_connection,
+)
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.classifiers.base_classifier import ChoiceQuestion, ClassifierError
 from pipecat.classifiers.jev.classifier import JevClassifier
-from pipecat.classifiers.jev.client import JevClient
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -91,6 +94,7 @@ class NodeRoutingProcessor(FrameProcessor):
         self._pending = None
         self._shadows = set()
         self._classifiers = {}
+        self._connections = {}
         self._ready = set()
         self._last_signature = None
         self._last_shadow = None
@@ -114,6 +118,22 @@ class NodeRoutingProcessor(FrameProcessor):
     async def setup(self, setup):
         await super().setup(setup)
         self._tracing_context = setup.tracing_context
+        config = self._engine.active_agent.node_routing
+        if (
+            config.mode != "off"
+            and not self._engine._is_realtime
+            and constants.TYPESAFE_API_KEY
+        ):
+            # Start connecting during the opening/greeting, without delaying it.
+            self._connection_for(config)
+
+    def _connection_for(self, config):
+        key = config.model
+        if key not in self._connections:
+            self._connections[key] = acquire_jev_connection(
+                constants.TYPESAFE_API_KEY, config.model
+            )
+        return self._connections[key]
 
     async def _classifier_for(self, config):
         key = (config.model, config.timeout_ms)
@@ -122,17 +142,10 @@ class NodeRoutingProcessor(FrameProcessor):
             api_key = constants.TYPESAFE_API_KEY
             if not api_key:
                 raise ClassifierError("missing_api_key")
-            classifier = JevClassifier(
-                client=JevClient(
-                    api_key=api_key,
-                    model=config.model,
-                    timeout=config.timeout_ms / 1000,
-                    max_retries=0,
-                )
-            )
+            classifier = JevClassifier(client=self._connection_for(config).client)
             self._classifiers[key] = classifier
         if key not in self._ready:
-            # Connection setup and inference share the same decision deadline.
+            await self._connection_for(config).ready()
             await classifier.setup(self.task_manager)
             self._ready.add(key)
         return classifier
@@ -185,9 +198,21 @@ class NodeRoutingProcessor(FrameProcessor):
         with trace.get_tracer(__name__).start_as_current_span(
             "jev-node-routing", context=parent, record_exception=False
         ) as span:
+            span.set_attribute(
+                "input",
+                json.dumps(
+                    {"state": state, "question": question.model_dump()},
+                    ensure_ascii=False,
+                ),
+            )
+            phase = "connection"
             try:
                 async with asyncio.timeout(config.timeout_ms / 1000):
                     classifier = await self._classifier_for(config)
+                    record["connection_wait_ms"] = round(
+                        (time.perf_counter() - started) * 1000, 2
+                    )
+                    phase = "inference"
                     result = (await classifier.choice(state, {"route": question}))[
                         "route"
                     ]
@@ -197,6 +222,7 @@ class NodeRoutingProcessor(FrameProcessor):
                     return None
                 record["confidence"] = confidence
                 choice = result.choice
+                record["choice"] = choice
                 if choice not in question.options:
                     record["outcome"] = "invalid_result"
                     return None
@@ -233,6 +259,14 @@ class NodeRoutingProcessor(FrameProcessor):
                 record["classifier_latency_ms"] = round(
                     (time.perf_counter() - started) * 1000, 2
                 )
+                if record["outcome"] in {"timeout", "error", "cancelled"}:
+                    record["failure_phase"] = phase
+                if phase == "inference":
+                    record["inference_latency_ms"] = round(
+                        record["classifier_latency_ms"] - record["connection_wait_ms"],
+                        2,
+                    )
+                span.set_attribute("output", json.dumps(record, ensure_ascii=False))
                 for key, value in record.items():
                     span.set_attribute(f"node_routing.{key}", value)
                 logger.info("Jev routing: {}", record)
@@ -412,5 +446,7 @@ class NodeRoutingProcessor(FrameProcessor):
             await self.cancel_task(task)
         for classifier in self._classifiers.values():
             await classifier.cleanup()
-            await classifier.client.close()
+        for connection in self._connections.values():
+            release_jev_connection(connection)
+        self._connections.clear()
         await super().cleanup()
