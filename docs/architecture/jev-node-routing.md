@@ -16,7 +16,9 @@ For Helm, use `secrets.typesafeApiKey`, or include `TYPESAFE_API_KEY` in the Sec
 selected by `secrets.existingSecret`. The key is never stored in a workflow.
 
 In **Settings → General → Jev Node Routing**, choose a mode and save/publish the
-agent. Every run and transferred agent uses its pinned definition's settings.
+agent. Runs use the settings of their bound definition. Published versions are
+fixed, while editing a draft also changes the settings of runs bound to that draft.
+Use separate test copies or published versions for reproducible comparisons.
 Equivalent workflow configuration:
 
 ```json
@@ -80,3 +82,24 @@ in latency: an unsuccessful enabled decision can add up to the configured budget
 before the original model runs. Chinese dialogue accuracy and real service
 latency require evaluation with the deployment's TypeSafe credentials; mocked
 regression tests only verify routing, fallback and lifecycle behavior.
+
+## Latency diagnosis
+
+A warm connection does not guarantee classification below the decision deadline.
+If `failure_phase` is `inference` and `connection_wait_ms` is small, investigate
+remote response latency rather than repeatedly reconnecting. A fallback in `on`
+is serial: its classification wait is followed by the original LLM flow. Raising
+the deadline can reduce timeouts but increases the worst-case fallback penalty;
+evaluate the full turn before choosing it. Keep confidence checks unchanged.
+
+Text-chat HTTP turns are already delimited by user messages. Their context
+aggregator therefore uses external turn strategies instead of loading the
+default ONNX speech-turn analyzer on every message. Voice pipelines keep their
+configured speech-turn detection. This avoids synchronous model initialization
+and the extra allocation/collection work of an unused audio model.
+
+Measure both HTTP elapsed time and the conversation/turn span. Setup, storage,
+authentication and serialization can fall outside that span. A long span is not
+proof of slow Jev: inspect the classification and conversational generations
+separately. Interleave equal dialogue cases across modes and retain all fallback
+and slow turns; do not compare only successful classifications.

@@ -528,7 +528,15 @@ async def test_text_chat_message_executes_assistant_turn(
     db_session,
     async_session,
     test_client_factory,
+    monkeypatch,
 ):
+    def unexpected_audio_model(*args, **kwargs):
+        raise AssertionError("Text turns must not load a speech-turn model")
+
+    monkeypatch.setattr(
+        "pipecat.audio.turn.smart_turn.local_smart_turn_v3.LocalSmartTurnAnalyzerV3",
+        unexpected_audio_model,
+    )
     workflow_definition = {
         "nodes": [
             {

@@ -32,8 +32,10 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
     LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.utils.run_context import set_current_org_id
 
 from api.db import db_client
@@ -736,8 +738,15 @@ async def execute_text_chat_pending_turn(
         install_request_capture(llm, engine, capture_processor._append_event)
 
     assistant_params = LLMAssistantAggregatorParams()
+    # HTTP messages already delimit text turns. The default user strategies
+    # load a local ONNX speech-turn model, which is unused in this pipeline
+    # and otherwise gets constructed again for every text message.
     context_aggregator = LLMContextAggregatorPair(
-        context, assistant_params=assistant_params
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=ExternalUserTurnStrategies()
+        ),
+        assistant_params=assistant_params,
     )
     assistant_context_aggregator = context_aggregator.assistant()
 
