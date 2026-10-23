@@ -139,7 +139,7 @@ async def discover_originals(org, sid, job, target, sources, llm, event, protoco
         choice = await decision(
             "select_business_sources",
             GUIDANCE
-            + "\nSelect original business material/requirements relevant to this Agent's current task, including original creation material from older sessions. Exclude requests merely to run tests, inspect results, report status, previous audits and reference-dialogue spreadsheets. Do not exclude original business rules just because the current task is test-only. Selection is retrieval, not confirmation. Return empty if nothing relevant; do not invent sources.",
+            + "\nIdentify original business material/requirements relevant to this Agent's current task, including original creation material from older sessions. Exclude requests merely to run tests, inspect results, report status, previous audits and reference-dialogue spreadsheets. Do not exclude original business rules just because the current task is test-only. Selection is retrieval, not confirmation. Return empty if nothing relevant; do not invent sources.",
             object_schema(
                 {
                     "source_ids": {

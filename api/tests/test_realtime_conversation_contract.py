@@ -349,7 +349,10 @@ async def test_edge_speech_policy_preserves_node_transition(
     engine.set_node.assert_awaited_once_with(
         "agent", origin_visit_id=engine.active_agent.visit_id
     )
-    assert result.await_args.args == ({"status": "done"},)
+    payload = result.await_args.args[0]
+    assert payload["status"] == "done"
+    assert payload["current_node_id"] == "agent"
+    assert payload["current_node_name"] == "Collect Info"
     engine.speech_playback.cancel_all()
 
 
