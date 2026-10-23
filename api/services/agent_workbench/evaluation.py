@@ -753,8 +753,14 @@ async def evaluate(
                 "completed" if len(results) == len(suite.cases) else "running",
                 summary(),
             )
-            if on_progress:
-                await on_progress(evaluation["id"], summary(), len(results))
+        # Register the evaluation before its first model call, so an interrupted
+        # first case can be found and resumed from its frozen scenario.
+        if on_progress:
+            await on_progress(
+                evaluation["id"],
+                summary(),
+                sum(bool(r.get("runtime_responded")) for r in results.values()),
+            )
         for index, case in enumerate(suite.cases):
             if index not in results:
                 group.create_task(run_and_persist(index, case))

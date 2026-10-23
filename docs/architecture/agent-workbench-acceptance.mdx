@@ -590,9 +590,15 @@ scenario prerequisite, with its partial transcript retained as inconclusive.
 Its business review was interrupted, which is recorded separately from Agent quality.
 
 Full dynamic execution of all 266 distinct adjusted-conversation samples is queued
-as `48599f19-c93d-49ec-b5df-9347cce8eb88`, pinned to candidate
+as `bccec3e5-461b-486b-a4a2-ed1bbc490a6f`, pinned to candidate
 `0caf23c0-ffa7-47d5-b541-8b90958dfc73`. This entry does not claim that the batch has
 finished or passed. The workbench displays actual new run IDs, live transcripts,
 frozen scenarios, checks, reviews and aggregate counters. Durable validation receipts
 are in `run/workbench/simulation-validation.json` and current counters in
 `run/workbench/simulation-progress.json`.
+
+This task resumes `48599f19-c93d-49ec-b5df-9347cce8eb88` after its first 20-case
+batch, retaining 18 completed dialogues and retrying two execution errors. The
+updated scheduler shares eight case slots across all batches; counters replace
+each batch's last snapshot rather than adding duplicate callbacks. The original
+attempt remains available in `run/workbench/simulation-bulk-initial.json`.

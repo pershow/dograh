@@ -187,8 +187,17 @@ async def test_scenario_cannot_promote_assistant_claim_to_customer_fact(monkeypa
     value = scenario()
     value["facts"][0]["quote"] = "Which book?"
     monkeypatch.setattr(driver, "decide", AsyncMock(return_value=value))
-    with pytest.raises(WorkbenchError, match="客户事实"):
+    with pytest.raises(WorkbenchError, match=r"客户事实 facts\[f1\]\.quote"):
         await driver.prepare()
+
+
+async def test_scenario_keeps_original_quote_whitespace(monkeypatch):
+    case = source_case()
+    case.reference_turns[-1].text = "On\nTuesday"
+    driver = simulation.ConversationDriver(case, {}, None, AsyncMock(), "chat")
+    monkeypatch.setattr(driver, "decide", AsyncMock(return_value=scenario()))
+    await driver.prepare()
+    assert driver.scenario["facts"][0]["quote"] == "On\nTuesday"
 
 
 def test_invalid_evidence_cannot_be_promoted_to_pass_by_rereview_or_autotune():

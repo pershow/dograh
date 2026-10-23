@@ -56,6 +56,7 @@ import { conversationRows } from "./activity";
 import { AgentMemory } from "./AgentMemory";
 import { BuildModelSettings } from "./BuildModelSettings";
 import { EvidenceReads } from "./EvidenceReads";
+import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 import { pollRequest } from "./pollRequest";
 import { ReviewCounts, ReviewFindings } from "./ReviewFindings";
 import { SimulationEvidence } from "./SimulationEvidence";
@@ -1229,7 +1230,7 @@ export function AgentWorkbench({
                     {e.payload.phase === "commentary" ? " · 进展" : ""}
                     {e.type === "assistant.message.progress" ? (e.running ? " · 正在输出" : " · 输出未完成") : ""}
                   </small>
-                  <p>{content}</p>
+                  {isUser ? <p>{content}</p> : <WorkbenchMarkdown>{content}</WorkbenchMarkdown>}
                   <RequirementCoverage report={output?.requirement_review as Parameters<typeof RequirementCoverage>[0]["report"]} />
                   {output?.task_basis ? <TaskBasis session={session} jobId={String(e.payload.job_id)} basis={output.task_basis as BasisSummary} /> : null}
                   {output && Array.isArray(output.evaluation_ids) && output.evaluation_ids.length > 0 && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {

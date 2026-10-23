@@ -289,20 +289,27 @@ class ConversationDriver:
                 if len(set(ids)) != len(ids) or any(not x.strip() for x in ids):
                     raise WorkbenchError("场景事实与目标必须有唯一标识。")
                 for fact in value["facts"]:
-                    if fact["provenance"] == "customer_quote" and (
-                        not fact["quote"] or fact["quote"] not in customer
-                    ):
-                        raise WorkbenchError(
-                            "客户事实必须引用客户原话；推测应标为测试假设。"
-                        )
+                    if fact["provenance"] == "customer_quote":
+                        literal = original_quote(fact["quote"], customer)
+                        if not fact["quote"].strip() or literal is None:
+                            raise WorkbenchError(
+                                f"客户事实 facts[{fact['id']}].quote 无法匹配客户原话："
+                                f"{fact['quote'][:180]!r}。须逐字引用客户短句；坐席陈述或推测应标为测试假设。"
+                            )
+                        fact["quote"] = literal
                     if (
                         fact["provenance"] == "test_assumption"
                         and not fact["reason"].strip()
                     ):
                         raise WorkbenchError("测试假设必须说明原因。")
                 for goal in value["goals"]:
-                    if not goal["quote"] or goal["quote"] not in customer:
-                        raise WorkbenchError("客户诉求必须引用客户原话。")
+                    literal = original_quote(goal["quote"], customer)
+                    if not goal["quote"].strip() or literal is None:
+                        raise WorkbenchError(
+                            f"客户诉求 goals[{goal['id']}].quote 无法匹配客户原话："
+                            f"{goal['quote'][:180]!r}。须逐字引用客户短句，不能改写或引用坐席话术。"
+                        )
+                    goal["quote"] = literal
 
             self.scenario = await self.decide(
                 "freeze_customer_scenario",
