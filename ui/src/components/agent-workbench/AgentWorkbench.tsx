@@ -56,7 +56,6 @@ import { conversationRows } from "./activity";
 import { AgentMemory } from "./AgentMemory";
 import { BuildModelSettings } from "./BuildModelSettings";
 import { EvidenceReads } from "./EvidenceReads";
-import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 import { pollRequest } from "./pollRequest";
 import { ReviewCounts, ReviewFindings } from "./ReviewFindings";
 import { SimulationEvidence } from "./SimulationEvidence";
@@ -73,6 +72,7 @@ import type {
 } from "./types";
 import { useWorkbenchVoice } from "./useWorkbenchVoice";
 import styles from "./workbench.module.css";
+import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 
 function result<T>(response: {
   data?: { data: Record<string, unknown> };

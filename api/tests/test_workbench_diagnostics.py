@@ -255,6 +255,35 @@ async def test_conclusion_requires_effective_context_and_real_evidence(owner):
     owner.diagnostics.validate_report(report)
 
 
+async def test_diagnostic_evaluation_preserves_failure_stage_and_unsent_input(owner, packet):
+    packet["source"] = {"session_id": "historical-session", "evaluation_id": "ev", "case_index": 0}
+    packet["case"].update(
+        status="error", error="Structured reviewer output invalid",
+        runtime_responded=True,
+        validity={"status": "inconclusive", "checks": [
+            {"proposal": {"text": "Assumed success"}, "delivered": False},
+        ]},
+    )
+    original = copy.deepcopy(packet)
+    owner.specs()
+    overview = await owner.call("read_agent_run", {"action": "inspect_run_diagnostic", "run_id": 42, "section": "overview"})
+    assert "Structured reviewer output invalid" in overview["text"]
+    pages, offset = [], 0
+    while True:
+        result = await owner.call("read_agent_run", {"action": "inspect_run_diagnostic", "run_id": 42, "section": "evaluation", "offset": offset, "limit": 180})
+        pages.append(result["text"])
+        if result["next_offset"] is None:
+            break
+        offset = result["next_offset"]
+    evidence = json.loads("".join(pages))
+    assert evidence["source"]["session_id"] == "historical-session"
+    assert evidence["result"]["runtime_responded"] is True
+    assert evidence["result"]["validity"]["checks"][0]["delivered"] is False
+    assert "transcript" not in evidence["result"]
+    assert packet == original
+    assert owner.diagnostics.reads[result["evidence_id"]]["complete"] is True
+
+
 async def test_verifier_rejects_factually_supported_but_incomplete_diagnosis(
     owner, monkeypatch
 ):

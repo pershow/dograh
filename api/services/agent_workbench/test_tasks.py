@@ -41,6 +41,7 @@ class StructuredDecision:
         self.schema, self.report = schema, None
         self.validate = validate
         self.invalid_attempts = 0
+        self.last_validation_error = None
         self.fatal_error = None
         self.reader = reader
 
@@ -66,6 +67,11 @@ class StructuredDecision:
                 self.validate(arguments)
         except (jsonschema.ValidationError, WorkbenchError) as error:
             self.invalid_attempts += 1
+            self.last_validation_error = (
+                str(error)
+                if isinstance(error, WorkbenchError)
+                else "返回结构不符合要求。"
+            )
             if self.invalid_attempts >= 3:
                 self.fatal_error = InvalidDecision(
                     "模型连续返回无效结果，未取得有效的结构化结论。"
@@ -107,6 +113,7 @@ async def decision(
     reader=None,
     reasoning_effort=None,
 ):
+    last_validation_error = None
     for attempt in range(2):
         dispatcher = StructuredDecision(
             name,
@@ -128,7 +135,14 @@ async def decision(
         )
         if dispatcher.report is not None:
             return dispatcher.report
-    raise InvalidDecision("未取得有效的结构化结果，请重试；没有执行任何 Agent 修改。")
+        last_validation_error = (
+            dispatcher.last_validation_error or last_validation_error
+        )
+    raise InvalidDecision(
+        "模型未完成测试结果校验：" + last_validation_error
+        if last_validation_error
+        else "未取得有效的结构化结果，请重试；没有执行任何 Agent 修改。"
+    )
 
 
 async def test_intent(payload, llm, event, protocol="chat"):

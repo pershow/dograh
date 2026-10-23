@@ -15,7 +15,7 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.fingerprint import fingerprint
 from api.services.configuration.masking import mask_workflow_definition
 
-SECTIONS = ("overview", "transcript", "execution", "request", "definition", "probes")
+SECTIONS = ("overview", "transcript", "execution", "evaluation", "request", "definition", "probes")
 EVALUATION_SECTIONS = ("all", "transcript", "execution", "review", "source")
 
 
@@ -295,6 +295,8 @@ class DiagnosticSession:
                 "state": run.get("state"),
                 "is_completed": run.get("is_completed"),
                 "case_status": case.get("status"),
+                "case_error": case.get("error"),
+                "evaluation_evidence_available": bool(packet.get("source")),
                 "recorded_runtime_context": redact(run.get("gathered_context") or {}),
                 "model": (run.get("model_configuration_snapshot") or {})
                 .get("services", {})
@@ -320,6 +322,18 @@ class DiagnosticSession:
                 for m in case.get("transcript", [])
                 if turn is None or m.get("turn") == turn
             ]
+        elif section == "evaluation":
+            content = {
+                "source": packet.get("source"),
+                "result": {
+                    key: value for key, value in case.items()
+                    if key not in {"transcript", "events"}
+                },
+                "note": "Recorded evaluation outcome, checks, test context and simulation validity. Proposed replies with delivered=false were not sent to the Agent. Test assumptions are not business facts; evaluation errors are not Agent failures. Reviewer conclusions require checking the underlying evidence.",
+                "limitations": [] if packet.get("source") else [
+                    "No linked workbench evaluation was found for this run."
+                ],
+            }
         elif section == "execution":
             content = {
                 "events": [

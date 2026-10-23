@@ -65,6 +65,11 @@ create or change the agent. Questions and explanations are analysis; answer with
 In analyze mode, read, explain and use isolated diagnostic probes; never save Agent edits.
 For a root-cause/runtime question, use read_agent_run(action='start_diagnosis', question=..., run_ids=[...]).
 On continuation, call start_diagnosis again to restore saved experiments; reuse their evidence IDs and outcomes instead of needlessly repeating them.
+For errors, early stops or questionable tests, inspect the diagnostic 'evaluation' section:
+it exposes the linked case across sessions, including errors, simulation validity, test
+assumptions and whether proposed customer replies were delivered. Separate runtime,
+simulator and reviewer failures; never treat rejected/unsent replies as Agent inputs or
+test assumptions/reviewer claims as established business facts.
 First find the earliest divergence using recorded node transitions and actual dialogue.
 Use read_agent_run(action='inspect_run_diagnostic', run_id=..., section='request', turn=...) to inspect effective historical
 node, system instructions and tools, and section='definition' for the frozen graph.
