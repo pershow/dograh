@@ -610,7 +610,9 @@ async def execute_text_chat_pending_turn(
     if evaluation_policy is not None and is_initial_node_opening:
         initial_context = merge_external_initial_context(initial_context, evaluation_policy.case.pre_call_context or {})
 
-    llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
+    llm = create_llm_service(
+        user_config, correlation_id=mps_correlation_id, spoken_output=False
+    )
     inference_llm = llm
     call_dispositions = WorkflowConfigurationDefaults.model_validate(
         {"call_dispositions": run_configs.get("call_dispositions") or []}
