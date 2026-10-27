@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import type { RuntimeProfileData } from "./RuntimeProfile";
 
 export type WorkbenchSession = {
   id: string;
@@ -53,6 +54,9 @@ export type ReplayReview = {
   verification?: { reviews: { check_index: number; verdict: string; reason: string; check: ReviewCheck }[] };
 };
 export type CaseResult = {
+  audio_evidence?: import("./AudioEvidence").AudioReplayEvidence | null;
+  runtime_profile?: RuntimeProfileData;
+  business_state?: Record<string, unknown>;
   mode?: "scripted" | "single_step" | "dynamic";
   history?: {role: string; text: string}[];
   validity?: {
@@ -72,7 +76,7 @@ export type CaseResult = {
   status: string;
   error?: string;
   transcript: { role: string; text: string }[];
-  assertions: { kind: string; value: unknown; passed: boolean; turn?: number | null; actual?: number; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
+  assertions: { kind: string; value: unknown; passed: boolean; turn?: number | null; actual?: unknown; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
   tool_calls: unknown[];
 };
 export type Evaluation = {
@@ -86,6 +90,7 @@ export type Evaluation = {
 };
 export type Suite = { id: string; payload: { name: string; cases: unknown[] } };
 export type WorkbenchState = {
+  target_fingerprint?: string;
   memory_revision?: string;
   revision?: string;
   session: WorkbenchSession;

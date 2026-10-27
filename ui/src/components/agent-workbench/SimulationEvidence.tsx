@@ -1,14 +1,19 @@
+import { AudioEvidence } from "./AudioEvidence";
+import { RuntimeProfile } from "./RuntimeProfile";
 import type { CaseResult } from "./types";
 import styles from "./workbench.module.css";
 
 export const simulationModes = {dynamic: "动态客户仿真", single_step: "真实上下文单步测试", scripted: "固定脚本回放"};
 
-export function SimulationEvidence({result}: {result: CaseResult}) {
+export function SimulationEvidence({result, session}: {result: CaseResult; session?: string}) {
   const v = result.validity;
   if (!v) return <p className={styles.subtle}>历史测试未进行逐轮对话有效性检查。</p>;
   const scenario = v.scenario;
   const stop = ({script_mismatch: "固定脚本已错位，停止继续回放", simulation_mismatch: "模拟回复校正后仍不匹配，停止发送", context_ambiguous: "真实上下文不能唯一对应当前节点", missing_scenario_fact: "缺少必要的场景信息", turn_limit: "达到场景轮次边界，尚不能判断完整流程", customer_ended: "模拟客户自然结束", agent_completed: "Agent 已结束", script_exhausted: "固定脚本已读完"} as Record<string, string>)[v.stop_reason || ""];
   return <section aria-label="测试方法与有效性" className={styles.candidateResult}>
+    {result.audio_evidence && <AudioEvidence evidence={result.audio_evidence} session={session}/>}
+    {result.runtime_profile && <RuntimeProfile profile={result.runtime_profile}/>}
+    {result.business_state && Object.keys(result.business_state).length > 0 && <details><summary>模拟业务最终状态</summary><pre>{JSON.stringify(result.business_state, null, 2)}</pre></details>}
     <strong>{simulationModes[result.mode || "scripted"]} · {result.status === "running" ? "检查中" : ({valid: "对话有效", invalid: "测试无效", inconclusive: "有效性未确定", unchecked: "未检查"} as Record<string,string>)[v.status] || v.status}</strong>
     {stop && <p>{stop}</p>}
     {v.status === "invalid" && <p>本条不计入 Agent 正常流程通过率；已观察到的回复与评审线索仍保留。</p>}

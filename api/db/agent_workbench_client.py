@@ -9,6 +9,8 @@ from sqlalchemy import func, select
 from api.db.base_client import BaseDBClient
 from api.db.models import (
     OrganizationModel,
+    KnowledgeBaseDocumentModel,
+    ToolModel,
     WorkbenchAssetModel,
     WorkbenchCandidateModel,
     WorkbenchEvaluationModel,
@@ -68,6 +70,87 @@ def definition_payload(workflow, definition):
 
 
 class AgentWorkbenchClient(BaseDBClient):
+    async def _wb_check_behavior_resources(self, db, org, snapshot):
+        from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+        from api.schemas.agent_behavior import ToolExecutionPolicy
+
+        behavior = WorkflowConfigurationDefaults.model_validate(
+            snapshot.get("workflow_configurations") or {}
+        ).agent_behavior
+        nodes = snapshot["workflow_json"].get("nodes", [])
+        tools = {
+            identity
+            for node in nodes
+            for identity in (node.get("data", {}).get("tool_uuids") or [])
+        }
+        documents = {
+            identity
+            for node in nodes
+            for identity in (node.get("data", {}).get("document_uuids") or [])
+        }
+        if (
+            set(behavior.tool_policies) - tools
+            or set(behavior.knowledge_bindings) - documents
+        ):
+            raise WorkbenchError(
+                "能力配置只能引用当前 Agent 已绑定的工具和知识文档。", 422
+            )
+        for identity, policy in behavior.tool_policies.items():
+            row = await db.scalar(
+                select(ToolModel).where(
+                    ToolModel.tool_uuid == identity, ToolModel.organization_id == org
+                )
+            )
+            if row is None or row.definition.get("type") != "http_api":
+                raise WorkbenchError("动作执行策略需要当前组织的 HTTP 工具。", 422)
+            baseline = row.definition.get("execution_policy")
+            if baseline and ToolExecutionPolicy.model_validate(baseline) != policy:
+                raise WorkbenchError(
+                    "工具已有执行策略；Agent 配置不能覆盖它，请先在工具中调整。", 422
+                )
+            if policy.reconcile_tool_uuid:
+                lookup = await db.scalar(
+                    select(ToolModel).where(
+                        ToolModel.tool_uuid == policy.reconcile_tool_uuid,
+                        ToolModel.organization_id == org,
+                    )
+                )
+                lookup_policy = (
+                    (lookup.definition or {}).get("execution_policy")
+                    if lookup
+                    else None
+                )
+                if (
+                    not lookup_policy
+                    and policy.reconcile_tool_uuid in behavior.tool_policies
+                ):
+                    lookup_policy = behavior.tool_policies[
+                        policy.reconcile_tool_uuid
+                    ].model_dump(mode="json")
+                if (
+                    lookup is None
+                    or not lookup_policy
+                    or lookup.definition.get("type") != "http_api"
+                    or ToolExecutionPolicy.model_validate(lookup_policy).effect
+                    != "read"
+                ):
+                    raise WorkbenchError(
+                        "结果核对工具必须是当前组织的只读 HTTP 工具。", 422
+                    )
+        if behavior.knowledge_bindings:
+            found = set(
+                await db.scalars(
+                    select(KnowledgeBaseDocumentModel.document_uuid).where(
+                        KnowledgeBaseDocumentModel.organization_id == org,
+                        KnowledgeBaseDocumentModel.document_uuid.in_(
+                            behavior.knowledge_bindings
+                        ),
+                    )
+                )
+            )
+            if found != set(behavior.knowledge_bindings):
+                raise WorkbenchError("知识文档不存在或不属于当前组织。", 422)
+
     async def _wb_session(self, db, org, session_id, *, lock=False):
         query = select(WorkbenchSessionModel).where(
             WorkbenchSessionModel.id == session_id,
@@ -560,6 +643,14 @@ class AgentWorkbenchClient(BaseDBClient):
                             case = copy.deepcopy(result)
                             source = {"evaluation_id": evaluation.id, "case_index": index,
                                       "session_id": evaluation.session_id}
+                            suite = await db.get(
+                                WorkbenchSuiteModel, evaluation.suite_id
+                            )
+                            source["suite_usage"] = (
+                                (suite.payload or {}).get("usage", "development")
+                                if suite
+                                else "unknown"
+                            )
                             break
                     if case is not None:
                         break
@@ -880,6 +971,94 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(row)
 
+    async def wb_capability_candidate(
+        self, org, session_id, *, expected_fingerprint, patch, candidate_id=None
+    ):
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            _, _, target = await self._wb_target(
+                db, session.workflow_id, org, lock=True
+            )
+            if fingerprint(target) != expected_fingerprint:
+                raise WorkbenchError("Agent 已更新，请刷新后再保存能力配置。", 409)
+            snapshot = copy.deepcopy(target)
+            if candidate_id:
+                candidate = await self._wb_item(
+                    db, "candidates", session_id, candidate_id
+                )
+                definition = await db.get(
+                    WorkflowDefinitionModel, candidate.definition_id
+                )
+                snapshot.update(
+                    name=candidate.name,
+                    workflow_json=copy.deepcopy(definition.workflow_json),
+                    workflow_configurations=copy.deepcopy(
+                        definition.workflow_configurations
+                    ),
+                    template_context_variables=copy.deepcopy(
+                        definition.template_context_variables
+                    ),
+                )
+            snapshot["workflow_configurations"].update(patch)
+            await self._wb_check_behavior_resources(db, org, snapshot)
+            from api.schemas.workflow_configurations import (
+                WorkflowConfigurationDefaults,
+            )
+
+            WorkflowConfigurationDefaults.model_validate(
+                snapshot["workflow_configurations"]
+            )
+            graph_tools = {
+                tool
+                for node in snapshot["workflow_json"].get("nodes", [])
+                for tool in (node.get("data", {}).get("tool_uuids") or [])
+            }
+            policies = (patch.get("agent_behavior") or {}).get("tool_policies", {})
+            if set(policies) - graph_tools:
+                raise WorkbenchError("执行策略只能引用此 Agent 已绑定的工具。", 422)
+            job = WorkbenchJobModel(
+                session_id=session_id,
+                kind="configure",
+                status="completed",
+                idempotency_key=str(uuid.uuid4()),
+                input={"mode": "build"},
+                output={
+                    "intent": "build",
+                    "memory_revision": await self._wb_memory_revision(db, session),
+                },
+            )
+            db.add(job)
+            definition = WorkflowDefinitionModel(
+                workflow_id=session.workflow_id,
+                status="candidate",
+                is_current=False,
+                workflow_json=snapshot["workflow_json"],
+                workflow_configurations=snapshot["workflow_configurations"],
+                template_context_variables=snapshot["template_context_variables"],
+            )
+            db.add(definition)
+            await db.flush()
+            row = WorkbenchCandidateModel(
+                session_id=session_id,
+                job_id=job.id,
+                definition_id=definition.id,
+                code="// Capability configuration candidate",
+                name=snapshot["name"],
+                summary="更新业务目标、执行策略与运行能力配置",
+                fingerprint=fingerprint(snapshot),
+                base_fingerprint=expected_fingerprint,
+            )
+            db.add(row)
+            await db.flush()
+            job.output = {**job.output, "candidate_id": row.id}
+            await self._wb_event(
+                db,
+                session,
+                "candidate.created",
+                {"candidate_id": row.id, "summary": row.summary},
+            )
+            return {**record(row), "snapshot": snapshot}
+
     async def wb_save_candidate(
         self, org, session_id, job_id, token, snapshot, code, summary, base_fingerprint
     ):
@@ -891,6 +1070,7 @@ class AgentWorkbenchClient(BaseDBClient):
                     "只运行测试的任务不能修改 Agent 或生成候选版本。", 409
                 )
             await self._wb_target(db, session.workflow_id, org, lock=True)
+            await self._wb_check_behavior_resources(db, org, snapshot)
             if job.output.get("memory_revision") != await self._wb_memory_revision(
                 db, session
             ):
@@ -1075,7 +1255,15 @@ class AgentWorkbenchClient(BaseDBClient):
             )
 
     async def wb_create_run(
-        self, org, session_id, job_id, token, candidate_id, initial_context
+        self,
+        org,
+        session_id,
+        job_id,
+        token,
+        candidate_id,
+        initial_context,
+        *,
+        mode="textchat",
     ):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
@@ -1092,7 +1280,7 @@ class AgentWorkbenchClient(BaseDBClient):
                 name="Workbench simulation",
                 workflow_id=session.workflow_id,
                 definition_id=candidate.definition_id,
-                mode="textchat",
+                mode=mode,
                 purpose="evaluation",
                 model_configuration_snapshot=copy.deepcopy(snapshot),
                 initial_context=initial_context,
@@ -1144,6 +1332,14 @@ class AgentWorkbenchClient(BaseDBClient):
             definition = await db.get(WorkflowDefinitionModel, candidate.definition_id)
             check_definition_models(
                 definition.workflow_json, definition.workflow_configurations
+            )
+            await self._wb_check_behavior_resources(
+                db,
+                org,
+                {
+                    "workflow_json": definition.workflow_json,
+                    "workflow_configurations": definition.workflow_configurations,
+                },
             )
             await WorkflowClient._check_workflow_model_references(
                 self, db, org, definition.workflow_configurations

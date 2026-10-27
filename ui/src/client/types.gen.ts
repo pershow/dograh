@@ -127,6 +127,68 @@ export type ActiveCallsResponse = {
 };
 
 /**
+ * AgentBehavior
+ */
+export type AgentBehavior = {
+    /**
+     * Version
+     */
+    version?: 1;
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+    /**
+     * Goal Type
+     */
+    goal_type?: 'service' | 'sales' | 'custom';
+    /**
+     * Goal
+     */
+    goal?: string;
+    /**
+     * Success Criteria
+     */
+    success_criteria?: Array<string>;
+    /**
+     * Stop Criteria
+     */
+    stop_criteria?: Array<string>;
+    /**
+     * Facts
+     */
+    facts?: Array<FactDefinition>;
+    /**
+     * Stages
+     */
+    stages?: Array<TaskStage>;
+    /**
+     * Reply Style
+     */
+    reply_style?: 'concise' | 'balanced' | 'detailed';
+    /**
+     * Listen During Tools
+     */
+    listen_during_tools?: boolean;
+    /**
+     * Tool Policies
+     */
+    tool_policies?: {
+        [key: string]: ToolExecutionPolicy;
+    };
+    /**
+     * Knowledge Bindings
+     */
+    knowledge_bindings?: {
+        [key: string]: KnowledgeBinding;
+    };
+    /**
+     * Confirmation Phrases
+     */
+    confirmation_phrases?: Array<string>;
+};
+
+/**
  * AmbientNoiseConfigurationDefaults
  */
 export type AmbientNoiseConfigurationDefaults = {
@@ -206,7 +268,7 @@ export type Assertion = {
     /**
      * Kind
      */
-    kind: 'contains' | 'contains_any' | 'not_contains' | 'node_visited' | 'node_not_visited' | 'node_sequence' | 'tool_called' | 'context_equals' | 'completed';
+    kind: 'contains' | 'contains_any' | 'not_contains' | 'node_visited' | 'node_not_visited' | 'node_sequence' | 'tool_called' | 'tool_not_called' | 'tool_call_count' | 'tool_arguments' | 'tool_result' | 'tool_sequence' | 'business_state_equals' | 'context_equals' | 'completed';
     /**
      * Value
      */
@@ -221,6 +283,38 @@ export type Assertion = {
      * For text checks, 0 is the opening; 1 is the reply to the first user message. Omit to check all assistant speech.
      */
     turn?: number | null;
+};
+
+/**
+ * AudioReplay
+ */
+export type AudioReplay = {
+    /**
+     * Channel
+     */
+    channel?: 'browser' | 'phone';
+    /**
+     * Clips
+     */
+    clips: Array<AudioReplayClip>;
+    /**
+     * Duration Ms
+     */
+    duration_ms?: number;
+};
+
+/**
+ * AudioReplayClip
+ */
+export type AudioReplayClip = {
+    /**
+     * Asset Id
+     */
+    asset_id: string;
+    /**
+     * Offset Ms
+     */
+    offset_ms: number;
 };
 
 /**
@@ -368,6 +462,7 @@ export type CalculatorToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -712,6 +807,37 @@ export type CampaignsResponse = {
      * Campaigns
      */
     campaigns: Array<CampaignResponse>;
+};
+
+/**
+ * CapabilityConfiguration
+ */
+export type CapabilityConfiguration = {
+    /**
+     * Expected Fingerprint
+     */
+    expected_fingerprint: string;
+    /**
+     * Candidate Id
+     */
+    candidate_id?: string | null;
+    agent_behavior: AgentBehavior;
+    /**
+     * Runtime Evidence Enabled
+     */
+    runtime_evidence_enabled?: boolean;
+    /**
+     * Context Compaction Enabled
+     */
+    context_compaction_enabled?: boolean;
+    /**
+     * Context Compaction Trigger Chars
+     */
+    context_compaction_trigger_chars?: number;
+    /**
+     * Context Compaction Keep Messages
+     */
+    context_compaction_keep_messages?: number;
 };
 
 /**
@@ -2051,6 +2177,7 @@ export type EndCallToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -2159,6 +2286,24 @@ export type ExternalPbxFieldMapping = {
      * Destination Field
      */
     destination_field: string;
+};
+
+/**
+ * FactDefinition
+ */
+export type FactDefinition = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Description
+     */
+    description?: string;
+    /**
+     * Value Type
+     */
+    value_type?: 'string' | 'number' | 'boolean';
 };
 
 /**
@@ -2420,6 +2565,7 @@ export type HttpApiToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -2690,6 +2836,26 @@ export type JevNodeRoutingConfiguration = {
      * Model
      */
     model?: string;
+};
+
+/**
+ * KnowledgeBinding
+ */
+export type KnowledgeBinding = {
+    /**
+     * Purpose
+     */
+    purpose?: 'knowledge' | 'policy' | 'example';
+    /**
+     * Version
+     */
+    version?: string | null;
+    /**
+     * Applies When
+     */
+    applies_when?: {
+        [key: string]: string | number | number | boolean;
+    };
 };
 
 /**
@@ -3018,6 +3184,7 @@ export type McpToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -4742,6 +4909,7 @@ export type SignupRequest = {
  * SimulationCase
  */
 export type SimulationCase = {
+    audio?: AudioReplay | null;
     /**
      * Mode
      */
@@ -4779,6 +4947,12 @@ export type SimulationCase = {
         [key: string]: unknown;
     };
     /**
+     * Initial Business State
+     */
+    initial_business_state?: {
+        [key: string]: unknown;
+    };
+    /**
      * Fixtures
      */
     fixtures?: Array<ToolFixture>;
@@ -4792,6 +4966,12 @@ export type SimulationCase = {
      * Knowledge Result
      */
     knowledge_result?: string | null;
+    /**
+     * Knowledge Chunks
+     */
+    knowledge_chunks?: Array<{
+        [key: string]: unknown;
+    }>;
     /**
      * Assertions
      */
@@ -4812,6 +4992,10 @@ export type SimulationCase = {
  * SimulationSuite
  */
 export type SimulationSuite = {
+    /**
+     * Usage
+     */
+    usage?: 'development' | 'acceptance';
     /**
      * Name
      */
@@ -4996,6 +5180,32 @@ export type TtsCacheList = {
      * Total
      */
     total: number;
+};
+
+/**
+ * TaskStage
+ */
+export type TaskStage = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Required Facts
+     */
+    required_facts?: Array<string>;
+    /**
+     * Required Actions
+     */
+    required_actions?: Array<string>;
+    /**
+     * Terminal
+     */
+    terminal?: boolean;
+    /**
+     * Outcome
+     */
+    outcome?: 'success' | 'failure';
 };
 
 /**
@@ -5549,6 +5759,70 @@ export type ToolDelayedTextMessage = {
 };
 
 /**
+ * ToolExecutionPolicy
+ */
+export type ToolExecutionPolicy = {
+    /**
+     * Version
+     */
+    version?: 1;
+    /**
+     * Effect
+     */
+    effect: 'read' | 'write';
+    /**
+     * Required Facts
+     */
+    required_facts?: Array<string>;
+    /**
+     * Identity Arguments
+     */
+    identity_arguments?: Array<string>;
+    /**
+     * Confirmation Required
+     */
+    confirmation_required?: boolean;
+    /**
+     * Confirmation Template
+     */
+    confirmation_template?: string;
+    /**
+     * Success Path
+     */
+    success_path?: string;
+    /**
+     * Success Equals
+     */
+    success_equals?: unknown;
+    /**
+     * Failure Path
+     */
+    failure_path?: string | null;
+    /**
+     * Failure Equals
+     */
+    failure_equals?: unknown;
+    /**
+     * Idempotency Header
+     */
+    idempotency_header?: string | null;
+    /**
+     * Reconcile Tool Uuid
+     */
+    reconcile_tool_uuid?: string | null;
+    /**
+     * Reconcile Arguments
+     */
+    reconcile_arguments?: {
+        [key: string]: string;
+    };
+    /**
+     * Lease Seconds
+     */
+    lease_seconds?: number;
+};
+
+/**
  * ToolFixture
  */
 export type ToolFixture = {
@@ -5580,6 +5854,38 @@ export type ToolFixture = {
      * Result
      */
     result?: unknown;
+    /**
+     * Steps
+     */
+    steps?: Array<ToolFixtureStep>;
+    /**
+     * State Result Key
+     */
+    state_result_key?: string | null;
+};
+
+/**
+ * ToolFixtureStep
+ */
+export type ToolFixtureStep = {
+    /**
+     * Result
+     */
+    result?: unknown;
+    /**
+     * Outcome
+     */
+    outcome?: 'success' | 'failure' | 'unknown';
+    /**
+     * Delay Ms
+     */
+    delay_ms?: number;
+    /**
+     * State Patch
+     */
+    state_patch?: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -5986,6 +6292,7 @@ export type TransferAgentToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -6074,6 +6381,7 @@ export type TransferCallToolDefinition = {
      * Schema version.
      */
     schema_version?: number;
+    execution_policy?: ToolExecutionPolicy | null;
     /**
      * Messages
      *
@@ -7032,6 +7340,15 @@ export type WorkbenchResponse = {
  */
 export type WorkflowConfigurationDefaults = {
     model_configuration_override?: ModelConfigurationOverride | null;
+    agent_behavior?: AgentBehavior;
+    /**
+     * Runtime Evidence Enabled
+     */
+    runtime_evidence_enabled?: boolean;
+    /**
+     * Runtime Requirements
+     */
+    runtime_requirements?: Array<'text' | 'audio' | 'local_context_compaction' | 'agent_transfer' | 'local_turn_detection' | 'speech_cache'>;
     ambient_noise_configuration?: AmbientNoiseConfigurationDefaults;
     /**
      * Max Call Duration
@@ -7066,6 +7383,14 @@ export type WorkflowConfigurationDefaults = {
      */
     context_compaction_enabled?: boolean;
     /**
+     * Context Compaction Trigger Chars
+     */
+    context_compaction_trigger_chars?: number;
+    /**
+     * Context Compaction Keep Messages
+     */
+    context_compaction_keep_messages?: number;
+    /**
      * Speaker Tracking Enabled
      *
      * Evaluate call-local speakers in shadow mode; never changes transcription or interruptions.
@@ -7078,7 +7403,7 @@ export type WorkflowConfigurationDefaults = {
     /**
      * Tts Cache Enabled
      *
-     * Reuse generated speech for repeated phrases. Supports MiniMax TTS.
+     * Legacy speech-cache request. Current speech factories do not apply this option; inspect the runtime profile.
      */
     tts_cache_enabled?: boolean;
     /**
@@ -16960,6 +17285,50 @@ export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependencie
 
 export type WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponse = WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponses[keyof WorkbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGetResponses];
 
+export type CreateWorkbenchCapabilityCandidateData = {
+    body: CapabilityConfiguration;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/capability-candidates';
+};
+
+export type CreateWorkbenchCapabilityCandidateErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateWorkbenchCapabilityCandidateError = CreateWorkbenchCapabilityCandidateErrors[keyof CreateWorkbenchCapabilityCandidateErrors];
+
+export type CreateWorkbenchCapabilityCandidateResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type CreateWorkbenchCapabilityCandidateResponse = CreateWorkbenchCapabilityCandidateResponses[keyof CreateWorkbenchCapabilityCandidateResponses];
+
 export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetData = {
     body?: never;
     headers?: {
@@ -17420,6 +17789,52 @@ export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostRespons
 };
 
 export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponse = WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponses[keyof WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostResponses];
+
+export type DownloadWorkbenchAudioData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Asset Id
+         */
+        asset_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/assets/{asset_id}/audio';
+};
+
+export type DownloadWorkbenchAudioErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DownloadWorkbenchAudioError = DownloadWorkbenchAudioErrors[keyof DownloadWorkbenchAudioErrors];
+
+export type DownloadWorkbenchAudioResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type WorkbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPostData = {
     body?: never;

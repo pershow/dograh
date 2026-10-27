@@ -148,7 +148,18 @@ class PipecatEngine:
         call_dispositions: Sequence[CallDispositionOption] | None = None,
         defer_final_extraction: bool = False,
         node_routing: JevNodeRoutingConfiguration | None = None,
+        runtime_config: dict | None = None,
     ):
+        self.runtime_config = runtime_config or {}
+        from api.schemas.agent_behavior import AgentBehavior
+        from api.services.workflow.task_state import TaskState
+
+        self.task_state = TaskState(
+            AgentBehavior.model_validate(
+                self.runtime_config.get("agent_behavior") or {}
+            )
+        )
+        self._business_states = {}
         self.evaluation_policy = evaluation_policy
         self._call_worker = task
         self._is_realtime = is_realtime
@@ -393,6 +404,12 @@ class PipecatEngine:
             # Helper that encapsulates context summarization
             if self._context_compaction_enabled:
                 self._context_summarization_manager = ContextSummarizationManager(self)
+                self._context_summarization_manager.trigger_chars = (
+                    self.runtime_config.get("context_compaction_trigger_chars", 32000)
+                )
+                self._context_summarization_manager.config.min_messages_after_summary = self.runtime_config.get(
+                    "context_compaction_keep_messages", 8
+                )
 
             logger.debug(f"{self.__class__.__name__} initialized")
         except Exception as e:
@@ -600,9 +617,33 @@ class PipecatEngine:
                 "embeddings_dimensions": getattr(self, "_embeddings_dimensions", None),
             }
 
+        business_state = self.state_for_agent(agent)
+
         async def retrieve_kb_func(function_call_params: FunctionCallParams) -> None:
+            from api.services.workflow.knowledge_evidence import (
+                applicable_documents,
+                bind_knowledge_evidence,
+            )
+
+            selected_documents = applicable_documents(document_uuids, business_state)
+            if not selected_documents:
+                await function_call_params.result_callback(
+                    {
+                        "status": "insufficient_evidence",
+                        "reason": "knowledge_not_applicable",
+                        "chunks": [],
+                        "total_results": 0,
+                    }
+                )
+                return
             if self.evaluation_policy is not None:
-                await function_call_params.result_callback(self.evaluation_policy.knowledge())
+                await function_call_params.result_callback(
+                    bind_knowledge_evidence(
+                        self.evaluation_policy.knowledge(),
+                        business_state,
+                        allowed_documents=selected_documents,
+                    )
+                )
                 return
             logger.info("LLM Function Call EXECUTED: retrieve_from_knowledge_base")
             logger.info(f"Arguments: {function_call_params.arguments}")
@@ -619,7 +660,7 @@ class PipecatEngine:
                 result = await retrieve_from_knowledge_base(
                     query=query,
                     organization_id=organization_id,
-                    document_uuids=document_uuids,
+                    document_uuids=selected_documents,
                     limit=3,  # Return top 3 most relevant chunks
                     **embedding_settings,
                     correlation_id=self._call_context_vars.get(
@@ -628,6 +669,30 @@ class PipecatEngine:
                     tracing_context=self._get_otel_context(),
                 )
 
+                result = bind_knowledge_evidence(
+                    result, business_state, allowed_documents=selected_documents
+                )
+                if business_state.contract.enabled:
+                    evidence = self._gathered_context.setdefault(
+                        "knowledge_evidence", []
+                    )
+                    evidence.append(
+                        {
+                            "visit_id": agent.visit_id,
+                            "turn": business_state.data["turn"],
+                            "query": query,
+                            "chunks": [
+                                {
+                                    **chunk,
+                                    "text": str(chunk.get("text", ""))[:4000],
+                                    "text_truncated": len(str(chunk.get("text", "")))
+                                    > 4000,
+                                }
+                                for chunk in result.get("chunks", [])
+                            ],
+                        }
+                    )
+                    del evidence[:-50]
                 await function_call_params.result_callback(result)
 
             except Exception as e:
@@ -959,6 +1024,7 @@ class PipecatEngine:
         self, agent: AgentRuntime, node: Node, *, apply_settings=True
     ) -> None:
         """Prepare one runtime's prompt and tools without changing the call."""
+        business_state = self.state_for_agent(agent)
         manager = (
             self._custom_tool_manager
             if agent is self.active_agent
@@ -992,13 +1058,24 @@ class PipecatEngine:
         functions = await compose_functions_for_node(
             node=node, custom_tool_manager=manager
         )
+        from api.services.workflow.task_state import register_task_state
+
+        if business_state.contract.enabled and any(
+            function.name == "update_task_state" for function in functions
+        ):
+            raise ValueError(
+                "update_task_state is reserved by the Agent business contract"
+            )
+        functions.extend(register_task_state(self, agent))
         agent.tools = ToolsSchema(standard_tools=functions)
-        agent.system_prompt = prompt.text
+        agent.system_prompt = prompt.text + (
+            business_state.prompt() if business_state.contract.enabled else ""
+        )
         if agent.recording_router is not None:
             agent.recording_router.set_enabled(prompt.recording_enabled)
         if apply_settings:
             await agent.llm._update_settings(
-                LLMSettings(system_instruction=prompt.text)
+                LLMSettings(system_instruction=agent.system_prompt)
             )
 
     async def _setup_llm_context(self, node: Node) -> None:
@@ -1980,6 +2057,8 @@ class PipecatEngine:
         self._call_context_vars["runtime_configuration"] = dict(
             agent.runtime_configuration
         )
+        if profile := agent.runtime_configuration.get("runtime_profile"):
+            self.record_context({"runtime_profile": profile})
 
     async def start_initial_agent(self, timeout: float = 10.0) -> bool:
         """Attach and activate the agent the call starts on.
@@ -2152,6 +2231,11 @@ class PipecatEngine:
             self._agent_visits.append(previous.describe())
             self._retired_agents.append(previous)
         self._active_agent = runtime
+        if runtime.business_state is not None:
+            self.task_state = runtime.business_state
+            self.record_context({"task_state": self.task_state.snapshot()})
+        if profile := runtime.runtime_configuration.get("runtime_profile"):
+            self.record_context({"runtime_profile": profile})
         self._pending_agent = None
 
     def discard_pending_agent(self, runtime: AgentRuntime) -> None:
@@ -2470,6 +2554,72 @@ class PipecatEngine:
     def record_tool_result(self, result: dict) -> None:
         """Keep tool outcomes even when no live pipeline can consume their frames."""
         self._gathered_context.setdefault("tool_results", []).append(result)
+
+    async def compact_context_if_needed(self, *, wait=False) -> None:
+        if self._context_summarization_manager:
+            await self._context_summarization_manager.compact_if_needed(wait=wait)
+
+    def observe_user_turn(self, text: str) -> None:
+        if self.task_state.contract.enabled:
+            self.task_state.observe_user(text)
+            self.record_context({"task_state": self.task_state.snapshot()})
+
+    def observe_user_activity(self) -> None:
+        if self.task_state.contract.enabled:
+            self.task_state.observe_activity()
+
+    def state_for_agent(self, agent):
+        """Prepare a visit's contract privately, carrying only compatible facts."""
+        from api.schemas.agent_behavior import AgentBehavior
+        from api.services.workflow.task_state import TaskState
+
+        if agent is self.active_agent:
+            agent.business_state = self.task_state
+        elif agent.business_state is None:
+            contract = AgentBehavior.model_validate(
+                agent.workflow_configurations.get("agent_behavior") or {}
+            )
+            previous = self._business_states.get(agent.workflow_id)
+            source = self.task_state
+            reuse = (
+                previous is not None
+                and previous.contract == contract
+                and previous.data["task_id"] == source.data["task_id"]
+            )
+            checkpoint = previous.snapshot() if reuse else source.snapshot()
+            if not reuse:
+                checkpoint.update(stage=None, status="active")
+            checkpoint.pop("action_proposals", None)
+            checkpoint.update(
+                turn=source.data["turn"],
+                last_user_text=source.data["last_user_text"],
+                input_revision=source.data.get("input_revision"),
+                text_revision=source.data.get("text_revision"),
+            )
+            known_types = {f.name: f.value_type for f in source.contract.facts}
+            inherited = {
+                f.name: deepcopy(source.data["facts"][f.name])
+                for f in contract.facts
+                if known_types.get(f.name) == f.value_type
+                and f.name in source.data["facts"]
+            }
+            checkpoint["facts"] = {
+                **(checkpoint["facts"] if reuse else {}),
+                **inherited,
+            }
+            agent.business_state = TaskState(contract, checkpoint)
+        self._business_states[agent.workflow_id] = agent.business_state
+        return agent.business_state
+
+    async def refresh_task_state_prompt(self) -> None:
+        if not self.task_state.contract.enabled:
+            return
+        agent = self.active_agent
+        base = agent.system_prompt.split("\n\nAGENT BUSINESS CONTRACT\n", 1)[0]
+        agent.system_prompt = base + self.task_state.prompt()
+        await agent.llm._update_settings(
+            LLMSettings(system_instruction=agent.system_prompt)
+        )
 
     async def finish_tool_calls(self) -> None:
         agents = [self.active_agent, self.pending_agent, *self._retired_agents]

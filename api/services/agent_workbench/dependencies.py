@@ -106,7 +106,28 @@ def model_report(resolved, purpose):
 
 async def dependency_report(org, target, purpose):
     try:
-        return model_report(await prepare_models(org, target, purpose), purpose)
+        resolved = await prepare_models(org, target, purpose)
+        report = model_report(resolved, purpose)
+        from api.services.workflow.runtime_profile import runtime_profile
+
+        try:
+            runtime = (
+                await prepare_models(org, target, "evaluate")
+                if purpose == "build"
+                else resolved
+            )
+            report["runtime_profiles"] = [
+                runtime_profile(
+                    target.get("workflow_configurations"),
+                    runtime.effective,
+                    channel=channel,
+                    definition=target.get("workflow_json"),
+                )
+                for channel in ("text", "browser", "phone")
+            ]
+        except HTTPException as error:
+            report["runtime_issues"] = [error.detail]
+        return report
     except HTTPException as error:
         return {
             "ready": False,

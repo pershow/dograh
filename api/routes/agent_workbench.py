@@ -9,6 +9,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     WebSocket,
 )
@@ -19,6 +20,7 @@ from api.db.models import UserModel
 from api.schemas.agent_workbench import (
     BuildModelSettings,
     BuildModelSettingsResponse,
+    CapabilityConfiguration,
     ConfirmMemory,
     CreateSession,
     EvaluateRequest,
@@ -201,6 +203,27 @@ async def workbench_dependencies(
     return WorkbenchResponse(data=await dependency_report(org, target, purpose))
 
 
+@router.post(
+    "/sessions/{session_id}/capability-candidates",
+    response_model=WorkbenchResponse,
+    operation_id="create_workbench_capability_candidate",
+)
+async def workbench_capability_candidate(
+    session_id: str, body: CapabilityConfiguration, user: User, _: Enabled
+):
+    return public_data(
+        await db_client.wb_capability_candidate(
+            user.selected_organization_id,
+            session_id,
+            expected_fingerprint=body.expected_fingerprint,
+            candidate_id=body.candidate_id,
+            patch=body.model_dump(
+                mode="json", exclude={"expected_fingerprint", "candidate_id"}
+            ),
+        )
+    )
+
+
 @router.get("/sessions/{session_id}/events", response_model=WorkbenchResponse)
 async def workbench_events(
     session_id: str,
@@ -342,6 +365,31 @@ async def workbench_upload(
     asset = await upload_attachment(user.selected_organization_id, session_id, file)
     asset.pop("object_key", None)
     return public_data(asset)
+
+
+@router.get(
+    "/sessions/{session_id}/assets/{asset_id}/audio",
+    operation_id="download_workbench_audio",
+    responses={
+        200: {
+            "content": {"audio/wav": {"schema": {"type": "string", "format": "binary"}}}
+        }
+    },
+)
+async def download_workbench_audio(
+    session_id: str, asset_id: str, user: User, _: Enabled
+) -> Response:
+    from api.services.agent_workbench.audio_replay import read_audio_asset
+
+    audio = await read_audio_asset(user.selected_organization_id, session_id, asset_id)
+    return Response(
+        audio,
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": "attachment; filename=workbench-audio.wav",
+        },
+    )
 
 
 @router.post(

@@ -62,6 +62,13 @@ class ToolMessageSession:
         self.engine = engine
         self.agent = agent
         self.tool_call_id = tool_call_id
+        state = getattr(engine, "task_state", None)
+        self.user_turn = (
+            state.data["turn"]
+            if state is not None and state.contract.enabled is True
+            else None
+        )
+        self.input_revision = state.data.get("input_revision", state.data["turn"]) if self.user_turn is not None else None
         self.start_variants = [message for message in plan if message.event == "start"]
         self.delayed_variants: dict[int, ToolMessages] = {}
         for message in plan:
@@ -82,14 +89,23 @@ class ToolMessageSession:
             self.task.cancel()
 
     def can_speak(self) -> bool:
-        return not self.stopped and self.engine.agent_can_act(self.agent)
+        state = getattr(self.engine, "task_state", None)
+        current = self.user_turn is None or (
+            state is not None
+            and state.data.get("input_revision", state.data["turn"])
+            == self.input_revision
+        )
+        return current and not self.stopped and self.engine.agent_can_act(self.agent)
 
     async def _speak(self, variants: ToolMessages):
         if not self.can_speak():
             return
         await self.engine.queue_speech(
             **speech_source(random.choice(variants)),
-            mute_user=True,
+            mute_user=not (
+                self.user_turn is not None
+                and self.engine.task_state.contract.listen_during_tools
+            ),
             origin_agent=self.agent,
             can_queue=self.can_speak,
         )

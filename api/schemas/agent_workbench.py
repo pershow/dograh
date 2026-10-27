@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from api.schemas.agent_behavior import AgentBehavior
 from api.schemas.model_connections import ServiceSelection
 
 
@@ -21,6 +22,16 @@ class CreateSession(StrictModel):
 
 class SessionSettings(StrictModel):
     model_protocol: Literal["chat", "responses"]
+
+
+class CapabilityConfiguration(StrictModel):
+    expected_fingerprint: str = Field(min_length=64, max_length=64)
+    candidate_id: str | None = None
+    agent_behavior: AgentBehavior
+    runtime_evidence_enabled: bool = True
+    context_compaction_enabled: bool = False
+    context_compaction_trigger_chars: int = Field(default=32000, ge=4000, le=500000)
+    context_compaction_keep_messages: int = Field(default=8, ge=2, le=100)
 
 
 class BuildModelSettings(StrictModel):
@@ -104,6 +115,12 @@ class Assertion(StrictModel):
         "node_not_visited",
         "node_sequence",
         "tool_called",
+        "tool_not_called",
+        "tool_call_count",
+        "tool_arguments",
+        "tool_result",
+        "tool_sequence",
+        "business_state_equals",
         "context_equals",
         "completed",
     ]
@@ -123,9 +140,10 @@ class Assertion(StrictModel):
             "node_visited",
             "node_not_visited",
             "tool_called",
+            "tool_not_called",
         } and (not isinstance(self.value, str) or not self.value):
             raise ValueError("This assertion requires a nonempty string value")
-        if self.kind in {"contains_any", "node_sequence"} and (
+        if self.kind in {"contains_any", "node_sequence", "tool_sequence"} and (
             not isinstance(self.value, list)
             or not self.value
             or any(not isinstance(v, str) or not v for v in self.value)
@@ -143,9 +161,36 @@ class Assertion(StrictModel):
             and not isinstance(self.value, bool)
         ):
             raise ValueError("completed requires a boolean")
-        if self.kind == "context_equals" and not self.key:
-            raise ValueError("context_equals requires a key")
+        if self.kind in {"context_equals", "business_state_equals"} and not self.key:
+            raise ValueError("State assertions require a key")
+        if self.kind in {"tool_call_count", "tool_arguments", "tool_result"}:
+            if (
+                not isinstance(self.value, dict)
+                or not isinstance(self.value.get("name"), str)
+                or not self.value["name"]
+            ):
+                raise ValueError("Tool assertions require a name")
+            field = {
+                "tool_call_count": "count",
+                "tool_arguments": "arguments",
+                "tool_result": "result",
+            }[self.kind]
+            if field not in self.value:
+                raise ValueError(f"Tool assertion requires {field}")
+            if field == "count" and (
+                type(self.value[field]) is not int or self.value[field] < 0
+            ):
+                raise ValueError("Tool count must be a nonnegative integer")
+            if field == "arguments" and not isinstance(self.value[field], dict):
+                raise ValueError("Expected tool arguments must be an object")
         return self
+
+
+class ToolFixtureStep(StrictModel):
+    result: Any = None
+    outcome: Literal["success", "failure", "unknown"] = "success"
+    delay_ms: int = Field(default=0, ge=0, le=30000)
+    state_patch: dict = Field(default_factory=dict)
 
 
 class ToolFixture(StrictModel):
@@ -157,6 +202,8 @@ class ToolFixture(StrictModel):
     )
     arguments: dict | None = None
     result: Any = None
+    steps: list[ToolFixtureStep] = Field(default_factory=list, max_length=100)
+    state_result_key: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
     def validate_parameters(self):
@@ -187,7 +234,19 @@ class DialogueTurn(StrictModel):
     text: str = Field(min_length=1, max_length=100000)
 
 
+class AudioReplayClip(StrictModel):
+    asset_id: str = Field(min_length=1, max_length=100)
+    offset_ms: int = Field(ge=0, le=150000)
+
+
+class AudioReplay(StrictModel):
+    channel: Literal["browser", "phone"] = "browser"
+    clips: list[AudioReplayClip] = Field(min_length=1, max_length=20)
+    duration_ms: int = Field(default=30000, ge=1000, le=180000)
+
+
 class SimulationCase(StrictModel):
+    audio: AudioReplay | None = None
     mode: Literal["scripted", "single_step", "dynamic"] = "scripted"
     reference_turns: list[DialogueTurn] = Field(default_factory=list, max_length=1000)
     history: list[DialogueTurn] = Field(default_factory=list, max_length=1000)
@@ -200,15 +259,31 @@ class SimulationCase(StrictModel):
         description="Only the simulated USER's utterances, in order. Never include assistant greetings or replies; the runtime generates those.",
     )
     initial_context: dict = Field(default_factory=dict)
+    initial_business_state: dict = Field(default_factory=dict)
     fixtures: list[ToolFixture] = Field(default_factory=list, max_length=50)
     pre_call_context: dict | None = None
     knowledge_result: str | None = Field(default=None, max_length=24000)
+    knowledge_chunks: list[dict] = Field(default_factory=list, max_length=20)
     assertions: list[Assertion] = Field(default_factory=list, max_length=50)
     source: dict = Field(default_factory=dict)
     reference_dialogue: str | None = Field(default=None, max_length=100000)
 
     @model_validator(mode="after")
     def bounded_messages(self):
+        if self.audio and (
+            self.mode != "scripted"
+            or self.history
+            or self.reference_turns
+            or self.reference_dialogue
+            or len(self.audio.clips) != len(self.user_messages)
+        ):
+            raise ValueError(
+                "Audio replay requires scripted mode and one expected transcript per clip, without synthetic history or reference dialogue"
+            )
+        if self.audio and any(a.turn is not None for a in self.assertions):
+            raise ValueError(
+                "Audio turn boundaries are measured; use whole-conversation assertions"
+            )
         if self.mode == "single_step" and (
             len(self.user_messages) != 1 or not self.history
         ):
@@ -234,6 +309,7 @@ class SimulationCase(StrictModel):
 
 
 class SimulationSuite(StrictModel):
+    usage: Literal["development", "acceptance"] = "development"
     name: str = Field(min_length=1, max_length=120)
     instructions: str = Field(default="", max_length=50000)
     cases: list[SimulationCase] = Field(min_length=1, max_length=20)

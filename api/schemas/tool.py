@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from api.enums import ToolCategory
+from api.schemas.agent_behavior import ToolExecutionPolicy
 
 DEFAULT_MCP_TIMEOUT_SECS = 30
 DEFAULT_MCP_SSE_READ_TIMEOUT_SECS = 300
@@ -563,6 +564,7 @@ class ToolDefinitionBase(BaseModel):
     """Shared message format; supported events depend on the tool's behavior."""
 
     schema_version: int = Field(default=1, description="Schema version.")
+    execution_policy: "ToolExecutionPolicy | None" = None
     messages: ToolMessages = Field(
         default_factory=list,
         max_length=220,
@@ -576,6 +578,8 @@ class ToolDefinitionBase(BaseModel):
     @model_validator(mode="after")
     def validate_messages(self):
         tool_type = self.type
+        if self.execution_policy is not None and tool_type != "http_api":
+            raise ValueError("Execution policies currently require an HTTP API tool")
         if tool_type == "calculator" and self.messages:
             raise ValueError("Calculator tools do not support messages")
         if tool_type in {"end_call", "transfer_call", "transfer_agent"}:

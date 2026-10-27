@@ -15,6 +15,7 @@ from api.constants import (
     TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
 )
 from api.schemas.model_connections import ModelConfigurationOverride
+from api.schemas.agent_behavior import AgentBehavior
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 300
 # Hard ceiling on configurable call duration. Must stay <= the concurrency
@@ -136,6 +137,18 @@ class JevNodeRoutingConfiguration(BaseModel):
 class WorkflowConfigurationDefaults(BaseModel):
     model_config = ConfigDict(extra="allow")
     model_configuration_override: ModelConfigurationOverride | None = None
+    agent_behavior: AgentBehavior = Field(default_factory=AgentBehavior)
+    runtime_evidence_enabled: bool = False
+    runtime_requirements: list[
+        Literal[
+            "text",
+            "audio",
+            "local_context_compaction",
+            "agent_transfer",
+            "local_turn_detection",
+            "speech_cache",
+        ]
+    ] = Field(default_factory=list, max_length=6)
 
     @model_validator(mode="before")
     @classmethod
@@ -164,6 +177,8 @@ class WorkflowConfigurationDefaults(BaseModel):
     )
     dictionary: str = ""
     context_compaction_enabled: bool = DEFAULT_CONTEXT_COMPACTION_ENABLED
+    context_compaction_trigger_chars: int = Field(default=32000, ge=4000, le=500000)
+    context_compaction_keep_messages: int = Field(default=8, ge=2, le=100)
     speaker_tracking_enabled: bool = Field(
         default=False,
         description="Evaluate call-local speakers in shadow mode; never changes transcription or interruptions.",
@@ -174,7 +189,7 @@ class WorkflowConfigurationDefaults(BaseModel):
     )
     tts_cache_enabled: bool = Field(
         default=False,
-        description="Reuse generated speech for repeated phrases. Supports MiniMax TTS.",
+        description="Legacy speech-cache request. Current speech factories do not apply this option; inspect the runtime profile.",
     )
     call_dispositions: list[CallDispositionOption] = Field(
         default_factory=list,

@@ -16,6 +16,7 @@ from api.services.documents.parsing import FileParsingError, parse_local_file
 
 MAX_BYTES = 20 * 1024 * 1024
 ALLOWED = {
+    ".wav",
     ".txt",
     ".md",
     ".csv",
@@ -63,6 +64,8 @@ async def read_selected_attachment(
     if asset["status"] != "ready":
         raise WorkbenchError("附件尚未解析完成。")
     parsed = asset["parsed"]
+    if parsed.get("kind") == "audio":
+        return {"name": asset["name"], **parsed}
     if parsed.get("kind") == "image":
         return {
             "name": asset["name"],
@@ -266,7 +269,19 @@ async def parse_attachment(org, session_id, asset_id):
                 or hashlib.sha256(local.read_bytes()).hexdigest() != asset["sha256"]
             ):
                 raise WorkbenchError("Attachment integrity check failed")
-            parsed = await parse_local_file(local)
+            if local.suffix == ".wav":
+                from api.services.agent_workbench.audio_replay import decode_wav
+
+                pcm, rate = decode_wav(local.read_bytes())
+                parsed = {
+                    "kind": "audio",
+                    "sample_rate": rate,
+                    "duration_ms": round(len(pcm) * 500 / rate),
+                    "channels": 1,
+                    "sample_width": 2,
+                }
+            else:
+                parsed = await parse_local_file(local)
         return await db_client.wb_asset_result(org, session_id, asset_id, parsed=parsed)
     except Exception as error:  # noqa: BLE001 - boundary converts failures to bounded task status
         message = (

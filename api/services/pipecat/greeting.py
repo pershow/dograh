@@ -27,7 +27,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     UserTurnStoppedMessage,
 )
 from pipecat.turns.types import ProcessFrameResult
-from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
+from api.services.pipecat.speech_units import SpeechUnitsUserTurnStartStrategy as MinWordsUserTurnStartStrategy, speech_unit_count
 from pipecat.turns.user_start.base_user_turn_start_strategy import (
     BaseUserTurnStartStrategy,
 )
@@ -60,7 +60,7 @@ class GreetingUserTurnStartStrategy(BaseUserTurnStartStrategy):
             if (
                 not self.speech.done
                 and self.speech.allow_interrupt
-                and len(frame.text.split()) >= self.speech.interrupt_min_words
+                and speech_unit_count(frame.text) >= self.speech.interrupt_min_words
             ):
                 await self.trigger_user_turn_started()
                 await self.speech.wait()

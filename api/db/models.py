@@ -1267,6 +1267,33 @@ class WebhookDeliveryModel(Base):
     )
 
 
+class ActionOperationModel(Base):
+    __tablename__ = "action_operations"
+    id = Column(String(36), primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    workflow_run_id = Column(Integer, ForeignKey("workflow_runs.id"), nullable=False)
+    operation_key = Column(String(64), nullable=False)
+    tool_uuid = Column(String(100), nullable=False)
+    arguments = Column(JSON, nullable=False)
+    arguments_hash = Column(String(64), nullable=False)
+    state = Column(String(32), nullable=False)
+    request_turn = Column(Integer, nullable=False)
+    proposed_turn = Column(Integer, nullable=True)
+    owner_token = Column(String(36))
+    lease_until = Column(DateTime(timezone=True))
+    result = Column(JSON)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "workflow_run_id",
+            "operation_key",
+            name="uq_action_operation",
+        ),
+    )
+
+
 class ToolModel(Base):
     """Model for storing reusable tools that can be invoked during workflows.
 

@@ -27,6 +27,8 @@ class ToolExecution:
     received_result: bool = False
     delivered: bool = False
     messages: ToolMessageSession | None = None
+    user_turn: int | None = None
+    input_revision: int | None = None
 
 
 class ToolExecutionOwner:
@@ -57,6 +59,10 @@ class ToolExecutionOwner:
         if existing is not None:
             return existing
         execution = ToolExecution()
+        state = getattr(self._engine, "task_state", None)
+        if state is not None and state.contract.enabled is True:
+            execution.user_turn = state.data["turn"]
+            execution.input_revision = state.data.get("input_revision", state.data["turn"])
         self._executions[params.tool_call_id] = execution
         # Acceptance is synchronous and follows provider call order, before any
         # handler starts. Streamed additions join the same pending group.
@@ -110,6 +116,23 @@ class ToolExecutionOwner:
         except TimeoutError:
             status = "timeout"
             execution.result = {"status": "error", "error": "Tool execution timed out"}
+            context = getattr(self._engine, "_gathered_context", {})
+            if isinstance(context, dict):
+                ambiguous = next(
+                    (
+                        action
+                        for action in context.get("business_actions", {}).values()
+                        if action.get("tool_call_id") == params.tool_call_id
+                        and action.get("status") in {"executing", "unknown"}
+                    ),
+                    None,
+                )
+                if ambiguous:
+                    execution.result = {
+                        "status": "unknown",
+                        "operation_id": ambiguous["operation_id"],
+                        "error": "Execution timed out; verify the business outcome before retrying",
+                    }
         except asyncio.CancelledError:
             status = "cancelled"
             execution.result = {

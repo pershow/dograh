@@ -104,11 +104,12 @@ def compact_logs(logs):
 async def list_agent_runs(org, session_id, limit=10):
     if type(limit) is not int or not 1 <= limit <= 20:
         raise WorkbenchError("limit must be between 1 and 20")
+    from api.services.agent_workbench.experiment_metrics import summarize_runs
+
+    rows = await db_client.wb_agent_runs(org, session_id, limit=limit)
     return {
-        "runs": [
-            run_summary(row)
-            for row in await db_client.wb_agent_runs(org, session_id, limit=limit)
-        ]
+        "runs": [run_summary(row) for row in rows],
+        "runtime_metrics": summarize_runs(rows),
     }
 
 

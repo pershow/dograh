@@ -55,10 +55,13 @@ import { referencedVariables } from "@/lib/workflowVariables";
 import { conversationRows } from "./activity";
 import { AgentMemory } from "./AgentMemory";
 import { BuildModelSettings } from "./BuildModelSettings";
+import { CapabilityEditor } from "./CapabilityEditor";
 import { EvaluationArchive } from "./EvaluationArchive";
 import { EvidenceReads } from "./EvidenceReads";
 import { pollRequest } from "./pollRequest";
 import { ReviewCounts, ReviewFindings } from "./ReviewFindings";
+import { type RuntimeMetricGroup,RuntimeMetrics } from "./RuntimeMetrics";
+import { RuntimeProfile } from "./RuntimeProfile";
 import { SimulationEvidence } from "./SimulationEvidence";
 import { TaskActivity } from "./TaskActivity";
 import { type BasisSummary,RequirementCoverage, TaskBasis } from "./TaskBasis";
@@ -168,11 +171,13 @@ export function AgentWorkbench({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [buildModelRevision, setBuildModelRevision] = useState(0);
   const [runsLoading, setRunsLoading] = useState(false);
+  const [runtimeMetrics, setRuntimeMetrics] = useState<RuntimeMetricGroup[]>([]);
   const [agentRuns, setAgentRuns] = useState<{
     id: number; created_at: string; state: string; definition_id: number | null;
     has_transcript: boolean;
   }[]>([]);
   const [dependencies, setDependencies] = useState<{
+    runtime_profiles?: import("./RuntimeProfile").RuntimeProfileData[];
     ready: boolean;
     issues: unknown[];
     services: {
@@ -620,10 +625,11 @@ export function AgentWorkbench({
     if (!open || authLoading || !user || !session) return;
     setRunsLoading(true);
     try {
-      const data = result<{ runs: typeof agentRuns }>(
+      const data = result<{ runs: typeof agentRuns; runtime_metrics?: RuntimeMetricGroup[] }>(
         await getAgentRuns({ path: { session_id: session } }),
       );
       setAgentRuns(data.runs);
+      setRuntimeMetrics(data.runtime_metrics || []);
     } catch (error) {
       setError(error instanceof Error ? error.message : "运行记录读取失败");
     } finally {
@@ -701,6 +707,7 @@ export function AgentWorkbench({
             </PopoverContent>
           </Popover>
           <AgentMemory key={session} session={session} revision={state.memory_revision} onChanged={() => void reload()} />
+          <Popover><PopoverTrigger asChild><Button variant="ghost" size="sm">能力配置</Button></PopoverTrigger><PopoverContent align="end" className="w-[480px] max-h-[75vh] overflow-y-auto"><CapabilityEditor key={`${session}:${candidateId}:${state.target_fingerprint}`} session={session} snapshot={candidate?.snapshot || state.target} candidateId={candidateId || undefined} fingerprint={state.target_fingerprint || ""} disabled={locked || (!!candidateId && !candidate?.snapshot)} onCreated={id => {setCandidateId(id); void reload();}}/></PopoverContent></Popover>
           <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -770,6 +777,7 @@ export function AgentWorkbench({
                     </p>
                   ))}
                   <Link href="/model-configurations">管理模型连接</Link>
+                  {dependencies.runtime_profiles?.map(profile => <RuntimeProfile key={profile.channel} profile={profile}/>)}
                 </details>
               )}
             </PopoverContent>
@@ -1084,7 +1092,7 @@ export function AgentWorkbench({
                         {currentCase?.run_id && <p className={styles.subtle}>运行记录 #{currentCase.run_id}{currentCase.source?.row ? ` · ${currentCase.source.sheet} 第 ${currentCase.source.row} 行 · ${currentCase.source.column}` : ""}</p>}
                         {currentCase?.trace_url && /^https?:\/\//i.test(currentCase.trace_url) && <p className={styles.subtle}><a href={currentCase.trace_url} target="_blank" rel="noreferrer">查看 Langfuse 调用链</a></p>}
                         {currentCase?.run_id && <p className={styles.subtle}>测试运行单独保存在这里，不计入普通通话记录和业务统计。</p>}
-                        {currentCase && <SimulationEvidence result={currentCase} />}
+                        {currentCase && <SimulationEvidence result={currentCase} session={session} />}
                         {currentCase?.reference_review && <p className={styles.subtle}>参考对话检查：{/no data for|timed out|I\/O timeout/.test(currentCase.reference_review.reason) ? "评审模型响应超时，实际对话已保留，本条暂无法判定。" : /app-server exited|connection is closed/i.test(currentCase.reference_review.reason) ? "评审连接中断，实际对话已保留，本条暂无法判定。" : workbenchErrorText(currentCase.reference_review.reason)}</p>}
                         <ReviewCounts summary={evaluation.summary} />
                         <ReviewFindings review={currentCase?.reference_review} />
@@ -1445,6 +1453,7 @@ export function AgentWorkbench({
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className={styles.popover}>
                   <h3>Agent Runs · 最近运行</h3>
+                  <RuntimeMetrics groups={runtimeMetrics}/>
                   <p className={styles.subtle}>读取这个 Agent 的实际对话、变量和日志，分析后可继续提出修改要求。</p>
                   <Button size="sm" disabled={locked || runsLoading || !agentRuns.length}
                     onClick={() => void sendInstruction("请分析 Agent Runs 中最新一次运行，按需查看相关证据，指出问题、依据和调优建议。先只分析，不修改 Agent。", "analyze")}>
@@ -1607,7 +1616,7 @@ export function AgentWorkbench({
                   type="file"
                   hidden
                   multiple
-                  accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp"
+                  accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.wav"
                   onChange={(e) => {
                     void addFiles(Array.from(e.target.files || []));
                     e.target.value = "";
@@ -1678,8 +1687,9 @@ export function AgentWorkbench({
             aria-label="编辑测试集"
             className={styles.modal}
           >
-            <h2>编辑文本仿真测试集</h2>
+            <h2>编辑测试集</h2>
             <p>保存为新版本；历史评测使用的测试集保持不变。</p>
+            <p>语音回放：上传单声道 PCM WAV，在用例的 audio 中配置 channel、clips（asset_id、offset_ms）和 duration_ms。browser 使用 16 kHz，phone 使用 8 kHz；user_messages 填对应音频的预期识别文本。结果测量服务端音频管线。</p>
             <Textarea
               aria-label="测试集 JSON"
               value={suiteEditor}

@@ -416,11 +416,15 @@ class CustomToolManager:
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
-                result = await execute_http_tool(
+                from api.services.workflow.action_guard import execute_guarded_http
+
+                result = await execute_guarded_http(
+                    engine=self._engine,
+                    executor=execute_http_tool,
+                    state=self._agent.business_state,
+                    tool_call_id=function_call_params.tool_call_id,
                     tool=tool,
                     arguments=function_call_params.arguments,
-                    call_context_vars=self._engine._call_context_vars,
-                    gathered_context_vars=self._engine._gathered_context,
                     organization_id=await self.get_organization_id(),
                 )
 

@@ -1,0 +1,111 @@
+---
+title: "Workbench capabilities and runtime evidence"
+description: "Configure reusable Agent behavior, verify business actions, and evaluate text and audio through the runtime."
+---
+
+## Before you start
+
+Enable the existing workbench with `AGENT_WORKBENCH_ENABLED=true`, configure your model connections, and apply the database migrations through `c52f14a8d606` with the normal deployment migration process. Use development credentials and test business endpoints for manual acceptance.
+
+Attach your HTTP tools and knowledge documents to the Agent before referencing their UUIDs in a capability configuration. For audio evaluations, configure the speech services as you would for a voice call.
+
+## Configure, test, and adopt
+
+1. Open the Agent workbench and select **能力配置** (capability configuration).
+2. Enable structured tasks. Describe the goal, success criteria, and conditions for stopping or handing over. These are reusable across support, sales, and custom workflows.
+3. Define facts, stages, action policies, and knowledge applicability in the advanced JSON editor. You can also describe an Agent behavior configuration in a workbench build request.
+4. Generate a candidate. This creates a new immutable candidate based on the selected candidate or current draft. Saving checks the draft fingerprint and resource ownership; it does not adopt or publish the candidate.
+5. Evaluate the candidate, inspect the actual runtime profile and evidence, then use the existing adoption and publishing flow.
+
+Existing Agents have structured behavior disabled by default. Unclassified HTTP tools retain their existing behavior. Add an explicit action policy to every HTTP mutation you want protected.
+
+## Facts, stages, and actions
+
+The following advanced configuration describes a generic booking action. Replace `BOOK_TOOL_UUID` with an HTTP tool already attached to your Agent. Its model-visible arguments must include `request_id` and `day`. The endpoint must implement the configured idempotency header and return a boolean `booked` field in its JSON response.
+
+```json
+{
+  "facts": [{"name": "day", "description": "The date requested by the user", "value_type": "string"}],
+  "stages": [{"name": "completed", "required_facts": ["day"], "required_actions": ["BOOK_TOOL_UUID"], "terminal": true}],
+  "tool_policies": {
+    "BOOK_TOOL_UUID": {
+      "effect": "write",
+      "required_facts": ["day"],
+      "identity_arguments": ["request_id"],
+      "confirmation_required": true,
+      "confirmation_template": "Please confirm the booking: {arguments}. Reply confirm to proceed.",
+      "success_path": "data.booked",
+      "success_equals": true,
+      "idempotency_header": "Idempotency-Key"
+    }
+  },
+  "knowledge_bindings": {}
+}
+```
+
+Facts require a quote from the current user turn. A real correction increments that fact's revision. Missing stage prerequisites are rejected. A terminal success stage that requires actions accepts only successful actions belonging to the current task and matching the required facts' current revisions. Use `"outcome": "failure"` on a terminal stage to record an unsuccessful task. Free-text success and stop criteria guide the model; stages and action prerequisites provide the enforced checks.
+
+A write operation follows `awaiting_confirmation → executing → succeeded / failed / unknown`. The runtime records the operation before dispatch. Confirmation requires the complete parameterized proposal to reach conversation output and an exact configured confirmation phrase on a later user turn. Changed arguments or required facts invalidate a pending confirmation. Speech starting before dispatch also stops the submission until the new request is understood.
+
+A timeout, cancellation, lost response, or an expired execution lease is **unknown**, not proof of failure. The runtime does not repeat an unknown mutation. Configure `reconcile_tool_uuid` with an explicitly read-only HTTP tool to check the result. `reconcile_arguments` maps read-tool parameter names to `operation_id` or `arguments.FIELD` from the saved operation; it defaults to `{"operation_id": "operation_id"}`. The reconciliation response uses the write policy's success and optional failure predicates. Without a conclusive result, the operation stays unknown and requires follow-up.
+
+Idempotency is scoped to an organization, run, task, tool, and configured identity arguments. Repeated calls with the same identity do not create another mutation in that run. This does not provide global exactly-once delivery across unrelated calls. A deliberately new operation needs a new task or appropriate business identity. Persisted tool-level policies take precedence; a candidate cannot weaken them. MCP mutations and realtime-provider voice mutations do not use this action guard; protected writes require the text or STT–LLM–TTS runtime.
+
+## Knowledge and long conversations
+
+Knowledge bindings use attached document UUIDs. `purpose` is `knowledge`, `policy`, or `example`; `applies_when` compares declared fact values and types. A missing applicability fact excludes that document. An optional 64-character `version` hash rejects changed documents instead of silently using a new version. The evidence records the returned source, version, content hash, and bounded chunk text. This is evidence capture, not an immutable document-history store; long chunk text is explicitly marked as truncated.
+
+When enabled, background context compaction starts at the configured character budget and preserves the recent messages. It validates the original prefix and Agent visit before applying a summary, so an old summary cannot overwrite newer conversation state. The budget is characters, not a provider-specific token count. Completion remains asynchronous and can be cancelled when a run closes.
+
+The listening option keeps user input active during tool execution. New user activity suppresses late tool speech and automatic replies tied to an older turn. An already dispatched external action cannot be cancelled merely by interrupting the Agent; its result still needs to be recorded or reconciled. Mandarin interruption thresholds count CJK characters and otherwise use word units, so short corrections such as “不是” can meet a threshold of two.
+
+Agent transfers preserve compatible typed facts and a task identity. Returning to an Agent can restore its stage checkpoint. Call-owned settings such as compaction, evidence capture, and listening must be compatible across a transfer; incompatible destination configurations are rejected before activation.
+
+## Text and audio evaluations
+
+Test suites support positive and negative tool assertions, counts, exact arguments/results, ordered calls, and business-state assertions. Stateful fixtures can simulate delays, unknown outcomes, and side effects. The runtime uses the same action guard for fixtures and records model tool requests separately from actual fixture dispatches. A confirmation proposal is not counted as an executed remote action. Evaluations do not execute live business HTTP tools.
+
+For audio replay, upload a mono, 16-bit PCM WAV through the workbench attachment control. Use 16 kHz for `browser` and 8 kHz for `phone`. Each case has explicit clip offsets, a bounded duration, one expected user transcript per clip, and whole-conversation assertions. Use the uploaded asset ID in the test-set JSON editor:
+
+```json
+{
+  "name": "Mandarin audio regression",
+  "usage": "development",
+  "cases": [{
+    "name": "Opening and support request",
+    "mode": "scripted",
+    "user_messages": ["你好，我需要帮助"],
+    "audio": {
+      "channel": "browser",
+      "clips": [{"asset_id": "UPLOADED_WAV_ASSET_ID", "offset_ms": 2000}],
+      "duration_ms": 15000
+    },
+    "assertions": [{"kind": "contains", "value": "帮助"}]
+  }]
+}
+```
+
+The clip must finish inside the duration, and clips cannot overlap. Expected user text is an ASR check, not injected conversation text. The same server pipeline processes PCM, recognition, turns, model calls, fixture tools, and synthesis. Results include ASR checks, input coverage and scheduling lag, delivered greetings, assistant transcript, runtime events, and a private Agent-output recording. The recording concatenates output audio; event times describe the original timing.
+
+This replay measures the **server pipeline**. It does not measure carrier/SIP routing, browser permissions, device playback, echo, or real network jitter. Run actual telephone and browser calls before shipping a voice change. Provider quality, production concurrency, and human-perceived latency still require that acceptance pass.
+
+## Runtime profiles and comparisons
+
+Preflight reports compare requested settings with the supported settings of each pipeline. Actual run profiles record the resolved service configuration and configuration/model/definition fingerprints. Required capabilities can reject unsupported configurations before a run. These fingerprints describe configured services; they are not proof of which fallback model answered every request.
+
+The workbench groups runs by channel, pipeline, and fingerprint. It reports evidence coverage, server speech-start P50/P95, first generated audio timing, silence/error events, structured task outcomes, and available USD cost. Missing evidence stays missing. Cost per successful task is shown only when cost and outcome coverage are complete. Server speech start is not the time a person hears a meaningful answer; that measure is currently unavailable. Grouped reports do not perform random assignment or prove a causal performance improvement.
+
+Mark held-out suites `"usage": "acceptance"`. Tuning and automatic repair reject these suites and their evaluation evidence; run them separately after candidate development. This prevents new automatic use of marked suites, but cannot remove data already present in an earlier model conversation. Publishing remains an explicit existing workflow action.
+
+## Rollout and acceptance
+
+| Area | Implemented surface | Release acceptance |
+| --- | --- | --- |
+| P0 runtime profile | Preflight, resolved settings, fingerprints, required capabilities | Compare text, browser and telephone profiles with configured services; unsupported required capabilities reject startup. |
+| P0 evaluation | Hard assertions, frozen tool resources, PCM replay, private audio evidence | Exercise normal, correction, timeout, interruption and negative-action cases; confirm failed ASR and incomplete evidence cannot appear as passing. |
+| P0 actions | Durable claims, delivered proposals, typed outcomes, reconciliation | Concurrent/repeated calls produce one dispatch; changed parameters need a new confirmation; unknown outcomes never blindly retry. |
+| P1 task and knowledge | Typed facts/stages, transfer continuity, applicability/version evidence | Correct a key fact, transfer away and back, and verify old action/knowledge evidence cannot satisfy the corrected request. |
+| P1 conversation runtime | Listening during tools, stale-result suppression, background compaction | Interrupt a slow tool and a long conversation; verify new input survives and late output does not resume the old turn. |
+| P2 measurement and tuning | Grouped measured evidence, cost coverage, held-out suite restrictions | Collect actual channel baselines, then compare a candidate using the same cases and a separate acceptance suite. |
+
+Deploy the schema migration before API and worker code. Enable capabilities on a test Agent, then roll out to selected Agents after the above acceptance. To roll back application code, disable new capability settings first and retain the action ledger until all executing/unknown operations have been reconciled. Do not drop the ledger while it is needed to prevent repeated business actions. No data migration or rollback is triggered by saving a workbench candidate.

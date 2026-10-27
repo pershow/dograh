@@ -48,6 +48,14 @@ QUEUE = "arq:agent-workbench"
 
 
 async def enqueue(org, session_id, kind, payload, key):
+    if kind == "tune" and payload.get("suite_id"):
+        selected_suite = await db_client.wb_get(
+            org, session_id, "suites", payload["suite_id"]
+        )
+        if selected_suite["payload"].get("usage") == "acceptance":
+            raise WorkbenchError(
+                "验收测试集只能用于评估，不能用于自动调优。请选择开发测试集。", 409
+            )
     if payload.get("resume_build_job_id"):
         prior = await db_client.wb_get(
             org, session_id, "jobs", payload["resume_build_job_id"]
@@ -477,6 +485,8 @@ async def _verify_build(org, session_id, job, context, builder_config, built):
     suites = [
         await db_client.wb_get(org, session_id, "suites", sid) for sid in suite_ids
     ]
+    if any(s["payload"].get("usage") == "acceptance" for s in suites):
+        raise WorkbenchError("仅验收的测试集不能用于自动构建修复。", 409)
     suite = {"payload": {"cases": [c for s in suites for c in s["payload"]["cases"]]}}
     saved = job.get("output", {}).get("build_verification_checkpoint") or {
         "candidate_id": built["candidate_id"],
@@ -1222,6 +1232,8 @@ async def _perform(org, session_id, job):
     rounds = []
     issue = None
     suite = await db_client.wb_get(org, session_id, "suites", payload["suite_id"])
+    if suite["payload"].get("usage") == "acceptance":
+        raise WorkbenchError("验收测试集不能用于自动调优。", 409)
     for _ in range(payload.get("max_rounds", 1)):
         if best["summary"]["passed"] == best["summary"]["total"]:
             break

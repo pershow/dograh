@@ -41,6 +41,25 @@ class ContextSummarizationManager:
             min_messages_after_summary=2,
             summarization_timeout=30.0,
         )
+        self.trigger_chars = 32000
+        self._last_attempt_size = 0
+
+    async def compact_if_needed(self, *, wait=False) -> None:
+        """Bound long single-node conversations without cancelling useful work."""
+        context = self._engine.context
+        if context is None:
+            return
+        size = len(json.dumps(context.messages, ensure_ascii=False, default=str))
+        if size < self.trigger_chars or size < self._last_attempt_size + 2000:
+            return
+        if self._summarization_task and not self._summarization_task.done():
+            if wait:
+                await self._summarization_task
+            return
+        self._last_attempt_size = size
+        await self.start()
+        if wait and self._summarization_task:
+            await self._summarization_task
 
     @property
     def config(self) -> LLMContextSummaryConfig:
@@ -80,6 +99,7 @@ class ContextSummarizationManager:
         context = self._engine.context
         llm = self._engine.active_agent.inference_llm
         current_node = self._engine.active_agent.current_node
+        origin_agent = self._engine.active_agent
 
         try:
             if context is None or llm is None or current_node is None:
@@ -89,9 +109,9 @@ class ContextSummarizationManager:
                 return
             # The inherited transcript stays intact across node transitions.
             # Only this agent's own conversation is eligible for compaction.
-            messages = [
-                m for m in context.messages if not isinstance(m, HandoffMessage)
-            ]
+            messages = deepcopy(
+                [m for m in context.messages if not isinstance(m, HandoffMessage)]
+            )
             # Not worth summarizing if context is small
             if len(messages) <= 6:
                 return
@@ -163,6 +183,18 @@ class ContextSummarizationManager:
             current_messages = [
                 m for m in context.messages if not isinstance(m, HandoffMessage)
             ]
+            # An interrupted playback can truncate earlier assistant text while
+            # summarization is in flight. Appends are safe; edits and a new
+            # agent visit invalidate the snapshot instead of overwriting it.
+            if (
+                self._engine.active_agent is not origin_agent
+                or current_messages[: len(messages)] != messages
+            ):
+                logger.debug("Discarding context summary after conversation revision")
+                return
+            if last_index >= len(messages):
+                logger.warning("Discarding context summary with invalid boundary")
+                return
             recent_messages = current_messages[last_index + 1 :]
 
             summary = ConversationSummaryMessage(
@@ -187,6 +219,7 @@ class ContextSummarizationManager:
             new_messages.extend(recent_messages)
 
             context.set_messages(new_messages)
+            self._last_attempt_size = 0
             logger.info(
                 f"Background context summarization applied: "
                 f"{len(current_messages)} -> {len(new_messages)} messages"

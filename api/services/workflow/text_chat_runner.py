@@ -548,6 +548,19 @@ async def execute_text_chat_pending_turn(
         )
     if user_config.llm is None:
         raise ValueError("Text chat requires an LLM configuration")
+    from api.services.workflow.runtime_profile import (
+        runtime_profile,
+        require_runtime_capabilities,
+    )
+
+    profile = runtime_profile(
+        run_configs,
+        user_config,
+        channel="text",
+        definition=run_definition.workflow_json,
+        observed=True,
+    )
+    require_runtime_capabilities(profile)
 
     workflow_graph = WorkflowGraph(
         ReactFlowDTO.model_validate(run_definition.workflow_json),
@@ -702,6 +715,7 @@ async def execute_text_chat_pending_turn(
     )
     context_compaction_enabled = run_configs.get("context_compaction_enabled", False)
     engine = PipecatEngine(
+        runtime_config=run_configs,
         evaluation_policy=evaluation_policy,
         node_routing=JevNodeRoutingConfiguration.model_validate(
             run_configs.get("node_routing") or {}
@@ -729,6 +743,11 @@ async def execute_text_chat_pending_turn(
         run_transition_variable_extraction_in_background=False,
     )
     engine._gathered_context = dict(base_checkpoint["gathered_context"])
+    engine._gathered_context["runtime_profile"] = profile
+    if state := base_checkpoint["gathered_context"].get("task_state"):
+        from api.services.workflow.task_state import TaskState
+
+        engine.task_state = TaskState(engine.task_state.contract, state)
     capture_processor = _TextChatCaptureProcessor(
         response_window, context, engine, on_event=on_event
     )
@@ -826,6 +845,7 @@ async def execute_text_chat_pending_turn(
             emit_transition_event=current_node_id is None,
         )
         engine.call_monitor.activate()
+        await engine.compact_context_if_needed()
 
         opening_marker = capture_processor.activity_count
         opening_expects_llm = pending_user_message is None and (
@@ -852,6 +872,7 @@ async def execute_text_chat_pending_turn(
             )
 
         if pending_user_message is not None:
+            engine.observe_user_turn(pending_user_message)
             context.add_message({"role": "user", "content": pending_user_message})
             generation_marker = capture_processor.activity_count
             response_window.note_direct_context_request()
@@ -872,12 +893,16 @@ async def execute_text_chat_pending_turn(
             await engine.close_mcp_sessions()
             await engine.cleanup()
 
-    gathered_context = await engine.get_gathered_context()
     assistant_text = (
         "\n\n".join(part for part in response_window.outputs if part).strip()
         if response_window.outputs
         else None
     )
+    if engine.task_state.contract.enabled and assistant_text:
+        from api.services.workflow.action_guard import acknowledge_proposals
+
+        await acknowledge_proposals(engine, assistant_text)
+    gathered_context = await engine.get_gathered_context()
     assistant_created_at = datetime.now(UTC).isoformat()
     usage = pipeline_metrics_aggregator.get_all_usage_metrics_serialized()
     current_node = engine.active_agent.current_node

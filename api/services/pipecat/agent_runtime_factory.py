@@ -89,7 +89,9 @@ class AgentRuntimeFactory:
         run_definition: Any = None,
         run_model_configuration: EffectiveAIModelConfiguration | None = None,
         stt: STTService | None = None,
+        channel: str = "voice",
     ):
+        self._channel = channel
         self._stt = stt
         self._on_agent_error = on_agent_error
         self._use_draft = use_draft
@@ -229,6 +231,34 @@ class AgentRuntimeFactory:
             if definition is not None
             else {}
         )
+        from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+
+        requested = WorkflowConfigurationDefaults.model_validate(run_configs)
+        if self._run_definition is not None and definition is not self._run_definition:
+            call_settings = WorkflowConfigurationDefaults.model_validate(
+                getattr(self._run_definition, "workflow_configurations", None) or {}
+            )
+            fixed = (
+                "context_compaction_enabled",
+                "context_compaction_trigger_chars",
+                "context_compaction_keep_messages",
+                "runtime_evidence_enabled",
+            )
+            if any(
+                getattr(requested, name) != getattr(call_settings, name)
+                for name in fixed
+            ) or (
+                requested.agent_behavior.enabled
+                and requested.agent_behavior.listen_during_tools
+            ) != (
+                call_settings.agent_behavior.enabled
+                and call_settings.agent_behavior.listen_during_tools
+            ):
+                raise AgentBuildError(
+                    "destination_call_settings_incompatible",
+                    "Destination requires different call-scoped listening, compaction or evidence settings",
+                )
+        runtime.workflow_configurations = dict(run_configs)
 
         llm = create_llm_service(user_config, correlation_id=self._mps_correlation_id)
         tts = create_tts_service(
@@ -287,6 +317,21 @@ class AgentRuntimeFactory:
             "tts_model": user_config.tts.model,
             **get_llm_runtime_configuration(user_config),
         }
+        from api.services.workflow.runtime_profile import (
+            runtime_profile,
+            require_runtime_capabilities,
+        )
+
+        profile = runtime_profile(
+            run_configs,
+            user_config,
+            channel=self._channel,
+            definition=getattr(definition, "workflow_json", {}),
+            observed=True,
+            stt_config=call_config.stt,
+        )
+        require_runtime_capabilities(profile)
+        runtime.runtime_configuration["runtime_profile"] = profile
 
     async def build(
         self,
