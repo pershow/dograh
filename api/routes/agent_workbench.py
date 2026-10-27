@@ -158,7 +158,10 @@ async def workbench_session(
 ):
     return public_data(
         await db_client.wb_context(
-            user.selected_organization_id, session_id, if_revision=if_revision
+            user.selected_organization_id,
+            session_id,
+            if_revision=if_revision,
+            compact=True,
         )
     )
 
@@ -373,6 +376,58 @@ async def workbench_suite(
     return public_data(
         await db_client.wb_save_suite(
             user.selected_organization_id, session_id, body.model_dump()
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/jobs/{job_id}/test-results",
+    response_model=WorkbenchResponse,
+    operation_id="get_workbench_test_results",
+)
+async def workbench_test_results(
+    session_id: str,
+    job_id: str,
+    user: User,
+    _: Enabled,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    return public_data(
+        await db_client.wb_test_result_page(
+            user.selected_organization_id,
+            session_id,
+            job_id,
+            offset=offset,
+            limit=limit,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/evaluations/{evaluation_id}",
+    response_model=WorkbenchResponse,
+    operation_id="get_workbench_evaluation",
+)
+async def workbench_evaluation(
+    session_id: str, evaluation_id: str, user: User, _: Enabled
+):
+    return public_data(
+        await db_client.wb_get(
+            user.selected_organization_id, session_id, "evaluations", evaluation_id
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/suites/{suite_id}",
+    response_model=WorkbenchResponse,
+    operation_id="get_workbench_suite",
+)
+async def workbench_saved_suite(session_id: str, suite_id: str, user: User, _: Enabled):
+    return public_data(
+        await db_client.wb_get(
+            user.selected_organization_id, session_id, "suites", suite_id
         )
     )
 

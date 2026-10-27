@@ -143,6 +143,10 @@ export function taskCompletionText(output: Record<string, unknown> = {}): string
   if (Array.isArray(output.pending_questions) && output.pending_questions.length)
     return `调优未完成，已保留候选。需要补充：${output.pending_questions.map((q: {question: string}) => q.question).join("；")}`;
   if (output.outcome === "needs_input") return `需要补充信息：${String(output.question || "请明确测试资料与要求。")} 测试尚未执行。`;
+  if (output.outcome === "test_preparation") {
+    const c = output.compilation as {total?: number; ready?: number; needs_input?: number; preparation_error?: number} | undefined;
+    return `测试准备已保存：${c?.total || 0} 条，可执行 ${c?.ready || 0} 条，资料待确认 ${c?.needs_input || 0} 条，准备异常 ${c?.preparation_error || 0} 条。Agent 对话尚未执行。`;
+  }
   if (output.outcome === "review") {
     const s = output.summary as Record<string, number> | undefined;
     return s ? `已有对话复核完成：${s.total} 条，${s.passed} 条通过，${s.failed} 条未通过，${s.error} 条原执行错误，${s.inconclusive} 条无法判定。未重新运行对话，未修改 Agent；旧评审保留。` : "复核结束，请查看证据与结果。";

@@ -15,8 +15,23 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.fingerprint import fingerprint
 from api.services.configuration.masking import mask_workflow_definition
 
-SECTIONS = ("overview", "transcript", "execution", "evaluation", "request", "definition", "probes")
-EVALUATION_SECTIONS = ("all", "transcript", "execution", "review", "source")
+SECTIONS = (
+    "overview",
+    "transcript",
+    "execution",
+    "evaluation",
+    "request",
+    "definition",
+    "probes",
+)
+EVALUATION_SECTIONS = (
+    "all",
+    "transcript",
+    "execution",
+    "review",
+    "source",
+    "simulation",
+)
 
 
 def execution_summary(case):
@@ -326,13 +341,14 @@ class DiagnosticSession:
             content = {
                 "source": packet.get("source"),
                 "result": {
-                    key: value for key, value in case.items()
+                    key: value
+                    for key, value in case.items()
                     if key not in {"transcript", "events"}
                 },
                 "note": "Recorded evaluation outcome, checks, test context and simulation validity. Proposed replies with delivered=false were not sent to the Agent. Test assumptions are not business facts; evaluation errors are not Agent failures. Reviewer conclusions require checking the underlying evidence.",
-                "limitations": [] if packet.get("source") else [
-                    "No linked workbench evaluation was found for this run."
-                ],
+                "limitations": []
+                if packet.get("source")
+                else ["No linked workbench evaluation was found for this run."],
             }
         elif section == "execution":
             content = {

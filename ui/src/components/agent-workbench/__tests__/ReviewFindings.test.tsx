@@ -27,4 +27,20 @@ describe("evidence review", () => {
     const {container}=render(<ReviewFindings review={{status:"failed",reason:"old"}} />);
     expect(container.innerHTML).toBe("");
   });
+  it("matches frozen-criterion corrections by ID and retains the original judgment", () => {
+    render(<ReviewFindings review={{
+      version: 4, status: "failed", reason: "逐项复核完成", checks: [],
+      draft_review: {checks: [
+        {...check, criterion_id: "unchanged", reason: "无关项已满足"},
+        {...check, criterion_id: "price", reason: "初评遗漏价格冲突"},
+      ]},
+      criterion_verification: {reviews: [
+        {criterion_id: "price", verdict: "corrected", reason: "原始依据要求收费", check: {reason: "实际承诺免费，违反原始价格要求"}},
+        {criterion_id: "unchanged", verdict: "supported", reason: "已有充分证据", check: null},
+      ]},
+    }} />);
+    expect(screen.getByText("初评：初评遗漏价格冲突")).toBeTruthy();
+    expect(screen.getByText("复核：实际承诺免费，违反原始价格要求")).toBeTruthy();
+    expect(screen.queryByText("初评：无关项已满足")).toBeNull();
+  });
 });

@@ -12,15 +12,23 @@ from api.services.agent_workbench.tools import WorkbenchTools
 
 
 @pytest.mark.parametrize("streaming", [True, False, None])
-async def test_captured_wire_body_round_trips_provider_extensions_without_sdk_overrides(streaming):
+async def test_captured_wire_body_round_trips_provider_extensions_without_sdk_overrides(
+    streaming,
+):
     from openai import AsyncOpenAI
 
     body = {
         "model": "frozen-model",
-        "messages": [{"role": "system", "content": "Historical instruction"}, {"role": "user", "content": "Continue"}],
+        "messages": [
+            {"role": "system", "content": "Historical instruction"},
+            {"role": "user", "content": "Continue"},
+        ],
         **({"stream": streaming} if streaming is not None else {}),
         "temperature": 0.27,
-        "provider_extension": {"reasoning_enabled": False, "arbitrary_option": "retained"},
+        "provider_extension": {
+            "reasoning_enabled": False,
+            "arbitrary_option": "retained",
+        },
     }
     original = copy.deepcopy(body)
     requests = []
@@ -29,22 +37,73 @@ async def test_captured_wire_body_round_trips_provider_extensions_without_sdk_ov
         requests.append(json.loads(request.content))
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["Authorization"] == "Bearer test-client-credential"
-        call = {"id": "call1", "type": "function", "function": {"name": "unexecuted", "arguments": "{}"}}
+        call = {
+            "id": "call1",
+            "type": "function",
+            "function": {"name": "unexecuted", "arguments": "{}"},
+        }
         if streaming:
-            chunk = {"id": "completion1", "object": "chat.completion.chunk", "created": 0, "model": body["model"], "choices": [{"index": 0, "delta": {"content": "Observed", "tool_calls": [{"index": 0, **call}]}, "finish_reason": None}]}
-            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n")
-        return httpx.Response(200, json={"id": "completion1", "object": "chat.completion", "created": 0, "model": body["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": "Observed", "tool_calls": [call]}, "finish_reason": "tool_calls"}]})
+            chunk = {
+                "id": "completion1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": "Observed",
+                            "tool_calls": [{"index": 0, **call}],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n",
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "completion1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Observed",
+                            "tool_calls": [call],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        )
 
-    client = AsyncOpenAI(api_key="test-client-credential", base_url="http://model.test/v1", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+    client = AsyncOpenAI(
+        api_key="test-client-credential",
+        base_url="http://model.test/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
     builder = Mock(side_effect=AssertionError("Captured body must not be rebuilt"))
     service = SimpleNamespace(_client=client, build_chat_completion_params=builder)
     try:
-        result = await d.collect_completion(service, d.completion_params(service, body, "captured"))
+        result = await d.collect_completion(
+            service, d.completion_params(service, body, "captured")
+        )
     finally:
         await client.close()
     assert requests == [original]
     assert body == original
-    assert result == {"text": "Observed", "tool_calls": [{"name": "unexecuted", "arguments": "{}"}]}
+    assert result == {
+        "text": "Observed",
+        "tool_calls": [{"name": "unexecuted", "arguments": "{}"}],
+    }
     builder.assert_not_called()
 
 
@@ -191,7 +250,16 @@ async def test_execution_summary_survives_tiny_page_and_large_review(
         {"id": "j", "lease_token": "t", "input": {"mode": "analyze"}},
         {"target": {}, "target_fingerprint": "f"},
     )
-    case = {**packet["case"], "run_id": 42, "reference_review": {"text": "x" * 80000}}
+    case = {
+        **packet["case"],
+        "run_id": 42,
+        "reference_review": {"text": "x" * 80000},
+        "validity": {
+            "status": "invalid",
+            "stop_reason": "test_preparation_needed",
+            "scenario": {"missing_information": ["账户访问条件"]},
+        },
+    }
     monkeypatch.setattr(
         d.db_client, "wb_get", AsyncMock(return_value={"id": "e", "results": [case]})
     )
@@ -203,6 +271,9 @@ async def test_execution_summary_survives_tiny_page_and_large_review(
         "node_transition" in execution["text"]
         and "reference_review" not in execution["text"]
     )
+    simulation = await tools.read_evaluation("e", 0, section="simulation")
+    assert json.loads(simulation["text"]) == {"validity": case["validity"]}
+    assert "reference_review" not in simulation["text"]
 
 
 async def test_paired_probe_preserves_history_frozen_model_and_agent_no_tool_execution(
@@ -292,22 +363,44 @@ async def test_conclusion_requires_effective_context_and_real_evidence(owner):
     owner.diagnostics.validate_report(report)
 
 
-async def test_diagnostic_evaluation_preserves_failure_stage_and_unsent_input(owner, packet):
-    packet["source"] = {"session_id": "historical-session", "evaluation_id": "ev", "case_index": 0}
+async def test_diagnostic_evaluation_preserves_failure_stage_and_unsent_input(
+    owner, packet
+):
+    packet["source"] = {
+        "session_id": "historical-session",
+        "evaluation_id": "ev",
+        "case_index": 0,
+    }
     packet["case"].update(
-        status="error", error="Structured reviewer output invalid",
+        status="error",
+        error="Structured reviewer output invalid",
         runtime_responded=True,
-        validity={"status": "inconclusive", "checks": [
-            {"proposal": {"text": "Assumed success"}, "delivered": False},
-        ]},
+        validity={
+            "status": "inconclusive",
+            "checks": [
+                {"proposal": {"text": "Assumed success"}, "delivered": False},
+            ],
+        },
     )
     original = copy.deepcopy(packet)
     owner.specs()
-    overview = await owner.call("read_agent_run", {"action": "inspect_run_diagnostic", "run_id": 42, "section": "overview"})
+    overview = await owner.call(
+        "read_agent_run",
+        {"action": "inspect_run_diagnostic", "run_id": 42, "section": "overview"},
+    )
     assert "Structured reviewer output invalid" in overview["text"]
     pages, offset = [], 0
     while True:
-        result = await owner.call("read_agent_run", {"action": "inspect_run_diagnostic", "run_id": 42, "section": "evaluation", "offset": offset, "limit": 180})
+        result = await owner.call(
+            "read_agent_run",
+            {
+                "action": "inspect_run_diagnostic",
+                "run_id": 42,
+                "section": "evaluation",
+                "offset": offset,
+                "limit": 180,
+            },
+        )
         pages.append(result["text"])
         if result["next_offset"] is None:
             break

@@ -38,7 +38,7 @@ def resolve_node_references(case, graph):
     return references
 
 
-EVALUATION_VERSION = 3
+EVALUATION_VERSION = 7
 
 
 def tuning_evidence(evaluation):
@@ -163,6 +163,8 @@ def apply_reference_review(outcome, review):
     assertions.extend(
         {
             "kind": "reference",
+            "criterion_id": c.get("criterion_id"),
+            "criterion_status": c["status"],
             "value": c["criterion"],
             "passed": c["status"] == "passed",
             "turn": c["turn"],
@@ -175,7 +177,7 @@ def apply_reference_review(outcome, review):
             "repair_target": c.get("repair_target"),
             "independent_of_mismatch": c.get("independent_of_mismatch", False),
             "citations": c.get("citations", []),
-            "informational": c["status"] == "inconclusive",
+            "informational": c["status"] not in {"passed", "failed"},
         }
         for c in review.get("checks", [])
     )
@@ -194,6 +196,10 @@ def apply_reference_review(outcome, review):
         "reference_review": review,
         "status": "inconclusive"
         if outcome.get("validity", {}).get("status") in {"invalid", "inconclusive"}
+        and not any(
+            c["status"] == "failed" and c.get("independent_of_mismatch")
+            for c in review.get("checks", [])
+        )
         else "failed"
         if explicit_failure
         else review["status"],
@@ -490,13 +496,27 @@ async def evaluate(
                     # Both recovery and candidate comparison keep the original
                     # fixture; neither may rebind the customer's identity.
                     driver.replay_context = copy.deepcopy(frozen_context)
-                if case.mode == "dynamic" and frozen:
+                if case.compiled:
+                    await driver.prepare()
+                elif case.mode == "dynamic" and frozen:
                     driver.scenario = copy.deepcopy(frozen)
                 else:
                     await driver.prepare()
                 await case_event("scenario_ready", validity=driver.receipt())
                 await publish_partial()
                 if driver.stop_reason:
+                    if driver.stop_reason == "test_preparation_needed":
+                        missing = (case.compiled.get("scenario") or {}).get(
+                            "missing_information", []
+                        )
+                        reason = (
+                            case.compiled.get("error")
+                            or "；".join(
+                                x["question"] for x in missing if x["blocks_execution"]
+                            )
+                            or "缺少有来源依据的验收要求。"
+                        )
+                        raise WorkbenchError("测试准备未完成：" + reason)
                     reason = (
                         (driver.context_selection or {}).get("reason")
                         or (
@@ -682,7 +702,14 @@ async def evaluate(
                 "assertions": assertions,
                 "reference_review": review,
             }
-            if driver and driver.receipt(completed)["status"] != "valid":
+            if (
+                driver
+                and driver.receipt(completed)["status"] != "valid"
+                and not any(
+                    c["status"] == "failed" and c.get("independent_of_mismatch")
+                    for c in (review or {}).get("checks", [])
+                )
+            ):
                 outcome["observed_review_status"] = outcome["status"]
                 outcome["status"] = "inconclusive"
         except LeaseLost:
@@ -699,6 +726,7 @@ async def evaluate(
             if driver and driver.stop_reason in {
                 "context_ambiguous",
                 "replay_context_ambiguous",
+                "test_preparation_needed",
             }:
                 outcome["status"] = "inconclusive"
         finally:
@@ -860,12 +888,36 @@ def acceptable_improvement(baseline, proposed):
         if a.get("name") != b.get("name"):
             return False
         prior, later = a.get("assertions", []), b.get("assertions", [])
+        old_review, new_review = (
+            a.get("reference_review") or {},
+            b.get("reference_review") or {},
+        )
+        if old_review.get("version") == 4 and (
+            new_review.get("rubric_fingerprint") != old_review.get("rubric_fingerprint")
+            or new_review.get("compilation_fingerprint")
+            != old_review.get("compilation_fingerprint")
+        ):
+            return False
         if len(prior) != len(later):
             return False
         for left, right in zip(prior, later):
-            if any(
-                left.get(k) != right.get(k) for k in ("kind", "value", "key", "turn")
-            ):
+            keys = ("kind", "value", "key", "turn")
+            if left.get("criterion_id"):
+                # A frozen semantic criterion has a stable ID; its observed
+                # violation turn is evidence, not a fixed script deadline.
+                keys = ("kind", "value", "criterion_id")
+                if right.get("criterion_status") not in {
+                    "passed",
+                    "failed",
+                    "not_applicable",
+                }:
+                    return False
+                if (
+                    left.get("criterion_status") == "failed"
+                    and right.get("criterion_status") == "not_applicable"
+                ):
+                    return False
+            if any(left.get(k) != right.get(k) for k in keys):
                 return False
             if left.get("passed") and not right.get("passed"):
                 return False

@@ -610,3 +610,50 @@ exporters and credential-sync subscription. Earlier missing traces cannot be
 reconstructed; stored dialogues remain available. New results expose the configured
 trace link, which alone is not proof of successful export. Evaluation runs remain
 separate from ordinary calls and business statistics.
+
+## Frozen scenario preparation and criterion review (2026-10-28)
+
+The complete 266-row source set now has 266 executable, independently checked
+customer fixtures (compilation version 2), no missing-input rows and no preparation
+errors. Source-row fingerprints match the originals. Every case retains the same
+40 frozen business requirements; their fingerprint is
+`26dca103d45641f89cdc464f357385e10a64959872fa030c01ae762dfd530383`.
+Existing fixtures and criteria survive resumed preparation. The per-case compiler
+receives an explicit single-row scope, so it cannot mistake the remaining dataset
+for missing customer information.
+
+The runtime binds the actual preceding Agent message itself, validates customer
+state against declared transitions, and retains delivered action history. Pure
+observations do not invent state transitions. Temporary waits and answered questions
+cannot become unsupported permanent loops. Repairs still undergo the same independent
+alignment checks before being delivered; business assertions were not relaxed.
+
+In the latest four-case pipeline validation, one conversation completed with valid
+simulation: 11 requirements passed, 1 failed, 27 were inapplicable on that branch,
+and 1 lacked historical artifact-comparison evidence. The confirmed failure and the
+evidence gap remain separate. The other three conversations were interrupted when
+the configured Qwen endpoint returned HTTP 400 with provider code `Arrearage`.
+They are execution errors, not Agent failures. Provider causes are now retained
+in evaluation errors with credential redaction.
+
+The new full 266-case runtime replay and full-scope candidate tuning have **not**
+completed. They require restoration of the same frozen model connection. Preparation
+completion and automated code-test success are not a claim of business-test passage.
+No candidate was applied to Agent 28 or 12; both draft fingerprints remain unchanged.
+
+Saved results are indexed by task across all batches, beyond the session's recent
+100-record context. Detail views fetch the original complete evaluation and editable
+suite on demand. Database tests cover 113 batches, retained evidence and tenant/session
+boundaries. The complete prepared task is executed by task ID, and tuning retains all
+case/fixture/rubric fingerprints; partial known improvements are recorded separately
+from acceptance while unresolved criteria remain unresolved.
+
+A minimal request against the unchanged frozen `qwen3.6-plus` connection at
+2026-10-28 05:55 CST again returned HTTP 400 / `Arrearage`. No full replay was
+launched against that unavailable connection. The frontend suite passes all 580
+tests across 87 files, including task pagination, complete evidence loading and
+criterion-ID-based comparison of original and corrected reviews. TypeScript and
+the changed workbench components' ESLint checks also pass.
+The final complete backend run passes 6,156 tests with 11 skipped (511.33 seconds).
+Ruff passes for the changed workbench Python files, and the staged diff has no
+whitespace errors. These checks do not replace the pending live 266-case replay.

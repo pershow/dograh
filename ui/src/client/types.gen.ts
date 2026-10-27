@@ -2618,6 +2618,14 @@ export type Instruction = {
      */
     test_mode?: 'scripted' | 'single_step' | 'dynamic' | null;
     /**
+     * Prepare Only
+     */
+    prepare_only?: boolean;
+    /**
+     * Prepared Test Job Id
+     */
+    prepared_test_job_id?: string | null;
+    /**
      * Single Step Turns
      */
     single_step_turns?: Array<number>;
@@ -4806,6 +4814,12 @@ export type SimulationCase = {
      * Reference Dialogue
      */
     reference_dialogue?: string | null;
+    /**
+     * Compiled
+     */
+    compiled?: {
+        [key: string]: unknown;
+    } | null;
 };
 
 /**
@@ -17568,6 +17582,159 @@ export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponse
 };
 
 export type WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponse = WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponses[keyof WorkbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPostResponses];
+
+export type GetWorkbenchTestResultsData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: {
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/jobs/{job_id}/test-results';
+};
+
+export type GetWorkbenchTestResultsErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkbenchTestResultsError = GetWorkbenchTestResultsErrors[keyof GetWorkbenchTestResultsErrors];
+
+export type GetWorkbenchTestResultsResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type GetWorkbenchTestResultsResponse = GetWorkbenchTestResultsResponses[keyof GetWorkbenchTestResultsResponses];
+
+export type GetWorkbenchEvaluationData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Evaluation Id
+         */
+        evaluation_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/evaluations/{evaluation_id}';
+};
+
+export type GetWorkbenchEvaluationErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkbenchEvaluationError = GetWorkbenchEvaluationErrors[keyof GetWorkbenchEvaluationErrors];
+
+export type GetWorkbenchEvaluationResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type GetWorkbenchEvaluationResponse = GetWorkbenchEvaluationResponses[keyof GetWorkbenchEvaluationResponses];
+
+export type GetWorkbenchSuiteData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Suite Id
+         */
+        suite_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/suites/{suite_id}';
+};
+
+export type GetWorkbenchSuiteErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkbenchSuiteError = GetWorkbenchSuiteErrors[keyof GetWorkbenchSuiteErrors];
+
+export type GetWorkbenchSuiteResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type GetWorkbenchSuiteResponse = GetWorkbenchSuiteResponses[keyof GetWorkbenchSuiteResponses];
 
 export type WorkbenchEvaluateApiV1AgentWorkbenchSessionsSessionIdEvaluationsPostData = {
     body: EvaluateRequest;

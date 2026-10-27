@@ -1,6 +1,7 @@
 """Freeze task-wide tuning coverage; partial or uncertain baselines never pass."""
 
 import asyncio
+from collections import Counter
 from copy import deepcopy
 
 from api.db import db_client
@@ -9,6 +10,77 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.evaluation import EVALUATION_VERSION, evaluate
 from api.services.agent_workbench.fingerprint import fingerprint
 from api.services.agent_workbench.simulation import DecisionCache
+
+
+def repair_index(baseline):
+    """Index every proven defect; retrieve complete evidence with read_evaluation.
+
+    Repeated full transcripts/fixtures do not belong in a builder's initial prompt.
+    Examples are navigation links, never a replacement for the frozen full scope.
+    """
+    groups, offsets = {}, Counter()
+    unknown = Counter()
+    for case in baseline["results"]:
+        eid = case.get("evaluation_id", baseline.get("id"))
+        index = offsets[eid]
+        offsets[eid] += 1
+        review = case.get("reference_review") or {}
+        checks = {c.get("criterion_id"): c for c in review.get("checks", [])}
+        unknown.update(
+            c["status"]
+            for c in review.get("checks", [])
+            if c["status"] in {"uncovered", "test_error", "needs_input"}
+        )
+        invalid = (case.get("validity") or {}).get("status") in {
+            "invalid",
+            "inconclusive",
+        }
+        for ai, assertion in enumerate(case.get("assertions", [])):
+            if assertion.get("passed") or assertion.get("informational"):
+                continue
+            if (
+                assertion.get("kind") == "reference"
+                and assertion.get("repair_target") != "agent"
+            ):
+                continue
+            if invalid and not (
+                assertion.get("kind") == "reference"
+                and assertion.get("independent_of_mismatch") is True
+            ):
+                continue
+            key = assertion.get("criterion_id") or fingerprint(
+                {k: assertion.get(k) for k in ("kind", "value", "key", "turn")}
+            )
+            check = checks.get(key) or {}
+            group = groups.setdefault(
+                key,
+                {
+                    "criterion_id": assertion.get("criterion_id"),
+                    "criterion": check.get("criterion")
+                    or {k: assertion.get(k) for k in ("kind", "value", "key", "turn")},
+                    "expected_behavior": check.get("expected_behavior"),
+                    "occurrences": 0,
+                    "examples": [],
+                },
+            )
+            group["occurrences"] += 1
+            if len(group["examples"]) < 3:
+                group["examples"].append(
+                    {
+                        "evaluation_id": eid,
+                        "case_index": index,
+                        "name": case["name"],
+                        "assertion_index": ai,
+                        "turn": assertion.get("turn"),
+                    }
+                )
+    return {
+        "case_count": len(baseline["results"]),
+        "evaluation_ids": list(offsets),
+        "failure_groups": list(groups.values()),
+        "unresolved_criteria": dict(unknown),
+        "guidance": "This is an index, not complete evidence. Read each relevant case's transcript, execution, review and simulation using read_evaluation; follow next_offset. Inspect distinct causes within each group. Only independently established Agent defects authorize a correction. Uncovered branches or unrelated source questions must not be repaired by guessing. Every frozen case will be evaluated after the edit; no samples or assertions may be dropped.",
+    }
 
 
 async def resolve_scope(org, sid, payload):
@@ -126,6 +198,8 @@ async def evaluate_scope(
         raise WorkbenchError("调优基线缺少用例结果，不能继续修改候选。", 409)
     if any(r["status"] not in counts for r in results):
         raise WorkbenchError("调优基线仍有未结束用例，不能继续修改候选。", 409)
+    from api.services.agent_workbench.contract_review import coverage
+
     return {
         "id": batches[-1]["id"],
         "evaluation_ids": [e["id"] for e in batches],
@@ -133,6 +207,10 @@ async def evaluate_scope(
         "suite_ids": [s["id"] for s in suites],
         "results": results,
         "summary": {**counts, "total": expected},
+        "criterion_coverage": coverage(
+            [{**c, "suite_id": s["id"]} for s in suites for c in s["payload"]["cases"]],
+            results,
+        ),
     }
 
 
@@ -146,9 +224,20 @@ def blocked_baseline(baseline, scope):
             "stop_reason": (r.get("validity") or {}).get("stop_reason"),
             "reason": r.get("error")
             or (r.get("reference_review") or {}).get("reason", "证据尚不完整"),
+            "criterion_ids": [
+                c["criterion_id"]
+                for c in (r.get("reference_review") or {}).get("checks", [])
+                if c.get("criterion_id")
+                and c["status"] in {"uncovered", "test_error", "needs_input"}
+            ],
         }
         for r in baseline["results"]
         if r["status"] in {"error", "inconclusive"}
+        or any(
+            c.get("criterion_id")
+            and c["status"] in {"uncovered", "test_error", "needs_input"}
+            for c in (r.get("reference_review") or {}).get("checks", [])
+        )
     ]
     if not blockers and not scope["import_issues"]:
         return None
@@ -168,3 +257,75 @@ def blocked_baseline(baseline, scope):
             "confirmed": False,
         },
     }
+
+
+def actionable_partial(baseline):
+    """Known frozen-criterion failures can inform a draft despite unrelated gaps."""
+    return any(
+        (r.get("reference_review") or {}).get("version") == 4
+        and any(
+            c["status"] == "failed"
+            and c.get("repair_target") == "agent"
+            and (
+                r.get("validity", {}).get("status") == "valid"
+                or c.get("independent_of_mismatch")
+            )
+            for c in r["reference_review"].get("checks", [])
+        )
+        for r in baseline["results"]
+    )
+
+
+def provisional_progress(baseline, proposed):
+    """Track a draft improvement, NEVER certify unknown criteria as passing.
+
+    Full case/criterion identities and evidence coverage must remain unchanged;
+    every previously established outcome is protected, including failures that
+    must not disappear into an unknown or inapplicable branch.
+    """
+    old, new = baseline["results"], proposed["results"]
+    if len(old) != len(new):
+        return False
+    improved = False
+    for a, b in zip(old, new):
+        if (a.get("suite_id"), a["name"]) != (b.get("suite_id"), b["name"]):
+            return False
+        left, right = a.get("reference_review") or {}, b.get("reference_review") or {}
+        if not left.get("checks"):
+            # Still report/retain an unprepared case; never treat it as passed.
+            ca = a.get("validity", {}).get("compilation") or {}
+            cb = b.get("validity", {}).get("compilation") or {}
+            if not ca.get("fingerprint") or ca.get("fingerprint") != cb.get(
+                "fingerprint"
+            ):
+                return False
+            continue
+        if left.get("version") != 4 or right.get("version") != 4:
+            return False
+        if any(
+            left.get(k) != right.get(k)
+            for k in ("rubric_fingerprint", "compilation_fingerprint")
+        ):
+            return False
+        prior = {c["criterion_id"]: c for c in left["checks"]}
+        later = {c["criterion_id"]: c for c in right["checks"]}
+        if prior.keys() != later.keys():
+            return False
+        for key, check in prior.items():
+            status, result = check["status"], later[key]["status"]
+            if status in {"passed", "not_applicable"} and result != status:
+                return False
+            if status == "failed" and result not in {"passed", "failed"}:
+                return False
+            improved |= status == "failed" and result == "passed"
+        # Explicit declarative assertions retain their exact original semantics.
+        prior = [x for x in a.get("assertions", []) if not x.get("criterion_id")]
+        later = [x for x in b.get("assertions", []) if not x.get("criterion_id")]
+        if len(prior) != len(later):
+            return False
+        for x, y in zip(prior, later):
+            if any(x.get(k) != y.get(k) for k in ("kind", "value", "key", "turn")) or (
+                x.get("passed") and not y.get("passed")
+            ):
+                return False
+    return improved

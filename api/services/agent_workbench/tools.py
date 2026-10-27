@@ -351,48 +351,140 @@ class WorkbenchTools:
                 tool(
                     "finish_analysis",
                     "Submit the final user-facing analysis, after reading relevant evidence. Include conclusions, run IDs, uncertainties and next steps. Progress narration is not a final answer. Does not create or change the agent.",
-                    {"answer": {"type": "string", "minLength": 1, "maxLength": 16000},
-                     "diagnosis": {"type": "object", "additionalProperties": False,
-                        "properties": {
-                            "status": {"enum": ["concluded", "inconclusive"]},
-                            "cause_chain": {"type": "array", "items": {"type": "string"}},
-                            "findings": {"type": "array", "minItems": 1, "items": {
-                                "type": "object", "additionalProperties": False,
-                                "properties": {"claim": {"type": "string"},
-                                    "status": {"enum": ["supported", "refuted", "untested"]},
-                                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
-                                    "reason": {"type": "string"}},
-                                "required": ["claim", "status", "evidence_ids", "reason"]}},
-                            "limitations": {"type": "array", "items": {"type": "string"}},
-                            "next_steps": {"type": "array", "items": {"type": "string"}}},
-                        "required": ["status", "cause_chain", "findings", "limitations", "next_steps"]}},
+                    {
+                        "answer": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 16000,
+                        },
+                        "diagnosis": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "status": {"enum": ["concluded", "inconclusive"]},
+                                "cause_chain": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "findings": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "properties": {
+                                            "claim": {"type": "string"},
+                                            "status": {
+                                                "enum": [
+                                                    "supported",
+                                                    "refuted",
+                                                    "untested",
+                                                ]
+                                            },
+                                            "evidence_ids": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                            },
+                                            "reason": {"type": "string"},
+                                        },
+                                        "required": [
+                                            "claim",
+                                            "status",
+                                            "evidence_ids",
+                                            "reason",
+                                        ],
+                                    },
+                                },
+                                "limitations": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "next_steps": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": [
+                                "status",
+                                "cause_chain",
+                                "findings",
+                                "limitations",
+                                "next_steps",
+                            ],
+                        },
+                    },
                     ["answer"],
                 ),
                 tool(
                     "start_diagnosis",
                     "Begin read-only root-cause investigation of specified runs of this Agent, including simulations from earlier sessions. Reads execution summaries and reusable completed probes from this session first. Use for causal questions, unexplained responses or routing/runtime failures. Does not edit the Agent.",
-                    {"question": {"type": "string", "minLength": 1, "maxLength": 2000},
-                     "run_ids": {"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": True, "items": {"type": "integer", "minimum": 1}}},
+                    {
+                        "question": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000,
+                        },
+                        "run_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 5,
+                            "uniqueItems": True,
+                            "items": {"type": "integer", "minimum": 1},
+                        },
+                    },
                     ["question", "run_ids"],
                 ),
                 tool(
                     "inspect_run_diagnostic",
                     "Read frozen runtime evidence by semantic section across sessions of this Agent. overview includes node transitions and case errors; evaluation contains the linked case outcome, errors, test context, checks and simulation validity, including proposed replies and delivery status. Inspect evaluation for premature stops, invalid tests and review failures; do not treat unsent proposals as Agent inputs. request inspects effective input at one exact turn, labelled captured/reconstructed/unavailable, with active node, prompt, tools and limitations. Use definition for the frozen graph, never current read_node as proof of a historical active node. Use probes for full previous experiment requests; start_diagnosis restores prior receipts after interruptions. Follow next_offset within the selected section.",
-                    {"run_id": {"type": "integer", "minimum": 1}, "section": {"enum": list(SECTIONS)},
-                     "turn": {"type": "integer", "minimum": 0}, "request_index": {"type": "integer", "minimum": 0},
-                     "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 24000}},
+                    {
+                        "run_id": {"type": "integer", "minimum": 1},
+                        "section": {"enum": list(SECTIONS)},
+                        "turn": {"type": "integer", "minimum": 0},
+                        "request_index": {"type": "integer", "minimum": 0},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 24000},
+                    },
                     ["run_id"],
                 ),
                 tool(
                     "run_diagnostic_probe",
                     "Compare unchanged historical request with ONE temporary intervention: another frozen node's prompt+tools OR exact effective-system-prompt edits. Same history/model/settings; 1–3 paired repetitions. Specify hypothesis and predicted difference BEFORE observing results. Model tool calls are recorded NEVER executed; no Agent/draft/candidate mutation. A single completion is not full-flow validation. Unsupported/missing historical context is reported, never guessed. Maximum 24 requests per diagnosis.",
-                    {"run_id": {"type": "integer", "minimum": 1}, "turn": {"type": "integer", "minimum": 1},
-                     "request_index": {"type": "integer", "minimum": 0},
-                     "hypothesis": {"type": "string", "minLength": 1, "maxLength": 2000},
-                     "prediction": {"type": "string", "minLength": 1, "maxLength": 2000},
-                     "node_id": {"type": "string"}, "repeats": {"type": "integer", "minimum": 1, "maximum": 3},
-                     "edits": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "object", "additionalProperties": False,
-                        "properties": {"old": {"type": "string", "minLength": 1, "maxLength": 10000}, "new": {"type": "string", "maxLength": 10000}}, "required": ["old", "new"]}}},
+                    {
+                        "run_id": {"type": "integer", "minimum": 1},
+                        "turn": {"type": "integer", "minimum": 1},
+                        "request_index": {"type": "integer", "minimum": 0},
+                        "hypothesis": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000,
+                        },
+                        "prediction": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000,
+                        },
+                        "node_id": {"type": "string"},
+                        "repeats": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "edits": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 3,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "old": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 10000,
+                                    },
+                                    "new": {"type": "string", "maxLength": 10000},
+                                },
+                                "required": ["old", "new"],
+                            },
+                        },
+                    },
                     ["run_id", "turn", "hypothesis", "prediction"],
                 ),
                 tool(
@@ -570,18 +662,29 @@ class WorkbenchTools:
             )
         # Durable threads retain their original tool names. Evolve the stable read
         # entry point so both new and resumed conversations can diagnose runs.
-        actions = {s["name"]: s for s in specs if s["name"] in {
-            "start_diagnosis", "inspect_run_diagnostic", "run_diagnostic_probe"}}
+        actions = {
+            s["name"]: s
+            for s in specs
+            if s["name"]
+            in {"start_diagnosis", "inspect_run_diagnostic", "run_diagnostic_probe"}
+        }
         self.diagnostic_actions = actions
         reader = next((s for s in specs if s["name"] == "read_agent_run"), None)
         if reader:
             properties = reader["inputSchema"]["properties"]
             for spec in actions.values():
                 properties.update(spec["inputSchema"]["properties"])
-            properties["section"] = {"enum": list(dict.fromkeys([*RUN_SECTIONS, *SECTIONS]))}
+            properties["section"] = {
+                "enum": list(dict.fromkeys([*RUN_SECTIONS, *SECTIONS]))
+            }
             properties["action"] = {"enum": ["read", *actions]}
-            reader["description"] += " Choose action=read (default) for ordinary run artifacts. " + " ".join(
-                f"action={name}: {spec['description']}" for name, spec in actions.items())
+            reader["description"] += (
+                " Choose action=read (default) for ordinary run artifacts. "
+                + " ".join(
+                    f"action={name}: {spec['description']}"
+                    for name, spec in actions.items()
+                )
+            )
         return [s for s in specs if s["name"] not in actions]
 
     def thread_specs(self):
@@ -655,11 +758,7 @@ class WorkbenchTools:
                 "state": (
                     "retained_submission"
                     if submission
-                    else (
-                        "saved_candidate"
-                        if saved is not None
-                        else "initial"
-                    )
+                    else ("saved_candidate" if saved is not None else "initial")
                 ),
                 "revision": hashlib.sha256(code.encode()).hexdigest(),
                 "code": code[offset:end],
@@ -697,9 +796,7 @@ class WorkbenchTools:
                     )
                 ),
                 "removals": (
-                    submission.get("removals")
-                    if submission
-                    else accepted_removals
+                    submission.get("removals") if submission else accepted_removals
                 ),
                 "removals_required_for_current_graph": (
                     graph_removals(self.base["workflow_json"], graph) if graph else None
@@ -929,7 +1026,9 @@ class WorkbenchTools:
 
     async def start_diagnosis(self, question, run_ids):
         if self.intent != "analyze":
-            raise WorkbenchError("Diagnosis is an analysis task, not an Agent editing action")
+            raise WorkbenchError(
+                "Diagnosis is an analysis task, not an Agent editing action"
+            )
         return await self.diagnostics.start(question, run_ids)
 
     async def inspect_run_diagnostic(self, **kwargs):
@@ -974,10 +1073,16 @@ class WorkbenchTools:
             )
         if self.diagnostics.question:
             self.diagnostics.validate_report(diagnosis)
-        if (self.analysis_evidence or self.diagnostics.question) and getattr(self, "analysis_reviewer", None):
+        if (self.analysis_evidence or self.diagnostics.question) and getattr(
+            self, "analysis_reviewer", None
+        ):
             from api.services.agent_workbench.test_tasks import decision, object_schema
 
-            digest = hashlib.sha256(json.dumps([answer, diagnosis, self.diagnostics.receipt()], ensure_ascii=False).encode()).hexdigest()
+            digest = hashlib.sha256(
+                json.dumps(
+                    [answer, diagnosis, self.diagnostics.receipt()], ensure_ascii=False
+                ).encode()
+            ).hexdigest()
             if digest not in self.analysis_reviews:
                 self.analysis_reviews[digest] = await decision(
                     "verify_analysis",
@@ -1002,7 +1107,9 @@ class WorkbenchTools:
                     self.analysis_reviewer,
                     self.analysis_event,
                     self.context["session"]["model_protocol"],
-                    reader=DiagnosticReviewer(self) if self.diagnostics.question else None,
+                    reader=DiagnosticReviewer(self)
+                    if self.diagnostics.question
+                    else None,
                 )
             report = self.analysis_reviews[digest]
             if not report["supported"] or not report.get("complete", True):
@@ -1260,14 +1367,20 @@ class WorkbenchTools:
                     "gathered_context",
                     "assertions",
                     "reference_review",
+                    "validity",
                     "error",
                 )
             }
             metadata["execution"] = execution_summary(case)
             metadata["available_sections"] = list(EVALUATION_SECTIONS)
             if section != "all":
-                keys = {"transcript": ["transcript", "history"], "execution": ["events", "gathered_context"],
-                        "review": ["assertions", "reference_review"], "source": ["source"]}[section]
+                keys = {
+                    "transcript": ["transcript", "history"],
+                    "execution": ["events", "gathered_context"],
+                    "review": ["assertions", "reference_review"],
+                    "source": ["source"],
+                    "simulation": ["validity"],
+                }[section]
                 content = {key: case.get(key) for key in keys}
         text = json.dumps(redact(content), ensure_ascii=False)
         end = min(offset + limit, len(text))
@@ -1346,8 +1459,13 @@ class WorkbenchTools:
         return list(self.run_evidence.values())
 
     async def read_agent_run(
-        self, run_id=None, section="overview", offset=0, limit=16000,
-        action="read", **arguments
+        self,
+        run_id=None,
+        section="overview",
+        offset=0,
+        limit=16000,
+        action="read",
+        **arguments,
     ):
         if action != "read":
             self.specs()
@@ -1361,7 +1479,9 @@ class WorkbenchTools:
             jsonschema.validate(arguments, spec["inputSchema"])
             return await getattr(self, action)(**arguments)
         if arguments:
-            raise WorkbenchError("Diagnostic arguments require an explicit diagnostic action")
+            raise WorkbenchError(
+                "Diagnostic arguments require an explicit diagnostic action"
+            )
         await self.cached_run_evidence()
         resolved_id = run_id or self.latest_run_id
         key = f"{resolved_id}:{section}:{offset}:{limit}"

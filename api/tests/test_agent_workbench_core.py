@@ -336,3 +336,31 @@ async def test_empty_turn_does_not_pass_using_the_fixed_greeting(monkeypatch):
         SimpleNamespace(llm=SimpleNamespace(model="test")),
     )
     assert result["summary"]["error"] == 1 and result["summary"]["passed"] == 0
+
+
+def test_runtime_failure_keeps_provider_cause_and_redacts_credentials():
+    from types import SimpleNamespace
+
+    policy = EvaluationPolicy(
+        SimulationCase(
+            name="case",
+            user_messages=["hello"],
+            assertions=[{"kind": "contains", "value": "hello"}],
+        ),
+        SimpleNamespace(llm=SimpleNamespace(api_key="raw-provider-key")),
+    )
+    policy.record_runtime_error(
+        SimpleNamespace(
+            error="Error code: 400 - Arrearage: account has insufficient credits; "
+            "supplied raw-provider-key; Authorization: Bearer private-token; api_key='secret-key'"
+        )
+    )
+    assert len(policy.errors) == 1
+    assert "400" in policy.errors[0] and "Arrearage" in policy.errors[0]
+    assert "insufficient credits" in policy.errors[0]
+    assert all(
+        secret not in policy.errors[0]
+        for secret in ["raw-provider-key", "private-token", "secret-key"]
+    )
+    policy.record_runtime_error(SimpleNamespace(error="failure " * 2000))
+    assert len(policy.errors[-1]) < 1050

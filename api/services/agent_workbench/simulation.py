@@ -54,6 +54,58 @@ REPLY = obj(
         "responds_to": TEXT,
     }
 )
+COMPILED_REPLY = obj(
+    {
+        **{k: v for k, v in REPLY["properties"].items() if k != "responds_to"},
+        "action_ids": STRINGS,
+        "goal_updates": {
+            "type": "array",
+            "items": obj(
+                {
+                    "id": TEXT,
+                    "state": {"enum": ["raised", "resolved"]},
+                    "evidence": TEXT,
+                }
+            ),
+        },
+    }
+)
+COMPILED_CUSTOMER_RULES = """
+This fixture has an explicit simulated state and action catalog. Select action_ids
+for every catalogued state transition used in this reply: physical operations,
+raising a question, acknowledging an explanation and deciding willingness. Conversational
+transitions need not be requested by the Agent when the scenario supports them.
+Their preconditions must hold in current_state; only their frozen effects/results
+may be reported. Do not claim a completed operation without the matching action.
+An attempt can have a failure result: report that result, not success. Replying to
+a device question is not an operation. A request to confirm prior completion does
+not repeat the operation. Answer using current_state instead.
+When only describing current_state without executing a catalogued transition, use
+action_ids=[] and simulated_action="". Merely looking at an already observed screen
+is not a new operation. New operations must still select their actual frozen IDs.
+An observation with no frozen effects does not change state and its action ID is
+optional. Do not output responds_to: the server binds the actual latest Agent message.
+goal_updates distinguishes raising a concern from resolving it. A concern remains
+raised until the Agent has actually addressed it consistently with the customer's
+frozen willingness; evidence for resolution must quote the actual Agent. Do not
+resolve a concern just because the customer mentioned it. For an operation/navigation
+goal, an actual usable Agent instruction plus the successfully simulated action can
+resolve it; do not require the Agent to independently certify the customer's UI.
+Perform all supported conversational transitions before later dependent actions,
+including several sequential transitions in one reply when their conditions hold.
+A normal clarification or inability to find a control is a customer reply, not a
+missing test fact. Ask the question without inventing UI state. Use blocked only
+when no grounded continuation can preserve the fixture's intent. Keep replies concise.
+Use delivered_actions to distinguish a transient step already experienced from a
+new occurrence. Follow the frozen completion transition once its continuation
+condition is met; do not extend one historical wait/temporary obstacle indefinitely.
+Keep genuine repeated failures, refusal and unresolved concerns. This is no license
+to invent success, waive prerequisites or infer willingness from elapsed turns.
+Do not turn a question into permanent distrust unless the frozen scenario supports
+that distrust. Once the actual reply addresses its stated information need, update
+that goal and any matching conversational transition; raising the identical question
+again needs a specific remaining concern, not merely that it was once a goal.
+"""
 ALIGNMENT = obj(
     {
         "verdict": {"enum": ["aligned", "misaligned", "uncertain"]},
@@ -62,6 +114,42 @@ ALIGNMENT = obj(
         "proposed_quote": TEXT,
     }
 )
+COMPILED_ALIGNMENT = obj(
+    {
+        **ALIGNMENT["properties"],
+        "state_claims": {
+            "type": "array",
+            "items": obj({"key": TEXT, "value": TEXT, "quote": TEXT}),
+        },
+        "omitted_transition_ids": STRINGS,
+    }
+)
+COMPILED_ALIGNMENT_RULES = """
+Audit the exact proposed_state computed from frozen actions, not an imagined state.
+Map EVERY material state claim in proposed speech to state_claims: declared key,
+literal frozen value, exact speech quote. Claims of opening, entering, seeing a
+page, clicking, understanding or consenting must agree with proposed_state.
+Record any catalogued conversational/physical transition implied by the reply but
+missing from action_ids in omitted_transition_ids. In particular a raised question
+or acknowledged explanation can have its own frozen action; it must be recorded.
+Only actions with nonempty effects are state transitions. Reading an existing
+screen with no effects does not require an action ID; do not report it as omitted.
+Speech cannot report the result of an unselected future action. Prior delivered
+speech does not override the state ledger or authorize unrecorded later outcomes.
+If action=blocked but a grounded clarification/question can be delivered without
+inventing facts, mark misaligned and explain how to use reply. Genuine irreducible
+fixture gaps remain uncertain. Do not demand business success or soften objections.
+Check delivered_actions and actual history for unsupported repetition. A transient
+wait or a one-time obstacle must not become a permanent failure: if the frozen
+fixture supplies its completion transition and its stated continuation condition
+has occurred, endlessly restating the old transient state is misaligned. Preserve
+explicit persistent failures, refusal, unresolved objections and unmet prerequisites;
+elapsed turns alone never establish consent or real-world completion.
+Likewise, repeating an already answered question indefinitely requires a concrete
+unmet information need or persistent doubt in the frozen scenario. A still-raised
+goal flag is not independent evidence that the actual answer was insufficient.
+Reject unsupported mechanical repetition while preserving genuine dissatisfaction.
+"""
 REPLAY_BINDINGS = obj(
     {
         "bindings": {
@@ -319,6 +407,7 @@ class ConversationDriver:
         self.customer_llm = customer_llm or llm
         self.scenario = None
         self.checks, self.addressed = [], set()
+        self.state, self.goal_states = {}, {}
         self.stop_reason = None
         self.context_selection = None
         self.replay_context = None
@@ -478,6 +567,31 @@ class ConversationDriver:
         self.replay_context["fingerprint"] = fingerprint(self.replay_context)
 
     async def prepare(self):
+        if self.case.compiled:
+            from api.services.agent_workbench.test_compilation import validate_compiled
+
+            compiled = validate_compiled(self.case.model_dump(mode="json"))
+            self.scenario = copy.deepcopy(compiled["scenario"])
+            self.replay_context = {
+                "variables": {
+                    **copy.deepcopy(
+                        self.candidate["snapshot"].get("template_context_variables", {})
+                    ),
+                    **copy.deepcopy(compiled["public_context"]),
+                },
+                "bindings": [],
+                "status": "bound",
+                "scope": "test_only",
+                "limitations": (self.scenario or {}).get("limitations", []),
+                "assumption": "已冻结的合成测试条件；客户私有事实不会提前注入 Agent。",
+                "compilation_fingerprint": compiled["fingerprint"],
+            }
+            if compiled["status"] != "ready":
+                self.stop_reason = "test_preparation_needed"
+                return
+            self.state = {s["key"]: s["value"] for s in self.scenario["initial_state"]}
+            self.goal_states = {g["id"]: "unraised" for g in self.scenario["goals"]}
+            return
         await self.prepare_replay_context()
         if self.stop_reason:
             return
@@ -599,11 +713,36 @@ class ConversationDriver:
             ):
                 if quote and quote not in text:
                     raise WorkbenchError("错位检查引用必须来自本轮真实文本。")
+            if self.case.compiled:
+                actions = {a["id"] for a in self.scenario["actions"] if a["effects"]}
+                missing = set(value["omitted_transition_ids"])
+                if not missing <= actions or missing & set(proposal["action_ids"]):
+                    raise WorkbenchError(
+                        "缺失转移必须引用尚未选择且会改变状态的冻结操作；无状态变化的观察不需要补记操作。"
+                    )
+                mismatches = []
+                for claim in value["state_claims"]:
+                    if (
+                        claim["key"] not in proposed_state
+                        or not claim["quote"]
+                        or claim["quote"] not in proposal["text"]
+                    ):
+                        raise WorkbenchError(
+                            "状态证据必须引用已声明字段和本轮客户原文。"
+                        )
+                    if proposed_state[claim["key"]] != claim["value"]:
+                        mismatches.append(claim["key"])
+                if missing or mismatches:
+                    value["verdict"] = "misaligned"
+                    detail = f" 状态核验：遗漏转移 {sorted(missing)}；发言与操作后状态不符 {mismatches}。"
+                    if detail not in value["reason"]:
+                        value["reason"] += detail
 
+        proposed_state = self.next_state(proposal) if self.case.compiled else None
         result = await self.decide(
             "check_dialogue_alignment",
-            ALIGNMENT_RULES,
-            ALIGNMENT,
+            ALIGNMENT_RULES + (COMPILED_ALIGNMENT_RULES if self.case.compiled else ""),
+            COMPILED_ALIGNMENT if self.case.compiled else ALIGNMENT,
             {
                 "mode": self.case.mode,
                 "scenario": self.scenario,
@@ -612,6 +751,10 @@ class ConversationDriver:
                 "proposed_customer": proposal,
                 "source_prefix": source_prefix,
                 "frozen_replay_context": self.replay_context,
+                "current_state": self.state,
+                "proposed_state": proposed_state,
+                "goal_states": self.goal_states,
+                "delivered_actions": self.delivered_actions(),
             },
             validate,
         )
@@ -660,6 +803,11 @@ class ConversationDriver:
         goals = {g["id"] for g in self.scenario["goals"]}
 
         def validate(value):
+            if self.case.compiled:
+                # This is a source pointer, not customer-generated evidence.
+                # Bind it from the actual transcript instead of asking a model
+                # to reproduce exact text and rejecting an otherwise valid turn.
+                value["responds_to"] = last
             if (
                 not set(value["fact_ids"]) <= facts
                 or not set(value["goal_ids"]) <= goals
@@ -676,19 +824,38 @@ class ConversationDriver:
                 not value["text"].strip() or not value["responds_to"]
             ):
                 raise WorkbenchError("模拟客户回复及承接原文不能为空。")
+            if self.case.compiled:
+                self.next_state(value)
+                for update in value["goal_updates"]:
+                    if update["id"] not in goals:
+                        raise WorkbenchError("诉求状态引用了不存在的诉求。")
+                    if update["state"] == "resolved" and (
+                        not update["evidence"].strip()
+                        or not any(
+                            update["evidence"] in m["text"]
+                            for m in transcript
+                            if m["role"] == "assistant"
+                        )
+                    ):
+                        raise WorkbenchError("诉求解决需要实际 Agent 回复的逐字证据。")
 
         feedback = None
-        for attempt in range(2):
+        attempts = 3 if self.case.compiled else 2
+        for attempt in range(attempts):
             try:
                 proposal = await self.decide(
                     "respond_as_customer" if attempt == 0 else "repair_customer_reply",
-                    CUSTOMER_RULES,
-                    REPLY,
+                    CUSTOMER_RULES
+                    + (COMPILED_CUSTOMER_RULES if self.case.compiled else ""),
+                    COMPILED_REPLY if self.case.compiled else REPLY,
                     {
                         "scenario": self.scenario,
                         "actual_transcript": transcript,
                         "addressed_goals": sorted(self.addressed),
                         "validation_feedback": feedback,
+                        "current_state": self.state,
+                        "goal_states": self.goal_states,
+                        "delivered_actions": self.delivered_actions(),
                     },
                     validate,
                 )
@@ -706,7 +873,7 @@ class ConversationDriver:
                 )
                 continue
             validate(proposal)
-            if proposal["action"] == "blocked":
+            if proposal["action"] == "blocked" and not self.case.compiled:
                 self.stop_reason = "missing_scenario_fact"
                 self.checks.append(
                     {
@@ -719,8 +886,27 @@ class ConversationDriver:
                 )
                 return None
             checked = await self.check(transcript, proposal)
+            if proposal["action"] == "blocked":
+                feedback = checked
+                if checked["verdict"] == "misaligned" and attempt < attempts - 1:
+                    continue
+                self.stop_reason = "missing_scenario_fact"
+                return None
             if checked["verdict"] == "aligned":
-                self.addressed.update(proposal["goal_ids"])
+                if self.case.compiled:
+                    self.state = self.next_state(proposal)
+                    self.goal_states.update(
+                        {g["id"]: g["state"] for g in proposal["goal_updates"]}
+                    )
+                    self.addressed = {
+                        key
+                        for key, state in self.goal_states.items()
+                        if state == "resolved"
+                    }
+                    self.checks[-1]["state_after"] = copy.deepcopy(self.state)
+                    self.checks[-1]["goal_states"] = copy.deepcopy(self.goal_states)
+                else:
+                    self.addressed.update(proposal["goal_ids"])
                 if proposal["action"] == "end":
                     self.stop_reason = "customer_ended"
                     return None
@@ -730,6 +916,34 @@ class ConversationDriver:
         self.stop_reason = "simulation_mismatch"
         return None
 
+    def delivered_actions(self):
+        """Only committed simulation transitions, including repeated observations."""
+        return [
+            {"turn": c["turn"], "action_ids": c["proposal"].get("action_ids", [])}
+            for c in self.checks
+            if c.get("delivered") and c.get("proposal", {}).get("action_ids")
+        ]
+
+    def next_state(self, proposal):
+        """Validate and apply only declared fixture transitions, never model edits."""
+        state = copy.deepcopy(self.state)
+        actions = {a["id"]: a for a in self.scenario["actions"]}
+        ids = proposal["action_ids"]
+        if proposal.get("action", "reply") != "reply" and ids:
+            raise WorkbenchError("未投递的回复不能执行场景状态转移。")
+        if len(ids) != len(set(ids)) or not set(ids) <= set(actions):
+            raise WorkbenchError("模拟操作必须使用冻结场景中的唯一操作标识。")
+        if proposal["simulated_action"].strip() and not ids:
+            raise WorkbenchError(
+                "报告新操作需要冻结的操作标识；查询已有状态不算新操作。"
+            )
+        for aid in ids:
+            action = actions[aid]
+            if any(state.get(p["key"]) != p["value"] for p in action["preconditions"]):
+                raise WorkbenchError("模拟操作前置条件未满足，不能提前报告结果。")
+            state.update({e["key"]: e["value"] for e in action["effects"]})
+        return state
+
     def receipt(self, completed=False):
         invalid = self.stop_reason in {
             "script_mismatch",
@@ -737,12 +951,17 @@ class ConversationDriver:
             "context_ambiguous",
             "replay_context_ambiguous",
             "missing_scenario_fact",
+            "test_preparation_needed",
         }
         limited = self.stop_reason in {
             "turn_limit",
             "execution_error",
             "alignment_uncertain",
         }
+        if self.case.compiled and self.stop_reason == "turn_limit":
+            # A bounded, otherwise valid conversation still permits evaluation of
+            # observed defects. The reviewer must distinguish stalls from untested goals.
+            limited = False
         return {
             "mode": self.case.mode,
             "customer_model": getattr(self.customer_llm, "model", None),
@@ -756,6 +975,16 @@ class ConversationDriver:
             or ("agent_completed" if completed else "finished"),
             "checks": self.checks,
             "scenario": self.scenario,
+            "compilation": (
+                {
+                    k: self.case.compiled[k]
+                    for k in ("fingerprint", "status", "source_fingerprint", "error")
+                }
+                if self.case.compiled
+                else None
+            ),
+            "current_state": copy.deepcopy(self.state),
+            "goal_states": copy.deepcopy(self.goal_states),
             "replay_context": self.replay_context,
             "context_selection": self.context_selection,
             "context_is_inferred": self.case.mode == "single_step",

@@ -9,33 +9,70 @@ from api.db.models import OrganizationModel, UserModel, WorkflowModel
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 
 
-async def test_resume_build_copies_frozen_inputs_and_keeps_source_and_draft(db_session, wb):
+async def test_resume_build_copies_frozen_inputs_and_keeps_source_and_draft(
+    db_session, wb
+):
     org, user, sid = wb
     context = await db_session.wb_context(org, sid)
-    queued = await db_session.wb_enqueue(org, sid, "build", {"text": "original", "mode": "build"}, "original")
+    queued = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "original", "mode": "build"}, "original"
+    )
     job = await db_session.wb_claim(org, sid, queued["id"])
-    candidate = await db_session.wb_save_candidate(org, sid, job["id"], job["lease_token"],
-        context["target"], "code", "saved", context["target_fingerprint"])
+    candidate = await db_session.wb_save_candidate(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        context["target"],
+        "code",
+        "saved",
+        context["target_fingerprint"],
+    )
     suite = await db_session.wb_save_suite(org, sid, {"name": "frozen", "cases": []})
-    await db_session.wb_finish(org, sid, job["id"], job["lease_token"], "failed", output={
-        "outcome": "build", "candidate_id": candidate["id"], "suite_id": suite["id"],
-        "model_configuration_snapshot": {"version": 3, "services": {}},
-    }, error="connection interrupted")
+    await db_session.wb_finish(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        "failed",
+        output={
+            "outcome": "build",
+            "candidate_id": candidate["id"],
+            "suite_id": suite["id"],
+            "model_configuration_snapshot": {"version": 3, "services": {}},
+        },
+        error="connection interrupted",
+    )
     original = await db_session.wb_get(org, sid, "jobs", job["id"])
     payload = {**original["input"], "resume_build_job_id": job["id"]}
     other = await db_session.wb_create_session(org, user, name="Other")
     with pytest.raises(WorkbenchError):
         await db_session.wb_enqueue(org, other["id"], "build", payload, "cross-session")
     with pytest.raises(WorkbenchError):
-        await db_session.wb_enqueue(org, sid, "build", {**payload, "text": "changed"}, "changed")
+        await db_session.wb_enqueue(
+            org, sid, "build", {**payload, "text": "changed"}, "changed"
+        )
     resumed = await db_session.wb_enqueue(org, sid, "build", payload, "resume")
     assert resumed["id"] != job["id"]
-    assert resumed["output"]["build_checkpoint"]["built"]["candidate_id"] == candidate["id"]
-    assert resumed["output"]["model_configuration_snapshot"] == original["output"]["model_configuration_snapshot"]
-    assert await db_session.wb_requested_target(org, sid, resumed["id"]) == context["target"]
+    assert (
+        resumed["output"]["build_checkpoint"]["built"]["candidate_id"]
+        == candidate["id"]
+    )
+    assert (
+        resumed["output"]["model_configuration_snapshot"]
+        == original["output"]["model_configuration_snapshot"]
+    )
+    assert (
+        await db_session.wb_requested_target(org, sid, resumed["id"])
+        == context["target"]
+    )
     assert await db_session.wb_get(org, sid, "jobs", job["id"]) == original
-    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == context["target_fingerprint"]
-    assert (await db_session.wb_enqueue(org, sid, "build", payload, "resume"))["id"] == resumed["id"]
+    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == context[
+        "target_fingerprint"
+    ]
+    assert (await db_session.wb_enqueue(org, sid, "build", payload, "resume"))[
+        "id"
+    ] == resumed["id"]
 
 
 @pytest.mark.parametrize("status", ["needs_attention", "awaiting_input"])
@@ -323,7 +360,9 @@ async def test_agent_sessions_share_only_the_agent_and_keep_memory_bindings_scop
         await db_session.wb_sessions(org + 999, user, workflow)
 
 
-async def test_session_list_tracks_only_active_jobs_for_its_agent_and_user(db_session, wb):
+async def test_session_list_tracks_only_active_jobs_for_its_agent_and_user(
+    db_session, wb
+):
     org, user, sid = wb
     workflow = (await db_session.wb_context(org, sid))["session"]["workflow_id"]
     second = await db_session.wb_create_session(
@@ -338,7 +377,9 @@ async def test_session_list_tracks_only_active_jobs_for_its_agent_and_user(db_se
         return {row["id"]: row["active_job_status"] for row in rows}
 
     assert await statuses() == {sid: None, second["id"]: None}
-    first_job = await db_session.wb_enqueue(org, sid, "build", {"text": "first"}, "first")
+    first_job = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "first"}, "first"
+    )
     assert (await statuses())[sid] == "queued"
     claimed = await db_session.wb_claim(org, sid, first_job["id"])
     second_job = await db_session.wb_enqueue(
@@ -346,7 +387,9 @@ async def test_session_list_tracks_only_active_jobs_for_its_agent_and_user(db_se
     )
     assert await statuses() == {sid: "running", second["id"]: "queued"}
     assert await db_session.wb_sessions(org, user + 999, workflow) == []
-    await db_session.wb_finish(org, sid, claimed["id"], claimed["lease_token"], "completed")
+    await db_session.wb_finish(
+        org, sid, claimed["id"], claimed["lease_token"], "completed"
+    )
     await db_session.wb_cancel(org, second["id"], second_job["id"])
     assert await statuses() == {sid: None, second["id"]: None}
 
@@ -740,40 +783,61 @@ async def test_cross_session_test_target_keeps_same_agent_and_tenant_boundaries(
         )
 
 
-async def test_diagnostic_runs_cross_sessions_but_never_agent_or_tenant_boundaries(db_session, wb, async_session):
+async def test_diagnostic_runs_cross_sessions_but_never_agent_or_tenant_boundaries(
+    db_session, wb, async_session
+):
     from api.db.models import WorkflowRunModel
 
     org, user, sid = wb
     context = await db_session.wb_context(org, sid)
-    wid = context['session']['workflow_id']
-    other = await db_session.wb_create_session(org, user, name='Unrelated')
-    rows = [WorkflowRunModel(workflow_id=w, name='diagnostic', mode='smallwebrtc', purpose='evaluation')
-            for w in [wid, other['workflow_id']]]
+    wid = context["session"]["workflow_id"]
+    other = await db_session.wb_create_session(org, user, name="Unrelated")
+    rows = [
+        WorkflowRunModel(
+            workflow_id=w, name="diagnostic", mode="smallwebrtc", purpose="evaluation"
+        )
+        for w in [wid, other["workflow_id"]]
+    ]
     async_session.add_all(rows)
     await async_session.flush()
-    resumed = await db_session.wb_create_session(org, user, workflow_id=wid, new_session=True)
-    packet = await db_session.wb_diagnostic_run(org, resumed['id'], rows[0].id)
-    assert packet['run']['id'] == rows[0].id
-    assert packet['definition'] is None  # Never substitute today's mutable draft.
+    resumed = await db_session.wb_create_session(
+        org, user, workflow_id=wid, new_session=True
+    )
+    packet = await db_session.wb_diagnostic_run(org, resumed["id"], rows[0].id)
+    assert packet["run"]["id"] == rows[0].id
+    assert packet["definition"] is None  # Never substitute today's mutable draft.
     with pytest.raises(WorkbenchError):
         await db_session.wb_diagnostic_run(org, sid, rows[1].id)
     with pytest.raises(WorkbenchError):
         await db_session.wb_diagnostic_run(org + 999, sid, rows[0].id)
 
 
-async def test_diagnostic_probe_receipts_survive_jobs_and_remain_session_scoped(db_session, wb, async_session):
+async def test_diagnostic_probe_receipts_survive_jobs_and_remain_session_scoped(
+    db_session, wb, async_session
+):
     from api.db.models import WorkflowRunModel
+
     org, user, sid = wb
     context = await db_session.wb_context(org, sid)
-    wid = context['session']['workflow_id']
-    run = WorkflowRunModel(workflow_id=wid, name='receipt', mode='smallwebrtc', purpose='evaluation')
+    wid = context["session"]["workflow_id"]
+    run = WorkflowRunModel(
+        workflow_id=wid, name="receipt", mode="smallwebrtc", purpose="evaluation"
+    )
     async_session.add(run)
     await async_session.flush()
-    receipt = {'evidence_id': 'probe:old', 'run_id': run.id, 'results': [{'text': 'Observed'}]}
-    await db_session.wb_emit(org, sid, 'diagnosis.probe.completed', receipt)
-    assert (await db_session.wb_diagnostic_probes(org, sid, [run.id]))[0]['evidence_id'] == 'probe:old'
-    other = await db_session.wb_create_session(org, user, workflow_id=wid, new_session=True)
-    assert await db_session.wb_diagnostic_probes(org, other['id'], [run.id]) == []
+    receipt = {
+        "evidence_id": "probe:old",
+        "run_id": run.id,
+        "results": [{"text": "Observed"}],
+    }
+    await db_session.wb_emit(org, sid, "diagnosis.probe.completed", receipt)
+    assert (await db_session.wb_diagnostic_probes(org, sid, [run.id]))[0][
+        "evidence_id"
+    ] == "probe:old"
+    other = await db_session.wb_create_session(
+        org, user, workflow_id=wid, new_session=True
+    )
+    assert await db_session.wb_diagnostic_probes(org, other["id"], [run.id]) == []
     with pytest.raises(WorkbenchError):
         await db_session.wb_diagnostic_probes(org + 999, sid, [run.id])
 
@@ -826,3 +890,95 @@ async def test_tuning_task_scope_is_tenant_scoped_complete_and_read_only(
     assert (await db_session.wb_context(org, sid))["target_fingerprint"] == before[
         "target_fingerprint"
     ]
+
+
+async def test_result_pages_cover_whole_task_and_compact_context_keeps_evidence(
+    db_session, wb, async_session
+):
+    from api.db.models import WorkbenchEvaluationModel
+
+    org, user, sid = wb
+    context = await db_session.wb_context(org, sid)
+    job = await db_session.wb_enqueue(
+        org, sid, "build", {"mode": "build", "text": "all cases"}, "pages"
+    )
+    job = await db_session.wb_claim(org, sid, job["id"])
+    candidate = await db_session.wb_save_candidate(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        context["target"],
+        "code",
+        "saved",
+        context["target_fingerprint"],
+    )
+    payload = {
+        "name": "frozen",
+        "cases": [
+            {
+                "name": "case",
+                "user_messages": ["source"],
+                "assertions": [{"kind": "completed", "value": True}],
+            }
+        ],
+    }
+    suite = await db_session.wb_save_suite(org, sid, payload)
+    evidence = [
+        {
+            "name": "case",
+            "status": "failed",
+            "transcript": [{"role": "assistant", "text": "full evidence"}],
+            "assertions": [{"passed": False}],
+            "tool_calls": [],
+        }
+    ]
+    rows = [
+        WorkbenchEvaluationModel(
+            session_id=sid,
+            job_id=job["id"],
+            candidate_id=candidate["id"],
+            suite_id=suite["id"],
+            status="completed",
+            results=evidence,
+            summary={"failed": 1},
+        )
+        for _ in range(113)
+    ]
+    async_session.add_all(rows)
+    await async_session.flush()
+    compact = await db_session.wb_context(org, sid, compact=True)
+    assert len(compact["evaluations"]) == 100
+    assert all(
+        e["summary_only"] and not e["results"][0]["transcript"]
+        for e in compact["evaluations"]
+    )
+    assert compact["suites"][0]["payload"]["cases"] == [{"name": "case"}]
+    loaded, offset = [], 0
+    while offset is not None:
+        page = await db_session.wb_test_result_page(
+            org, sid, job["id"], offset=offset, limit=50
+        )
+        loaded.extend(page["evaluations"])
+        offset = page["next_offset"]
+    assert len(loaded) == len({r["id"] for r in loaded}) == 113
+    assert {r["id"] for r in loaded} == {r.id for r in rows}
+    full = await db_session.wb_get(org, sid, "evaluations", loaded[0]["id"])
+    assert full["results"] == evidence
+    assert (await db_session.wb_get(org, sid, "suites", suite["id"]))[
+        "payload"
+    ] == payload
+    assert (await db_session.wb_context(org, sid))["evaluations"][0][
+        "results"
+    ] == evidence
+    other = await db_session.wb_create_session(org, user, name="Other")
+    for method, args in [
+        (db_session.wb_test_result_page, (org + 999, sid, job["id"])),
+        (db_session.wb_test_result_page, (org, other["id"], job["id"])),
+        (db_session.wb_get, (org, other["id"], "evaluations", loaded[0]["id"])),
+        (db_session.wb_get, (org + 999, sid, "suites", suite["id"])),
+    ]:
+        with pytest.raises(WorkbenchError):
+            await method(*args)
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_test_result_page(org, sid, job["id"], offset=-1)

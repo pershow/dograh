@@ -601,6 +601,20 @@ async def review_replay(
     verifier_llm=None,
     basis=None,
 ):
+    if getattr(case, "compiled", None):
+        from api.services.agent_workbench.contract_review import review_contract
+
+        return await review_contract(
+            case,
+            transcript,
+            events,
+            candidate,
+            llm,
+            event,
+            protocol,
+            instructions=instructions,
+            verifier_llm=verifier_llm,
+        )
     from api.services.agent_workbench.dependencies import BUILD_LLM_PROVIDERS
     from api.services.agent_workbench.test_tasks import decision
 

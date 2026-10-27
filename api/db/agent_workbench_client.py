@@ -52,6 +52,31 @@ def record(row):
     return result
 
 
+def evaluation_index(row):
+    item = record(row)
+    item["summary_only"] = True
+    item["results"] = [
+        {
+            **{
+                k: c.get(k)
+                for k in (
+                    "name",
+                    "status",
+                    "run_id",
+                    "source",
+                    "error",
+                    "review_pending",
+                )
+            },
+            "transcript": [],
+            "assertions": [],
+            "tool_calls": [],
+        }
+        for c in item.get("results", [])
+    ]
+    return item
+
+
 def definition_payload(workflow, definition):
     return {
         "name": workflow.name,
@@ -196,14 +221,18 @@ class AgentWorkbenchClient(BaseDBClient):
                     WorkbenchJobModel.session_id == WorkbenchSessionModel.id,
                     WorkbenchJobModel.status.in_(["queued", "running"]),
                 )
-                .order_by(WorkbenchJobModel.created_at.desc(), WorkbenchJobModel.id.desc())
+                .order_by(
+                    WorkbenchJobModel.created_at.desc(), WorkbenchJobModel.id.desc()
+                )
                 .limit(1)
                 .correlate(WorkbenchSessionModel)
                 .scalar_subquery()
             )
             rows = (
                 await db.execute(
-                    select(WorkbenchSessionModel, active_status.label("active_job_status"))
+                    select(
+                        WorkbenchSessionModel, active_status.label("active_job_status")
+                    )
                     .where(
                         WorkbenchSessionModel.organization_id == org,
                         WorkbenchSessionModel.user_id == user_id,
@@ -213,8 +242,7 @@ class AgentWorkbenchClient(BaseDBClient):
                 )
             ).all()
             return [
-                {**record(row), "active_job_status": status}
-                for row, status in rows
+                {**record(row), "active_job_status": status} for row, status in rows
             ]
 
     async def wb_settings(self, org, session_id, model_protocol):
@@ -233,7 +261,7 @@ class AgentWorkbenchClient(BaseDBClient):
             session.model_protocol = model_protocol
             return record(session)
 
-    async def wb_context(self, org, session_id, *, if_revision=None):
+    async def wb_context(self, org, session_id, *, if_revision=None, compact=False):
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
             _, _, target = await self._wb_target(db, session.workflow_id, org)
@@ -263,8 +291,44 @@ class AgentWorkbenchClient(BaseDBClient):
                         .limit(100)
                     )
                 ).all()
-                result[name] = [record(row) for row in rows]
+                result[name] = [
+                    evaluation_index(row)
+                    if compact and name == "evaluations"
+                    else record(row)
+                    for row in rows
+                ]
+                if compact and name == "suites":
+                    for item in result[name]:
+                        item["summary_only"] = True
+                        item["payload"]["cases"] = [
+                            {"name": c["name"]} for c in item["payload"]["cases"]
+                        ]
             return result
+
+    async def wb_test_result_page(self, org, session_id, job_id, *, offset=0, limit=20):
+        if offset < 0 or not 1 <= limit <= 50:
+            raise WorkbenchError("Invalid test result page", 422)
+        async with self.async_session() as db:
+            await self._wb_session(db, org, session_id)
+            await self._wb_item(db, "jobs", session_id, job_id)
+            rows = (
+                await db.scalars(
+                    select(WorkbenchEvaluationModel)
+                    .where(
+                        WorkbenchEvaluationModel.session_id == session_id,
+                        WorkbenchEvaluationModel.job_id == job_id,
+                    )
+                    .order_by(
+                        WorkbenchEvaluationModel.created_at, WorkbenchEvaluationModel.id
+                    )
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            ).all()
+            return {
+                "evaluations": [evaluation_index(r) for r in rows[:limit]],
+                "next_offset": offset + limit if len(rows) > limit else None,
+            }
 
     async def wb_get(self, org, session_id, table, item_id):
         async with self.async_session() as db:
@@ -532,7 +596,9 @@ class AgentWorkbenchClient(BaseDBClient):
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
             run = await db.scalar(
-                select(WorkflowRunModel).join(WorkflowModel).where(
+                select(WorkflowRunModel)
+                .join(WorkflowModel)
+                .where(
                     WorkflowRunModel.id == run_id,
                     WorkflowRunModel.workflow_id == session.workflow_id,
                     WorkflowModel.organization_id == org,
@@ -540,60 +606,102 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             if run is None:
                 raise WorkbenchError("Diagnostic run not found for this Agent", 404)
-            definition = await db.scalar(select(WorkflowDefinitionModel).where(
-                WorkflowDefinitionModel.id == run.definition_id,
-                WorkflowDefinitionModel.workflow_id == session.workflow_id,
-            ))
+            definition = await db.scalar(
+                select(WorkflowDefinitionModel).where(
+                    WorkflowDefinitionModel.id == run.definition_id,
+                    WorkflowDefinitionModel.workflow_id == session.workflow_id,
+                )
+            )
             case, source = None, None
             if run.purpose == "evaluation":
                 # Run ownership has already been checked; also scope its source records.
-                evaluations = (await db.scalars(
-                    select(WorkbenchEvaluationModel).join(WorkbenchSessionModel).where(
-                        WorkbenchSessionModel.organization_id == org,
-                        WorkbenchSessionModel.workflow_id == session.workflow_id,
-                        WorkbenchEvaluationModel.job_id == (run.extra or {}).get("workbench_job_id"),
-                    ).order_by(WorkbenchEvaluationModel.created_at)
-                )).all()
+                evaluations = (
+                    await db.scalars(
+                        select(WorkbenchEvaluationModel)
+                        .join(WorkbenchSessionModel)
+                        .where(
+                            WorkbenchSessionModel.organization_id == org,
+                            WorkbenchSessionModel.workflow_id == session.workflow_id,
+                            WorkbenchEvaluationModel.job_id
+                            == (run.extra or {}).get("workbench_job_id"),
+                        )
+                        .order_by(WorkbenchEvaluationModel.created_at)
+                    )
+                ).all()
                 for evaluation in evaluations:
                     for index, result in enumerate(evaluation.results or []):
                         if result.get("run_id") == run_id:
                             case = copy.deepcopy(result)
-                            source = {"evaluation_id": evaluation.id, "case_index": index,
-                                      "session_id": evaluation.session_id}
+                            source = {
+                                "evaluation_id": evaluation.id,
+                                "case_index": index,
+                                "session_id": evaluation.session_id,
+                            }
                             break
                     if case is not None:
                         break
             else:
-                text_session = await db.scalar(select(WorkflowRunTextSessionModel).where(
-                    WorkflowRunTextSessionModel.workflow_run_id == run_id,
-                ))
+                text_session = await db.scalar(
+                    select(WorkflowRunTextSessionModel).where(
+                        WorkflowRunTextSessionModel.workflow_run_id == run_id,
+                    )
+                )
                 if text_session:
                     transcript, events = [], []
-                    for index, turn in enumerate((text_session.session_data or {}).get("turns", [])):
-                        for role, key in (("user", "user_message"), ("assistant", "assistant_message")):
+                    for index, turn in enumerate(
+                        (text_session.session_data or {}).get("turns", [])
+                    ):
+                        for role, key in (
+                            ("user", "user_message"),
+                            ("assistant", "assistant_message"),
+                        ):
                             if turn.get(key):
-                                transcript.append({"role": role, "turn": index,
-                                                   "text": turn[key].get("text", "")})
-                        events.extend({**e, "turn": index} for e in turn.get("events", []))
+                                transcript.append(
+                                    {
+                                        "role": role,
+                                        "turn": index,
+                                        "text": turn[key].get("text", ""),
+                                    }
+                                )
+                        events.extend(
+                            {**e, "turn": index} for e in turn.get("events", [])
+                        )
                     case = {"transcript": transcript, "events": events}
-            return {"run": record(run), "definition": record(definition) if definition else None,
-                    "case": case, "source": source}
+            return {
+                "run": record(run),
+                "definition": record(definition) if definition else None,
+                "case": case,
+                "source": source,
+            }
 
     async def wb_diagnostic_probes(self, org, session_id, run_ids):
         """Reuse completed, attributable experiments after a task interruption."""
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
-            owned = set((await db.scalars(select(WorkflowRunModel.id).where(
-                WorkflowRunModel.id.in_(run_ids),
-                WorkflowRunModel.workflow_id == session.workflow_id,
-            ))).all())
+            owned = set(
+                (
+                    await db.scalars(
+                        select(WorkflowRunModel.id).where(
+                            WorkflowRunModel.id.in_(run_ids),
+                            WorkflowRunModel.workflow_id == session.workflow_id,
+                        )
+                    )
+                ).all()
+            )
             if owned != set(run_ids):
                 raise WorkbenchError("Diagnostic runs not found for this Agent", 404)
-            rows = (await db.scalars(select(WorkbenchEventModel).where(
-                WorkbenchEventModel.session_id == session_id,
-                WorkbenchEventModel.type == "diagnosis.probe.completed",
-                WorkbenchEventModel.payload["run_id"].as_integer().in_(run_ids),
-            ).order_by(WorkbenchEventModel.sequence.desc()).limit(12))).all()
+            rows = (
+                await db.scalars(
+                    select(WorkbenchEventModel)
+                    .where(
+                        WorkbenchEventModel.session_id == session_id,
+                        WorkbenchEventModel.type == "diagnosis.probe.completed",
+                        WorkbenchEventModel.payload["run_id"].as_integer().in_(run_ids),
+                    )
+                    .order_by(WorkbenchEventModel.sequence.desc())
+                    .limit(12)
+                )
+            ).all()
             return [copy.deepcopy(row.payload) for row in reversed(rows)]
 
     async def wb_enqueue(self, org, session_id, kind, payload, key):
@@ -680,12 +788,22 @@ class AgentWorkbenchClient(BaseDBClient):
             if payload.get("resume_build_job_id"):
                 from api.services.agent_workbench.recovery import resumable_build
 
-                prior = await self._wb_item(db, "jobs", session_id, payload["resume_build_job_id"])
+                prior = await self._wb_item(
+                    db, "jobs", session_id, payload["resume_build_job_id"]
+                )
                 checkpoint = resumable_build(record(prior))
-                if kind != "build" or payload != {**prior.input, "resume_build_job_id": prior.id}:
+                if kind != "build" or payload != {
+                    **prior.input,
+                    "resume_build_job_id": prior.id,
+                }:
                     raise WorkbenchError("恢复任务必须保持原始要求和测试配置。", 409)
-                await self._wb_item(db, "candidates", session_id, checkpoint["built"]["candidate_id"])
-                for sid in {checkpoint["built"]["suite_id"], *checkpoint["built"].get("regression_suite_ids", [])}:
+                await self._wb_item(
+                    db, "candidates", session_id, checkpoint["built"]["candidate_id"]
+                )
+                for sid in {
+                    checkpoint["built"]["suite_id"],
+                    *checkpoint["built"].get("regression_suite_ids", []),
+                }:
                     await self._wb_item(db, "suites", session_id, sid)
                 # Copy private frozen source/basis as well as public receipts;
                 # neither the original job nor its historical evidence is mutated.
@@ -693,7 +811,9 @@ class AgentWorkbenchClient(BaseDBClient):
                     **copy.deepcopy(prior.output),
                     "build_checkpoint": checkpoint,
                     "resume_source_job_id": prior.id,
-                    "model_protocol": prior.output.get("model_protocol", session.model_protocol),
+                    "model_protocol": prior.output.get(
+                        "model_protocol", session.model_protocol
+                    ),
                 }
             db.add(row)
             await db.flush()

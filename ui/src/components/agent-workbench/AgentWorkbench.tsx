@@ -22,6 +22,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
+  getWorkbenchEvaluation as getEvaluation,
+  getWorkbenchSuite as getSuite,
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
   workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet as getAgentRuns,
   workbenchCancelApiV1AgentWorkbenchSessionsSessionIdJobsJobIdCancelPost as cancel,
@@ -58,16 +60,19 @@ import { BuildModelSettings } from "./BuildModelSettings";
 import { EvaluationArchive } from "./EvaluationArchive";
 import { EvidenceReads } from "./EvidenceReads";
 import { pollRequest } from "./pollRequest";
-import { ReviewCounts, ReviewFindings } from "./ReviewFindings";
+import { CriterionCoverage, criterionStatusText, ReviewCounts, ReviewFindings } from "./ReviewFindings";
 import { SimulationEvidence } from "./SimulationEvidence";
 import { TaskActivity } from "./TaskActivity";
 import { type BasisSummary,RequirementCoverage, TaskBasis } from "./TaskBasis";
 import { modelProgressText, taskCompletionText, taskProgress, workbenchErrorText } from "./taskProgress";
+import { TestPreparation } from "./TestPreparation";
+import type { CriterionCoverageReceipt, PreparationReceipt } from "./types";
 import type {
   Candidate,
   Evaluation,
   EventPage,
   Snapshot,
+  Suite,
   WorkbenchEvent,
   WorkbenchSession,
   WorkbenchSessionListItem,
@@ -185,6 +190,10 @@ export function AgentWorkbench({
   const [suiteEditor, setSuiteEditor] = useState<string | null>(null);
   const [caseName, setCaseName] = useState("");
   const [evaluationId, setEvaluationId] = useState("");
+  const detailSelection = useRef("");
+  const [detailError, setDetailError] = useState("");
+  const [detailRetry, setDetailRetry] = useState(0);
+  useEffect(() => { detailSelection.current = evaluationId; }, [evaluationId]);
   const [composerOpen, setComposerOpen] = useState(false);
   const [followingMessages, setFollowingMessages] = useState(true);
   const followMessages = useRef(true);
@@ -247,7 +256,10 @@ export function AgentWorkbench({
         })));
         revision.current = snapshot.revision;
         lastStateSync.current = Date.now();
-        if (!snapshot.unchanged) setState(snapshot);
+        if (!snapshot.unchanged) setState(old => ({...snapshot, evaluations: [
+          ...snapshot.evaluations,
+          ...(old?.session.id === snapshot.session.id ? old.evaluations.filter(e => e.id === detailSelection.current && !snapshot.evaluations.some(next => next.id === e.id)).map(e => ({...e, summary_only: e.status === "running" || e.summary_only})) : []),
+        ]}));
       }
       setSyncError("");
     } catch (error) {
@@ -542,6 +554,18 @@ export function AgentWorkbench({
     .filter(e => e.job_id === testTask.id)
     .flatMap(e => e.results).filter(r => r.status === "running").length : 0;
   const currentCase = evaluation?.results.find(result => result.name === caseName) || evaluation?.results[0];
+  const evaluationToLoad = evaluation?.summary_only ? evaluation.id : undefined;
+  useEffect(() => {
+    if (!session || !evaluationToLoad) return;
+    const controller = new AbortController();
+    setDetailError("");
+    void getEvaluation({signal: controller.signal, path: {session_id: session, evaluation_id: evaluationToLoad}})
+      .then(response => {
+        const loaded = result<Evaluation>(response);
+        if (!controller.signal.aborted) setState(old => old && ({...old, evaluations: old.evaluations.map(e => e.id === loaded.id ? loaded : e)}));
+      }).catch(e => {if (!controller.signal.aborted) setDetailError(e instanceof Error ? e.message : "结果详情读取失败");});
+    return () => controller.abort();
+  }, [session, evaluationToLoad, state?.revision, detailRetry]);
   const openTestResult = (selected: Evaluation, name: string) => {
     if (evaluationId === selected.id && caseName === name && tab === "tests") {
       scrollToResult();
@@ -549,6 +573,7 @@ export function AgentWorkbench({
     }
     choiceInitialized.current = true;
     openResultRequested.current = true;
+    setState(old => old && !old.evaluations.some(e => e.id === selected.id) ? {...old, evaluations: [...old.evaluations, selected]} : old);
     setCandidateId(selected.candidate_id);
     setSuiteId(selected.suite_id);
     setEvaluationId(selected.id);
@@ -950,8 +975,11 @@ export function AgentWorkbench({
             className={styles.main}
             aria-label={tab === "tests" ? "文本仿真结果" : "调优记录"}
           >
-            {tab === "tests" && <EvaluationArchive state={state} onOpen={openTestResult} />}
+            {tab === "tests" && <EvaluationArchive key={state.session.id} sessionId={state.session.id} state={state} onOpen={openTestResult} />}
             <div className={styles.runActions}>
+              <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={() => void action(async () => {
+                result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: "dynamic", prepare_only: true, ...(tuningTask ? {rerun_test_job_id: tuningTask.id} : {test_suite_ids: [suiteId], candidate_id: candidateId}), text: "将所选完整测试集转换为可执行客户场景与冻结的业务断言，保留全部原始用例和测试意图，列出真实缺失信息。本次只准备测试，不运行或修改 Agent。", idempotency_key: crypto.randomUUID()}}));
+              })}>准备完整场景测试</Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1008,10 +1036,12 @@ export function AgentWorkbench({
                 size="sm"
                 variant="outline"
                 disabled={locked}
-                onClick={() =>
+                onClick={() => void action(async () => {
+                  const editable = suiteId && (!selectedSuite || selectedSuite.summary_only)
+                    ? result<Suite>(await getSuite({path: {session_id: session, suite_id: suiteId}})) : selectedSuite;
                   setSuiteEditor(
                     JSON.stringify(
-                      selectedSuite?.payload || {
+                      editable?.payload || {
                         name: "新测试集",
                         cases: [
                           {
@@ -1026,8 +1056,8 @@ export function AgentWorkbench({
                       null,
                       2,
                     ),
-                  )
-                }
+                  );
+                })}
               >
                 编辑测试集
               </Button>
@@ -1048,6 +1078,8 @@ export function AgentWorkbench({
                 </section>}
                 {evaluation ? (
                   <>
+                    {evaluation.summary_only && <p>正在读取该批次的完整对话与评审…</p>}
+                    {detailError && <p role="alert">{detailError} <button onClick={() => setDetailRetry(n => n + 1)}>重新读取结果</button></p>}
                     <div className={styles.metrics}>
                       <b>
                         {evaluation.summary.passed || 0}
@@ -1116,9 +1148,10 @@ export function AgentWorkbench({
                               data-status={a.informational ? "inconclusive" : a.passed ? "passed" : "failed"}
                             >
                               {a.informational ? "·" : a.passed ? "✓" : "×"}{" "}
+                              {a.criterion_status && <span>{criterionStatusText[a.criterion_status] || a.criterion_status} · </span>}
                               {a.kind === "script_consumed"
                                 ? `已执行用户轮次 · ${a.actual}/${String(a.value)}`
-                                : `${a.kind === "reference" ? "参考对话" : a.kind}${a.turn != null ? ` · ${a.turn === 0 ? "开场" : `第 ${a.turn} 轮回复`}` : ""} · ${String(a.value ?? "")}`}
+                                : `${a.criterion_id ? "业务断言" : a.kind === "reference" ? "参考对话" : a.kind}${a.turn != null ? ` · ${a.turn === 0 ? "开场" : `第 ${a.turn} 轮回复`}` : ""} · ${String(a.value ?? "")}`}
                               {a.reason && <span> · {workbenchErrorText(a.reason)}</span>}
                               {a.reference_quote && <span> · 参考：“{a.reference_quote}”</span>}
                               {a.actual_quote && <span> · 实际：“{a.actual_quote}”</span>}
@@ -1152,6 +1185,15 @@ export function AgentWorkbench({
                         <span>{statusText[j.status] || j.status}</span>
                       </div>
                       {!!j.output.tuning_scope && <p>完整范围：{String((j.output.tuning_scope as Record<string, unknown>).suite_count)} 批 / {String((j.output.tuning_scope as Record<string, unknown>).case_count)} 条</p>}
+                      {typeof j.output.provisional_candidate_id === "string" && <p>已保存局部改善的候选，仍有未完成验收项；尚未推荐应用。</p>}
+                      <CriterionCoverage receipt={j.output.criterion_coverage as CriterionCoverageReceipt | undefined} />
+                      {typeof j.output.provisional_candidate_id === "string" && <Button variant="outline" size="sm" onClick={() => {
+                        setCandidateId(String(j.output.provisional_candidate_id));
+                        const ids = Array.isArray(j.output.provisional_evaluation_ids) ? j.output.provisional_evaluation_ids : [];
+                        const evaluated = state.evaluations.find(e => ids.includes(e.id));
+                        if (evaluated) openTestResult(evaluated, "");
+                        else setTab("canvas");
+                      }}>查看待验收候选与结果</Button>}
                       <p>
                         {(j.error && workbenchErrorText(j.error)) ||
                           (typeof j.output.verification_issue === "string" && j.output.verification_issue) ||
@@ -1182,7 +1224,7 @@ export function AgentWorkbench({
                             setTab("tests");
                           }}
                         >
-                          {j.output.blocked_reason ? "查看基线结果" : "查看推荐版本"}
+                          {j.output.improved ? "查看推荐版本" : "查看基线结果"}
                         </Button>
                       )}
                     </article>
@@ -1369,7 +1411,12 @@ export function AgentWorkbench({
                       {Array.isArray(output.import_issues) && output.import_issues.length > 0 && <p>有 {output.import_issues.length} 条样本未能执行：{output.import_issues.map((issue: { name?: string; error?: string }) => `${issue.name}：${issue.error}`).join("；")}</p>}
                     </section>
                   )}
-                  {resultCandidate && !["test", "review", "needs_input"].includes(String(output?.outcome)) && (
+                  {!!output?.compilation && <TestPreparation receipt={output.compilation as PreparationReceipt} />}
+                  {!!output?.criterion_coverage && <CriterionCoverage receipt={output.criterion_coverage as CriterionCoverageReceipt} />}
+                  {output?.outcome === "test_preparation" && Array.isArray(output.suite_ids) && <Button variant="outline" size="sm" disabled={locked} onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: "dynamic", prepared_test_job_id: String(e.payload.job_id), text: "执行已准备的完整测试集，保留冻结场景、断言及所有待处理样本，按实际证据逐项评审；不修改 Agent。", idempotency_key: crypto.randomUUID()}}));
+                  })}>运行已准备的完整测试集</Button>}
+                  {resultCandidate && !["test", "review", "test_preparation", "needs_input"].includes(String(output?.outcome)) && (
                     <section
                       className={styles.candidateResult}
                       aria-label={`候选版本 ${resultVersion} · ${resultCandidate.name}`}

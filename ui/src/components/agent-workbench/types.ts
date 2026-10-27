@@ -39,6 +39,8 @@ export type Job = {
   output: Record<string, unknown>;
 };
 export type ReviewCheck = {
+  criterion_id?: string;
+  status?: string;
   criterion: string;
   category: string;
   reason: string;
@@ -50,7 +52,16 @@ export type ReplayReview = {
   warnings?: string[]; basis_fingerprint?: string; business_status?: string; execution_status?: string; coverage?: string;
   checks?: ReviewCheck[];
   draft_review?: { checks: ReviewCheck[] };
-  verification?: { reviews: { check_index: number; verdict: string; reason: string; check: ReviewCheck }[] };
+  criterion_counts?: Record<string, number>;
+  verification?: { reviews?: ReviewVerification[] };
+  criterion_verification?: { reviews?: ReviewVerification[] };
+};
+type ReviewVerification = {
+  criterion_id?: string;
+  check_index?: number;
+  verdict: string;
+  reason: string;
+  check: {reason: string} | null;
 };
 export type CaseResult = {
   mode?: "scripted" | "single_step" | "dynamic";
@@ -63,6 +74,8 @@ export type CaseResult = {
     scenario?: {fingerprint: string; facts: {id: string; statement: string; provenance: string; quote: string; reason: string; applies_when?: string}[]; goals: {id: string; description: string; quote: string}[]; limitations: string[]};
     checks?: {turn: number; verdict: string; reason: string; delivered: boolean; proposal: {text: string; simulated_action?: string}}[];
     pending_goals?: string[];
+    compilation?: {fingerprint: string; status: string; error?: string};
+    goal_states?: Record<string, string>;
   };
   run_id?: number;
   trace_url?: string | null;
@@ -73,10 +86,19 @@ export type CaseResult = {
   status: string;
   error?: string;
   transcript: { role: string; text: string }[];
-  assertions: { kind: string; value: unknown; passed: boolean; turn?: number | null; actual?: number; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
+  assertions: { kind: string; value: unknown; passed: boolean; criterion_id?: string; criterion_status?: string; turn?: number | null; actual?: number; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
   tool_calls: unknown[];
 };
+export type PreparationReceipt = {
+  total: number; ready: number; needs_input: number; preparation_error: number;
+  rows: {name: string; source: {sheet?: string; row?: number}; status: "ready" | "needs_input" | "preparation_error"; requirement_count: number; questions: string[]; error?: string}[];
+};
+export type CriterionCoverageReceipt = {
+  case_count: number; criterion_count: number; observed: number;
+  rows: {criterion_id: string; criterion: string; passed: number; failed: number; not_applicable: number; uncovered: number; test_error: number; needs_input: number}[];
+};
 export type Evaluation = {
+  summary_only?: boolean;
   id: string;
   job_id?: string;
   candidate_id: string;
@@ -85,7 +107,7 @@ export type Evaluation = {
   summary: Record<string, number | string>;
   results: CaseResult[];
 };
-export type Suite = { id: string; payload: { name: string; cases: unknown[] } };
+export type Suite = { id: string; summary_only?: boolean; payload: { name: string; cases: unknown[] } };
 export type WorkbenchState = {
   memory_revision?: string;
   revision?: string;

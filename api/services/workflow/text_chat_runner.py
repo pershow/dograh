@@ -797,9 +797,7 @@ async def execute_text_chat_pending_turn(
 
         @task.event_handler("on_pipeline_error")
         async def evaluation_error(_worker, _frame):
-            evaluation_policy.errors.append(
-                "Text runtime reported a model or tool error"
-            )
+            evaluation_policy.record_runtime_error(_frame)
 
     runner_task = asyncio.create_task(run_pipeline_worker(task))
 

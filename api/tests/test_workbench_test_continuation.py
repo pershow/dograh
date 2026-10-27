@@ -39,6 +39,27 @@ def current_request(**overrides):
     }
 
 
+def test_prepare_only_continuation_preserves_full_scope_and_checkpoint_without_evaluation():
+    prior = failed_request(
+        status="cancelled",
+        input={
+            "mode": "test",
+            "text": "prepare all",
+            "prepare_only": True,
+            "test_mode": "dynamic",
+            "test_suite_ids": ["first", "last"],
+            "candidate_id": "fixed",
+        },
+        output={"preparation_receipts": [{"name": "done", "suite_id": "saved"}]},
+    )
+    restored = continued_test_input(prior, {"text": "继续"})
+    assert restored["resume_test_job_id"] == "source"
+    assert restored["prepare_only"] is True
+    assert restored["test_suite_ids"] == ["first", "last"]
+    assert restored["candidate_id"] == "fixed"
+    assert restored["text"] == "prepare all"
+
+
 @pytest.mark.parametrize(
     "text", ["继续", "从刚才中断的地方接着跑", "Resume the unfinished replay."]
 )

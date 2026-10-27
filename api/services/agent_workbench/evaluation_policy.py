@@ -5,6 +5,7 @@ import copy
 import jsonschema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
+from api.errors.failure import redact_failure_message
 from api.services.agent_workbench.errors import WorkbenchError
 
 
@@ -13,6 +14,19 @@ class EvaluationPolicy:
         self.case, self.model_configuration = case, model_configuration
         self.calls, self.errors = [], []
         self.fixtures = {fixture.name: fixture for fixture in case.fixtures}
+
+    def record_runtime_error(self, frame):
+        """Keep the actionable provider cause, without credentials or unbounded text."""
+        message = str(getattr(frame, "error", "Model or tool request failed"))
+        config = getattr(self.model_configuration, "llm", None)
+        secret = getattr(config, "api_key", None)
+        if hasattr(secret, "get_secret_value"):
+            secret = secret.get_secret_value()
+        if secret:
+            message = message.replace(str(secret), "[REDACTED]")
+        self.errors.append(
+            "文本运行时调用失败：" + redact_failure_message(message)[:1000]
+        )
 
     def validate(self, graph):
         supported = {"startCall", "endCall", "agentNode", "globalNode", "trigger"}

@@ -79,7 +79,7 @@ class StructuredDecision:
                 else (
                     "提交内容校验失败：" + validation_error_message(error)
                     if isinstance(error, ValidationError)
-                    else "返回结构不符合要求。"
+                    else f"返回结构校验失败：{error.json_path}，{error.validator} 要求 {json.dumps(error.validator_value, ensure_ascii=False)[:1200]}。请保留语义，仅修正字段结构。"
                 )
             )
             if self.invalid_attempts >= 3:
@@ -786,11 +786,67 @@ def prepare_test_cases(cases, mode, *, automatic_method=False, selected_turns=()
 
 
 async def retained_import_issues(org, sid, payload):
-    source_id = payload.get("rerun_test_job_id") or payload.get("resume_test_job_id")
+    source_id = (
+        payload.get("rerun_test_job_id")
+        or payload.get("resume_test_job_id")
+        or payload.get("prepared_test_job_id")
+    )
     if not source_id:
         return []
     original = await db_client.wb_get(org, sid, "jobs", source_id)
     return deepcopy(original.get("output", {}).get("import_issues", []))
+
+
+async def prepared_test_input(org, sid, kind, payload):
+    """Resolve a complete preparation receipt, without a client-side batch limit."""
+    prior = await db_client.wb_get(org, sid, "jobs", payload["prepared_test_job_id"])
+    output = prior.get("output") or {}
+    if (
+        kind != "build"
+        or payload.get("mode") != "test"
+        or prior["status"] not in {"completed", "needs_attention"}
+        or output.get("outcome") != "test_preparation"
+    ):
+        raise WorkbenchError("请先完成所选测试准备任务。", 409)
+    if any(
+        payload.get(k)
+        for k in (
+            "candidate_id",
+            "test_suite_ids",
+            "asset_ids",
+            "test_target_session_id",
+            "prepare_only",
+            "continue_test_job_id",
+            "rerun_test_job_id",
+            "review_evaluation_ids",
+            "resume_build_job_id",
+            "single_step_turns",
+        )
+    ) or payload.get("test_mode") not in {None, "dynamic"}:
+        raise WorkbenchError("已准备的测试必须保留完整范围、场景和测试版本。", 422)
+    ids = output.get("suite_ids") or []
+    if not ids or len(ids) != len(set(ids)):
+        raise WorkbenchError("测试准备回执缺少完整且唯一的批次。", 409)
+    suites = [await db_client.wb_get(org, sid, "suites", i) for i in ids]
+    cases = [c for s in suites for c in s["payload"]["cases"]]
+    if len(cases) != output.get("compilation", {}).get("total"):
+        raise WorkbenchError("测试准备回执与完整样本数量不一致。", 409)
+    from api.services.agent_workbench.test_compilation import validate_compiled
+
+    for case in cases:
+        validate_compiled(case)
+    actual = sorted((c["name"], c["compiled"]["fingerprint"]) for c in cases)
+    expected = sorted(
+        (r["name"], r["fingerprint"]) for r in output["compilation"].get("rows", [])
+    )
+    if len({c["name"] for c in cases}) != len(cases) or actual != expected:
+        raise WorkbenchError("测试准备回执与冻结场景标识不一致。", 409)
+    return {
+        **payload,
+        "test_mode": "dynamic",
+        "test_suite_ids": ids,
+        "candidate_id": output["candidate_id"],
+    }
 
 
 async def run_test_task(org, sid, job, builder, protocol, event):
@@ -800,11 +856,17 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         from api.services.agent_workbench.dependencies import replay_models
 
         runtime = await replay_models(org, sid, job["id"], "evaluate")
-    elif job["input"].get("rerun_test_job_id"):
+    elif job["input"].get("rerun_test_job_id") or job["input"].get(
+        "prepared_test_job_id"
+    ):
         from api.services.agent_workbench.dependencies import replay_models
 
         runtime = await replay_models(
-            org, sid, job["input"]["rerun_test_job_id"], "evaluate"
+            org,
+            sid,
+            job["input"].get("rerun_test_job_id")
+            or job["input"]["prepared_test_job_id"],
+            "evaluate",
         )
     else:
         runtime = await prepare_models(org, candidate["snapshot"], "evaluate")
@@ -944,16 +1006,6 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             "本次为输入与断言检查，没有原始对话可提取客户场景，按声明用例执行。",
             test_mode=mode,
         )
-    batches = pack_suites(
-        cases,
-        {
-            "dynamic": "动态客户仿真",
-            "single_step": "真实上下文单步测试",
-            "scripted": "固定脚本与错位检查",
-            "mixed": "所选测试集验证",
-        }[mode],
-        job["input"]["text"],
-    )
     from api.services.agent_workbench.basis import ensure_basis
 
     basis = await ensure_basis(
@@ -966,6 +1018,96 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         event=event,
         protocol=protocol,
     )
+    if job["input"].get("resume_test_job_id"):
+        from api.services.agent_workbench.recovery import restore_prepared_cases
+
+        await restore_prepared_cases(
+            org, sid, job["input"]["resume_test_job_id"], cases
+        )
+    from api.services.agent_workbench.config import WorkbenchSettings
+    from api.services.agent_workbench.test_compilation import compile_cases
+
+    async def compile_decision(name, rules, schema, evidence, **kwargs):
+        return await decision(
+            name,
+            rules,
+            schema,
+            evidence,
+            builder.llm,
+            event,
+            protocol,
+            reasoning_effort="medium",
+            **kwargs,
+        )
+
+    preparation_receipts = []
+
+    async def prepared(done, total, case):
+        # Persist each accepted fixture before starting the next one. A worker
+        # interruption must not discard completed compilation work.
+        receipt = await db_client.wb_save_suite(
+            org,
+            sid,
+            {
+                "name": "测试准备 · " + case["name"][:100],
+                "instructions": job["input"]["text"],
+                "cases": [case],
+            },
+            job_id=job["id"],
+            token=job["lease_token"],
+        )
+        preparation_receipts.append(
+            {
+                "name": case["name"],
+                "suite_id": receipt["id"],
+                "status": case["compiled"]["status"],
+            }
+        )
+        await progress(
+            "preparing_tests",
+            f"已准备 {done}/{total} 条场景与业务断言。",
+            preparation_receipts=preparation_receipts,
+            candidate_id=candidate["id"],
+            test_mode=mode,
+        )
+
+    cases, compilation = await compile_cases(
+        cases,
+        candidate,
+        basis,
+        compile_decision,
+        concurrency=WorkbenchSettings.load().evaluation_concurrency,
+        progress=prepared,
+        retry_preparation=bool(job["input"].get("prepare_only")),
+    )
+    batches = pack_suites(
+        cases,
+        {
+            "dynamic": "动态客户仿真",
+            "single_step": "真实上下文单步测试",
+            "scripted": "固定脚本与错位检查",
+            "mixed": "所选测试集验证",
+        }[mode],
+        job["input"]["text"],
+    )
+    if job["input"].get("prepare_only"):
+        suites = [
+            await db_client.wb_save_suite(
+                org, sid, payload, job_id=job["id"], token=job["lease_token"]
+            )
+            for payload in batches
+        ]
+        return {
+            "outcome": "test_preparation",
+            "test_mode": mode,
+            "candidate_id": candidate["id"],
+            "suite_ids": [s["id"] for s in suites],
+            "compilation": compilation,
+            "source_manifest": manifest,
+            "import_issues": issues,
+            "agent_modified": False,
+            "test_target_fingerprint": candidate["fingerprint"],
+        }
     reusable = await reusable_test_results(
         org,
         sid,
@@ -1017,6 +1159,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         summary=counts,
         candidate_id=candidate["id"],
         test_mode=mode,
+        compilation=compilation,
     )
 
     async def judge(case, transcript, events):
@@ -1050,6 +1193,8 @@ async def run_test_task(org, sid, job, builder, protocol, event):
     from api.services.agent_workbench.simulation import DecisionCache
 
     decision_cache = DecisionCache()
+    final_results = []
+    final_cases = []
 
     async def save_batch(payload):
         return await db_client.wb_save_suite(
@@ -1057,7 +1202,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         )
 
     async def run_batch(suite, callback, semaphore):
-        return await evaluate(
+        result = await evaluate(
             org,
             sid,
             job,
@@ -1072,6 +1217,14 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             case_semaphore=semaphore,
             decision_cache=decision_cache,
         )
+        if compilation:
+            final_results.extend(
+                {**r, "suite_id": suite["id"]} for r in result["results"]
+            )
+            final_cases.extend(
+                {**c, "suite_id": suite["id"]} for c in suite["payload"]["cases"]
+            )
+        return result
 
     suite_ids, evaluation_ids, counts = await execute_batches(
         batches,
@@ -1081,6 +1234,8 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         counts,
         WorkbenchSettings.load().evaluation_concurrency,
     )
+    from api.services.agent_workbench.contract_review import coverage
+
     return {
         "outcome": "test",
         "test_mode": mode,
@@ -1090,6 +1245,8 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         "suite_ids": suite_ids,
         "evaluation_ids": evaluation_ids,
         "source_manifest": manifest,
+        "compilation": compilation,
+        "criterion_coverage": coverage(final_cases, final_results),
         "import_issues": issues,
         "summary": counts,
         "test_target_fingerprint": candidate["fingerprint"],

@@ -5,6 +5,35 @@ import copy
 from api.services.agent_workbench.errors import WorkbenchError
 
 
+async def restore_prepared_cases(org, session_id, source_job_id, cases):
+    """Restore matching checkpoints across retries without changing source rows."""
+    from api.db import db_client
+    from api.services.agent_workbench.test_compilation import case_fingerprint
+
+    indexed = {c["name"]: c for c in cases}
+    visited, restored = set(), set()
+    while source_job_id and source_job_id not in visited:
+        visited.add(source_job_id)
+        previous = await db_client.wb_get(org, session_id, "jobs", source_job_id)
+        for receipt in previous.get("output", {}).get("preparation_receipts", []):
+            name = receipt["name"]
+            if name not in indexed or name in restored:
+                continue
+            saved = await db_client.wb_get(
+                org, session_id, "suites", receipt["suite_id"]
+            )
+            source_case = next(
+                (c for c in saved["payload"]["cases"] if c["name"] == name), None
+            )
+            if source_case and case_fingerprint(source_case) == case_fingerprint(
+                indexed[name]
+            ):
+                indexed[name]["compiled"] = copy.deepcopy(source_case.get("compiled"))
+                restored.add(name)
+        source_job_id = previous["input"].get("resume_test_job_id")
+    return restored
+
+
 def continued_test_input(prior, request, *, classified_test=False):
     """Restore a test command, including failures before the first evaluation.
 
@@ -17,10 +46,17 @@ def continued_test_input(prior, request, *, classified_test=False):
         output.get("outcome") == "needs_input" and output.get("task_mode") == "test"
     )
     known_test = pending.get("mode") == "test" or output.get("intent") == "test"
+    preparation = output.get("outcome") == "test_preparation" or bool(
+        output.get("preparation_receipts")
+    )
     legacy_test = classified_test and prior["status"] in {"failed", "cancelled"}
     if (
         prior.get("kind", "build") != "build"
-        or prior["status"] not in {"failed", "cancelled", "completed", "awaiting_input"}
+        or (
+            prior["status"]
+            not in {"failed", "cancelled", "completed", "awaiting_input"}
+            and not (preparation and prior["status"] == "needs_attention")
+        )
         or pending.get("mode") in {"build", "analyze"}
         or output.get("outcome") in {"build", "analysis", "review"}
         or not (known_test or clarification or legacy_test)
@@ -52,10 +88,11 @@ def continued_test_input(prior, request, *, classified_test=False):
         text=(
             pending["text"] + "\n本次补充回答：\n" + continuation_text
             if clarification
+            or (preparation and output.get("compilation", {}).get("needs_input"))
             else pending["text"]
         ),
     )
-    if output.get("evaluation_ids") or pending.get("resume_test_job_id"):
+    if output.get("evaluation_ids") or pending.get("resume_test_job_id") or preparation:
         restored["resume_test_job_id"] = prior["id"]
     return restored
 

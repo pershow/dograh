@@ -48,6 +48,8 @@ class RevokeMemory(StrictModel):
 class Instruction(StrictModel):
     test_suite_ids: list[str] = Field(default_factory=list, max_length=100)
     test_mode: Literal["scripted", "single_step", "dynamic"] | None = None
+    prepare_only: bool = False
+    prepared_test_job_id: str | None = None
     single_step_turns: list[int] = Field(default_factory=list, max_length=400)
     candidate_id: str | None = None
     test_target_session_id: str | None = None
@@ -62,6 +64,32 @@ class Instruction(StrictModel):
 
     @model_validator(mode="after")
     def one_test_operation(self):
+        if self.prepared_test_job_id and (
+            self.mode != "test"
+            or self.prepare_only
+            or self.test_suite_ids
+            or self.candidate_id
+            or self.test_target_session_id
+            or self.asset_ids
+            or self.continue_test_job_id
+            or self.rerun_test_job_id
+            or self.review_evaluation_ids
+            or self.resume_build_job_id
+            or self.single_step_turns
+            or self.test_mode not in {None, "dynamic"}
+        ):
+            raise ValueError(
+                "Execute prepared tests must preserve the complete saved scope and version"
+            )
+        if self.prepare_only and (
+            self.mode != "test"
+            or self.test_mode != "dynamic"
+            or self.review_evaluation_ids
+            or self.continue_test_job_id
+        ):
+            raise ValueError(
+                "Test preparation requires dynamic test mode without review/resume"
+            )
         if self.resume_build_job_id and (
             self.mode != "build"
             or self.candidate_id
@@ -213,9 +241,20 @@ class SimulationCase(StrictModel):
     assertions: list[Assertion] = Field(default_factory=list, max_length=50)
     source: dict = Field(default_factory=dict)
     reference_dialogue: str | None = Field(default=None, max_length=100000)
+    compiled: dict | None = None
 
     @model_validator(mode="after")
     def bounded_messages(self):
+        if self.compiled:
+            from api.services.agent_workbench.errors import WorkbenchError
+            from api.services.agent_workbench.test_compilation import validate_compiled
+
+            try:
+                if self.mode != "dynamic":
+                    raise ValueError("Compiled customer fixtures require dynamic mode")
+                validate_compiled(self.model_dump(mode="json"))
+            except WorkbenchError as error:
+                raise ValueError(str(error)) from error
         if self.mode == "single_step" and (
             len(self.user_messages) != 1 or not self.history
         ):

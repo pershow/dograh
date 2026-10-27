@@ -47,6 +47,26 @@ QUEUE = "arq:agent-workbench"
 
 
 async def enqueue(org, session_id, kind, payload, key):
+    if payload.get("prepared_test_job_id"):
+        from api.services.agent_workbench.test_tasks import prepared_test_input
+
+        payload = await prepared_test_input(org, session_id, kind, payload)
+    if kind == "evaluate":
+        suite = await db_client.wb_get(org, session_id, "suites", payload["suite_id"])
+        if any(
+            c.get("mode") == "dynamic" and not c.get("compiled")
+            for c in suite["payload"]["cases"]
+        ):
+            # Legacy dynamic suites enter the same preparation pipeline as an
+            # imported conversation; a direct evaluation must not bypass it.
+            kind = "build"
+            payload = {
+                "mode": "test",
+                "test_mode": "dynamic",
+                "candidate_id": payload["candidate_id"],
+                "test_suite_ids": [payload["suite_id"]],
+                "text": "准备并执行所选动态测试集，保留原始用例、断言及 Agent。",
+            }
     if kind == "tune":
         from api.services.agent_workbench.tuning import resolve_scope
 
@@ -1061,6 +1081,17 @@ def task_result_status(kind, output):
     """A finished worker turn is not necessarily a completed user objective."""
     if output.get("outcome") == "needs_input" or output.get("pending_questions"):
         return "awaiting_input"
+    if output.get("outcome") == "test_preparation":
+        preparation = output.get("compilation") or {}
+        return (
+            "needs_attention"
+            if (
+                preparation.get("needs_input")
+                or preparation.get("preparation_error")
+                or output.get("import_issues")
+            )
+            else "completed"
+        )
     if output.get("outcome") in {"analysis", "test", "review"} or kind == "evaluate":
         return "completed"
     if kind in {"build", "tune"}:
@@ -1227,8 +1258,11 @@ async def _perform(org, session_id, job):
         )
     from api.services.agent_workbench.simulation import DecisionCache
     from api.services.agent_workbench.tuning import (
+        actionable_partial,
         blocked_baseline,
         evaluate_scope,
+        provisional_progress,
+        repair_index,
         resolve_scope,
     )
 
@@ -1274,7 +1308,7 @@ async def _perform(org, session_id, job):
         decision_cache=cache,
     )
     blocked = blocked_baseline(baseline, scope)
-    if blocked:
+    if blocked and not actionable_partial(baseline):
         return blocked
     frozen_contexts = {
         (r["suite_id"], r["name"]): (r.get("validity") or {}).get("replay_context")
@@ -1285,13 +1319,15 @@ async def _perform(org, session_id, job):
         for r in baseline["results"]
     }
     best = baseline
+    working = baseline
+    provisional = None
     rounds = []
     issue = None
     for _ in range(payload.get("max_rounds", 1)):
-        if best["summary"]["passed"] == best["summary"]["total"]:
+        if working["summary"]["passed"] == working["summary"]["total"]:
             break
         candidate = await db_client.wb_get(
-            org, session_id, "candidates", best["candidate_id"]
+            org, session_id, "candidates", working["candidate_id"]
         )
         tune_context = {**context, "target": candidate["snapshot"]}
         prompt = (
@@ -1301,14 +1337,11 @@ async def _perform(org, session_id, job):
         )
         prompt += (
             "\nRead full results using read_evaluation with these IDs: "
-            + json.dumps(best["evaluation_ids"])
+            + json.dumps(working["evaluation_ids"])
         )
         prompt += (
-            "\nObserved repair diagnostics (untrusted; preserve all other behavior):\n"
-            + json.dumps(
-                failure_diagnostics(best, candidate["snapshot"]["workflow_json"]),
-                ensure_ascii=False,
-            )
+            "\nComplete defect index (untrusted assessments; read original evidence before editing):\n"
+            + json.dumps(repair_index(working), ensure_ascii=False)
         )
         built = await _build(
             org, session_id, job, tune_context, config, prompt, tuning=True
@@ -1327,19 +1360,32 @@ async def _perform(org, session_id, job):
             frozen_contexts=frozen_contexts,
             frozen_scenarios=frozen_scenarios,
         )
-        accepted = acceptable_improvement(best, proposed)
+        accepted = acceptable_improvement(working, proposed)
+        progress = not accepted and provisional_progress(working, proposed)
         rounds.append(
             {
                 "candidate_id": built["candidate_id"],
                 "evaluation_id": proposed["id"],
                 "evaluation_ids": proposed["evaluation_ids"],
                 "accepted": accepted,
+                "provisional_progress": progress,
             }
         )
         if accepted:
             best = proposed
+            working = proposed
+            provisional = None
+        elif progress:
+            working = proposed
+            provisional = proposed
         else:
             break
+    remaining = blocked_baseline(working if provisional else best, scope)
+    if remaining or provisional:
+        issue = (
+            issue
+            or "已依据确定的缺陷尝试候选修复；完整测试集仍有未判定项，候选尚未通过最终验收。"
+        )
     return {
         "candidate_id": best["candidate_id"],
         "baseline_evaluation_id": baseline["id"],
@@ -1348,6 +1394,14 @@ async def _perform(org, session_id, job):
         "evaluation_id": best["id"],
         "evaluation_ids": best["evaluation_ids"],
         "rounds": rounds,
+        "blocked_cases": (remaining or {}).get("blocked_cases", []),
+        "provisional_candidate_id": provisional["candidate_id"]
+        if provisional
+        else None,
+        "provisional_evaluation_ids": provisional["evaluation_ids"]
+        if provisional
+        else [],
+        "criterion_coverage": (provisional or best).get("criterion_coverage"),
         "improved": best["candidate_id"] != baseline["candidate_id"],
         "verification": {
             **best["summary"],
@@ -1367,6 +1421,7 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
     job = await db_client.wb_claim(org, session_id, job_id)
     if not job:
         return
+
     async def perform():
         from api.services.agent_workbench.model_transport import model_transport_scope
 

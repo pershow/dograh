@@ -11,6 +11,8 @@ export function SimulationEvidence({result}: {result: CaseResult}) {
   return <section aria-label="测试方法与有效性" className={styles.candidateResult}>
     <strong>{simulationModes[result.mode || "scripted"]} · {result.status === "running" ? "检查中" : ({valid: "对话有效", invalid: "测试无效", inconclusive: "有效性未确定", unchecked: "未检查"} as Record<string,string>)[v.status] || v.status}</strong>
     {stop && <p>{stop}</p>}
+    {v.compilation && <p>使用已冻结的场景与验收标准；客户事实和后续模拟操作分别记录。</p>}
+    {v.stop_reason === "test_preparation_needed" && <p>本条尚未具备执行条件，请查看测试准备记录中的具体问题。{v.compilation?.error}</p>}
     {v.stop_reason === "alignment_uncertain" && <p>缺少足够证据确认下一句的前提，已暂停回放；尚未认定脚本错位。</p>}
     {v.stop_reason === "execution_error" && <p>仿真执行异常；不能据此判定 Agent 业务失败。</p>}
     {v.stop_reason === "replay_context_ambiguous" && <p>无法可靠确定样本的初始身份，已保留原因，未使用冲突身份启动仿真。</p>}
@@ -27,7 +29,7 @@ export function SimulationEvidence({result}: {result: CaseResult}) {
     {scenario && <details><summary>客户事实、测试假设与诉求</summary>
       <p>以下为冻结的测试场景；测试假设不写入 Agent 记忆，模拟操作不代表真实后台操作。</p>
       {scenario.facts.map(f=><p key={f.id}><b>{f.provenance === "customer_quote" ? "客户原话" : "测试假设"}</b>：{f.statement}{f.quote && <span> · 原文“{f.quote}”</span>}{f.reason && <span> · {f.reason}</span>}{f.applies_when && <span> · 适用条件：{f.applies_when}</span>}</p>)}
-      {scenario.goals.map(g=><p key={g.id}>诉求：{g.description} · 原文“{g.quote}”{v.pending_goals?.includes(g.id) ? " · 尚未覆盖" : ""}</p>)}
+      {scenario.goals.map(g=><p key={g.id}>诉求：{g.description} · 原文“{g.quote}”{v.goal_states?.[g.id] ? ` · ${{unraised: "尚未提出", raised: "已提出，尚未解决", resolved: "已解决"}[v.goal_states[g.id]] || v.goal_states[g.id]}` : v.pending_goals?.includes(g.id) ? " · 尚未覆盖" : ""}</p>)}
       {scenario.limitations.map((s,i)=><p key={i}>限制：{s}</p>)}
     </details>}
     {!!v.checks?.length && <details><summary>逐轮错位检查（{v.checks.length} 次）</summary>{v.checks.map((c,i)=><p key={i}>第 {c.turn} 轮 · {c.delivered ? "已发送" : "未发送"} · {c.verdict === "aligned" ? "承接有效" : c.verdict === "misaligned" ? "对话错位" : "无法确认"}：{c.reason}<br/>拟回复：{c.proposal.text || "（结束或停止）"}{c.proposal.simulated_action && <span> · 模拟操作：{c.proposal.simulated_action}</span>}</p>)}</details>}
