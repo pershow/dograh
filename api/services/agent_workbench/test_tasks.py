@@ -10,6 +10,7 @@ import json
 import re
 import tempfile
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import jsonschema
@@ -142,9 +143,34 @@ async def decision(
             reader,
         )
         dispatcher.reasoning_effort = reasoning_effort
-        await CodexClient(dispatcher, event).run(
-            json.dumps(evidence, ensure_ascii=False), llm, protocol=protocol
-        )
+        try:
+            await CodexClient(dispatcher, event).run(
+                json.dumps(evidence, ensure_ascii=False), llm, protocol=protocol
+            )
+        except WorkbenchError as error:
+            from api.services.agent_workbench.errors import LeaseLost
+
+            if isinstance(error, LeaseLost):
+                raise
+            # These dispatchers expose only reads and a validated result receipt.
+            # A lost final acknowledgement must not discard an accepted result.
+            if dispatcher.report is not None:
+                return dispatcher.report
+            from api.services.agent_workbench.errors import transient_model_error
+
+            if attempt or not transient_model_error(error):
+                raise
+            await event(
+                "model.progress",
+                {
+                    "phase": "retrying",
+                    "stage": name,
+                    "reason": "model_connection_error",
+                    "next_attempt": attempt + 2,
+                },
+            )
+            await asyncio.sleep(1)
+            continue
         if dispatcher.report is not None:
             return dispatcher.report
         last_validation_error = (
@@ -519,6 +545,8 @@ async def judge_reference(
 async def reusable_test_results(
     org, sid, prior_id, candidate, cases, current_request, model_fingerprint
 ):
+    from api.services.agent_workbench.evaluation import EVALUATION_VERSION
+
     reusable = {}
     if prior_id:
         visited = set()
@@ -551,15 +579,43 @@ async def reusable_test_results(
                     raise WorkbenchError(
                         "原测试结果与任务或固定版本不一致，不能复用。", 409
                     )
+                if (
+                    previous.get("summary", {}).get("evaluation_version")
+                    != EVALUATION_VERSION
+                ):
+                    # Old alignment/context semantics cannot be relabelled as
+                    # current evidence by continuing a task after an upgrade.
+                    continue
                 suite = await db_client.wb_get(org, sid, "suites", previous["suite_id"])
                 expected = {
                     case["name"]: SimulationCase.model_validate(case).model_dump()
                     for case in suite["payload"]["cases"]
                 }
                 for result in previous["results"]:
+                    validity = result.get("validity") or {}
+                    if (
+                        result["status"] == "inconclusive"
+                        and not result.get("run_id")
+                        and validity.get("stop_reason")
+                        in {"context_ambiguous", "replay_context_ambiguous"}
+                        and current.get(result["name"]) == expected.get(result["name"])
+                    ):
+                        # A completed setup verdict is semantic evidence, not a
+                        # transport retry. Keep uncertainty until inputs change.
+                        reusable.setdefault(
+                            result["name"],
+                            {
+                                **result,
+                                "original_evaluation_id": previous["id"],
+                                "review_pending": False,
+                            },
+                        )
                     if (
                         result.get("status") in {"running", "error"}
-                        and result.get("validity", {}).get("scenario")
+                        and (
+                            result.get("validity", {}).get("scenario")
+                            or result.get("validity", {}).get("replay_context")
+                        )
                         and current.get(result["name"]) == expected.get(result["name"])
                     ):
                         reusable.setdefault(
@@ -729,6 +785,14 @@ def prepare_test_cases(cases, mode, *, automatic_method=False, selected_turns=()
     return mode, prepared
 
 
+async def retained_import_issues(org, sid, payload):
+    source_id = payload.get("rerun_test_job_id") or payload.get("resume_test_job_id")
+    if not source_id:
+        return []
+    original = await db_client.wb_get(org, sid, "jobs", source_id)
+    return deepcopy(original.get("output", {}).get("import_issues", []))
+
+
 async def run_test_task(org, sid, job, builder, protocol, event):
     started = time.monotonic()
     candidate = await db_client.wb_test_target(org, sid, job["id"], job["lease_token"])
@@ -792,7 +856,8 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             for suite_id in job["input"]["test_suite_ids"]
         ]
         cases = [case for suite in selected for case in suite["payload"]["cases"]]
-        issues = []
+        # Missing source rows remain part of coverage on both rerun and resume.
+        issues = await retained_import_issues(org, sid, job["input"])
         manifest = [
             {
                 "suite_id": s["id"],
@@ -958,7 +1023,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         async def quiet_event(kind, payload):
             # Progress counters are visible; reviewer prose is not an execution
             # receipt and is only published after validation with the result.
-            if kind == "model.progress":
+            if kind in {"model.progress", "model.error"}:
                 await event(
                     kind,
                     {
@@ -982,6 +1047,9 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         )
 
     from api.services.agent_workbench.config import WorkbenchSettings
+    from api.services.agent_workbench.simulation import DecisionCache
+
+    decision_cache = DecisionCache()
 
     async def save_batch(payload):
         return await db_client.wb_save_suite(
@@ -1002,6 +1070,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             driver_llm=builder.llm,
             driver_protocol=protocol,
             case_semaphore=semaphore,
+            decision_cache=decision_cache,
         )
 
     suite_ids, evaluation_ids, counts = await execute_batches(

@@ -13,6 +13,21 @@ class InvalidDecision(WorkbenchError):
     """A read-only model result failed validation, not a transport failure."""
 
 
+def transient_model_error(error):
+    """Only transport failures may restart a pure structured decision."""
+    return not isinstance(error, (InvalidDecision, LeaseLost)) and any(
+        text in str(error)
+        for text in (
+            "Responses request did not complete",
+            "without a complete response",
+            "no data for",
+            "connection interrupted",
+            "I/O timeout",
+            "connection timed out",
+        )
+    )
+
+
 def validation_error_message(error):
     """Bounded field paths and rules, without echoing submitted data or contexts."""
     details = error.errors(

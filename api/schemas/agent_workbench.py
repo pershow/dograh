@@ -63,11 +63,18 @@ class Instruction(StrictModel):
     @model_validator(mode="after")
     def one_test_operation(self):
         if self.resume_build_job_id and (
-            self.mode != "build" or self.candidate_id or self.test_target_session_id
-            or self.continue_test_job_id or self.rerun_test_job_id
-            or self.review_evaluation_ids or self.test_suite_ids or self.asset_ids
+            self.mode != "build"
+            or self.candidate_id
+            or self.test_target_session_id
+            or self.continue_test_job_id
+            or self.rerun_test_job_id
+            or self.review_evaluation_ids
+            or self.test_suite_ids
+            or self.asset_ids
         ):
-            raise ValueError("Resume build must use the original candidate, tests and request")
+            raise ValueError(
+                "Resume build must use the original candidate, tests and request"
+            )
         if len(set(self.test_suite_ids)) != len(self.test_suite_ids):
             raise ValueError("Test suites must not be duplicated")
         if any(n < 1 for n in self.single_step_turns) or len(
@@ -252,12 +259,25 @@ class EvaluateRequest(StrictModel):
 
 
 class TuneRequest(EvaluateRequest):
+    suite_id: str | None = None
+    suite_ids: list[str] = Field(default_factory=list, max_length=100)
+    test_job_id: str | None = None
     asset_ids: list[str] = Field(default_factory=list, max_length=5)
     instruction: str = Field(
         default="Fix the failing cases without regressing passing cases.",
         max_length=12000,
     )
     max_rounds: int = Field(default=1, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def tuning_scope(self):
+        if sum(bool(v) for v in (self.suite_id, self.suite_ids, self.test_job_id)) != 1:
+            raise ValueError(
+                "Choose exactly one test task, suite list or individual suite"
+            )
+        if len(set(self.suite_ids)) != len(self.suite_ids):
+            raise ValueError("Duplicate tuning suite")
+        return self
 
 
 class VoiceSelection(StrictModel):

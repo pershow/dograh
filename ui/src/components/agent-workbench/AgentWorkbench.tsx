@@ -533,6 +533,11 @@ export function AgentWorkbench({
     j.output.candidate_id === candidateId &&
     Array.isArray(j.output.suite_ids) && j.output.suite_ids.includes(suiteId));
   const testTaskSummary = testTask?.output.summary as Record<string, number> | undefined;
+  const tuningTask = testTask?.output.outcome === "test" && testTask.output.candidate_id === candidateId ? testTask : undefined;
+  const tuningSuiteIds = tuningTask?.output.suite_ids as string[] | undefined;
+  const tuningCaseCount = tuningTask && typeof testTaskSummary?.total === "number"
+    ? testTaskSummary.total - (Array.isArray(tuningTask.output.import_issues) ? tuningTask.output.import_issues.length : 0)
+    : tuningSuiteIds?.reduce((total, id) => total + (state?.suites.find(s => s.id === id)?.payload.cases.length || 0), 0);
   const inFlightTests = testTask ? (state?.evaluations || [])
     .filter(e => e.job_id === testTask.id)
     .flatMap(e => e.results).filter(r => r.status === "running").length : 0;
@@ -590,7 +595,7 @@ export function AgentWorkbench({
           path: { session_id: session },
           body: {
             candidate_id: candidateId,
-            suite_id: suiteId,
+            ...(tuningTask ? {test_job_id: tuningTask.id} : {suite_id: suiteId}),
             idempotency_key: crypto.randomUUID(),
             instruction: text || "修复失败用例并保留已通过行为。",
             asset_ids: selectedAssets,
@@ -965,6 +970,7 @@ export function AgentWorkbench({
                 <Sparkles size={14} />
                 开始调优
               </Button>
+              <span className={styles.subtle}>调优范围：{tuningSuiteIds ? `完整测试任务 · ${tuningSuiteIds.length} 批 / ${tuningCaseCount} 条` : `所选测试集 · ${selectedSuite?.payload.cases.length || 0} 条`}。仅生成候选，应用前不会修改 Agent。</span>
               <select aria-label="重跑测试方式" className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
                 <option value="dynamic">动态客户仿真</option>
                 <option value="single_step">真实上下文单步</option>
@@ -1145,8 +1151,10 @@ export function AgentWorkbench({
                         <strong>调优任务 {jobs.length - index}</strong>
                         <span>{statusText[j.status] || j.status}</span>
                       </div>
+                      {!!j.output.tuning_scope && <p>完整范围：{String((j.output.tuning_scope as Record<string, unknown>).suite_count)} 批 / {String((j.output.tuning_scope as Record<string, unknown>).case_count)} 条</p>}
                       <p>
                         {(j.error && workbenchErrorText(j.error)) ||
+                          (typeof j.output.verification_issue === "string" && j.output.verification_issue) ||
                           (j.output.improved
                             ? "已找到通过更多用例且无回退的候选版本。"
                             : j.status === "completed"
@@ -1159,13 +1167,22 @@ export function AgentWorkbench({
                           size="sm"
                           onClick={() => {
                             setCandidateId(String(j.output.candidate_id));
-                            if (typeof j.input.suite_id === "string")
+                            const ids = Array.isArray(j.output.evaluation_ids) ? j.output.evaluation_ids : [];
+                            const saved = state.evaluations.filter(e => ids.includes(e.id));
+                            const selected = saved.find(e => e.suite_id === suiteId) || saved[0];
+                            if (selected) {
+                              setSuiteId(selected.suite_id);
+                              setEvaluationId(selected.id);
+                            } else {
+                              setEvaluationId("");
+                            }
+                            if (!selected && typeof j.input.suite_id === "string")
                               setSuiteId(j.input.suite_id);
-                            setCaseName(""); setEvaluationId("");
+                            setCaseName("");
                             setTab("tests");
                           }}
                         >
-                          查看推荐版本
+                          {j.output.blocked_reason ? "查看基线结果" : "查看推荐版本"}
                         </Button>
                       )}
                     </article>

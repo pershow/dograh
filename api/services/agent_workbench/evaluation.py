@@ -38,6 +38,9 @@ def resolve_node_references(case, graph):
     return references
 
 
+EVALUATION_VERSION = 3
+
+
 def tuning_evidence(evaluation):
     """Omit duplicate speech events and billing usage from each repeated model input."""
     results = []
@@ -170,6 +173,7 @@ def apply_reference_review(outcome, review):
             "severity": c.get("severity"),
             "layer": c.get("layer"),
             "repair_target": c.get("repair_target"),
+            "independent_of_mismatch": c.get("independent_of_mismatch", False),
             "citations": c.get("citations", []),
             "informational": c["status"] == "inconclusive",
         }
@@ -211,6 +215,9 @@ async def evaluate(
     driver_llm=None,
     driver_protocol=None,
     case_semaphore=None,
+    decision_cache=None,
+    frozen_contexts=None,
+    frozen_scenarios=None,
 ):
     from api.services.workflow.text_chat_runner import execute_text_chat_pending_turn
 
@@ -241,9 +248,12 @@ async def evaluate(
         async def quiet_event(kind, payload):
             if kind == "model.error":
                 await db_client.wb_emit(
-                    org, session_id, kind,
+                    org,
+                    session_id,
+                    kind,
                     {**payload, "job_id": job["id"], "stage": "reference_review"},
-                    job_id=job["id"], token=job["lease_token"],
+                    job_id=job["id"],
+                    token=job["lease_token"],
                 )
 
         async def reference_judge(case, transcript, events):
@@ -271,6 +281,9 @@ async def evaluate(
         ).effective.llm
 
     from api.services.agent_workbench.config import WorkbenchSettings
+    from api.services.agent_workbench.simulation import DecisionCache
+
+    decision_cache = decision_cache or DecisionCache()
 
     started = time.monotonic()
     results = {
@@ -281,7 +294,7 @@ async def evaluate(
                 m.get("role") == "assistant" and m.get("text")
                 for m in prior_results[c.name].get("transcript", [])
             ),
-            "reused_runtime": True,
+            "reused_runtime": bool(prior_results[c.name].get("run_id")),
         }
         for i, c in enumerate(suite.cases)
         if prior_results
@@ -365,6 +378,7 @@ async def evaluate(
         run_id, transcript, events, turns, checkpoint = None, [], [], [], None
         completed, gathered, usage = False, {}, []
         driver = None
+        diagnostics = []
 
         async def publish_partial():
             async with persist_lock:
@@ -430,6 +444,24 @@ async def evaluate(
                             "preparing" if run_id is None else "customer",
                             detail=payload.get("phase"),
                         )
+                    elif kind == "model.error":
+                        diagnostic = {
+                            **payload,
+                            "component": "simulation",
+                            "case_name": case.name,
+                            "run_id": run_id,
+                            "evaluation_id": evaluation["id"],
+                            "job_id": job["id"],
+                        }
+                        diagnostics.append(diagnostic)
+                        await db_client.wb_emit(
+                            org,
+                            session_id,
+                            kind,
+                            diagnostic,
+                            job_id=job["id"],
+                            token=job["lease_token"],
+                        )
 
                 driver = ConversationDriver(
                     case,
@@ -441,6 +473,7 @@ async def evaluate(
                     if getattr(model_configuration.llm, "provider", "")
                     in {"openai", "openrouter", "atlascloud", "hopper"}
                     else None,
+                    decision_cache=decision_cache,
                 )
                 await case_event("preparing")
                 frozen = (
@@ -449,6 +482,14 @@ async def evaluate(
                     .get("validity", {})
                     .get("scenario")
                 )
+                frozen = (frozen_scenarios or {}).get((suite_id, case.name)) or frozen
+                frozen_context = (frozen_contexts or {}).get((suite_id, case.name)) or (
+                    prior_results or {}
+                ).get(case.name, {}).get("validity", {}).get("replay_context")
+                if frozen_context:
+                    # Both recovery and candidate comparison keep the original
+                    # fixture; neither may rebind the customer's identity.
+                    driver.replay_context = copy.deepcopy(frozen_context)
                 if case.mode == "dynamic" and frozen:
                     driver.scenario = copy.deepcopy(frozen)
                 else:
@@ -456,9 +497,23 @@ async def evaluate(
                 await case_event("scenario_ready", validity=driver.receipt())
                 await publish_partial()
                 if driver.stop_reason:
+                    reason = (
+                        (driver.context_selection or {}).get("reason")
+                        or (
+                            (driver.replay_context or {}).get("verification") or {}
+                        ).get("reason")
+                        or "；".join(
+                            (driver.replay_context or {}).get("limitations", [])
+                        )
+                        or "缺少可靠的初始上下文。"
+                    )
                     raise WorkbenchError(
-                        "真实上下文无法唯一对应运行节点："
-                        + driver.context_selection["reason"]
+                        (
+                            "开场身份上下文无法确认："
+                            if driver.stop_reason == "replay_context_ambiguous"
+                            else "真实上下文无法唯一对应运行节点："
+                        )
+                        + reason
                     )
                 if case.mode == "single_step":
                     checkpoint = driver.checkpoint()
@@ -471,6 +526,11 @@ async def evaluate(
                 {
                     **(candidate["snapshot"].get("template_context_variables") or {}),
                     **case.initial_context,
+                    **(
+                        (driver.replay_context or {}).get("variables", {})
+                        if driver
+                        else {}
+                    ),
                 },
             )
             turn_index = 0
@@ -636,7 +696,10 @@ async def evaluate(
                 "error": (str(error) or "单轮仿真超过 75 秒未完成")[:2000],
                 "assertions": [],
             }
-            if driver and driver.stop_reason == "context_ambiguous":
+            if driver and driver.stop_reason in {
+                "context_ambiguous",
+                "replay_context_ambiguous",
+            }:
                 outcome["status"] = "inconclusive"
         finally:
             if run_id is not None:
@@ -653,6 +716,7 @@ async def evaluate(
                 "events": events,
                 "tool_calls": policy.calls,
                 "usage": usage,
+                "diagnostics": diagnostics,
                 "mode": case.mode,
                 "history": [t.model_dump() for t in case.history],
                 "validity": driver.receipt(completed)
@@ -692,6 +756,7 @@ async def evaluate(
                     for r in values
                 ),
                 "total": len(suite.cases),
+                "evaluation_version": EVALUATION_VERSION,
                 "attempted": sum(bool(r.get("run_id")) for r in values),
                 "executed": sum(bool(r.get("runtime_responded")) for r in values),
                 "reused": sum(bool(r.get("reused_runtime")) for r in values),

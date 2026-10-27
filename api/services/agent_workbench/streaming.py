@@ -42,11 +42,11 @@ def decode_sse(raw):
         ) from error
 
 
-async def sse_data(response):
+async def sse_data(response, *, lines=None):
     """Parse SSE across arbitrary HTTP chunks, including multiline data/comments."""
     data = []
     size = 0
-    async for line in response.aiter_lines():
+    async for line in lines if lines is not None else response.aiter_lines():
         if line.startswith("data:"):
             value = line[5:].lstrip(" ")
             size += len(value)

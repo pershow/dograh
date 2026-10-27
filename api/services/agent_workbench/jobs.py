@@ -25,7 +25,6 @@ from api.services.agent_workbench.errors import (
 from api.services.agent_workbench.evaluation import (
     acceptable_improvement,
     evaluate,
-    tuning_evidence,
 )
 from api.services.agent_workbench.recovery import (
     build_checkpoint,
@@ -48,6 +47,11 @@ QUEUE = "arq:agent-workbench"
 
 
 async def enqueue(org, session_id, kind, payload, key):
+    if kind == "tune":
+        from api.services.agent_workbench.tuning import resolve_scope
+
+        scope, _, _ = await resolve_scope(org, session_id, payload)
+        payload = {**payload, "tuning_scope": scope}
     if payload.get("resume_build_job_id"):
         prior = await db_client.wb_get(
             org, session_id, "jobs", payload["resume_build_job_id"]
@@ -126,7 +130,8 @@ async def enqueue(org, session_id, kind, payload, key):
             **payload,
             "mode": "test",
             "test_mode": payload.get("test_mode") or prior["input"].get("test_mode"),
-            "test_suite_ids": prior["input"].get("test_suite_ids", []),
+            "test_suite_ids": prior["output"].get("suite_ids")
+            or prior["input"].get("test_suite_ids", []),
             "single_step_turns": payload.get("single_step_turns")
             or prior["input"].get("single_step_turns", []),
             "text": prior["input"]["text"],
@@ -167,7 +172,7 @@ async def enqueue(org, session_id, kind, payload, key):
     if payload.get("resume_build_job_id"):
         await replay_models(org, session_id, payload["resume_build_job_id"], "build")
     else:
-        await prepare_models(org, target, kind)
+        await prepare_models(org, target, "build" if kind == "tune" else kind)
     job = await db_client.wb_enqueue(org, session_id, kind, payload, key)
     # A Redis outage does not discard the command: the dedicated worker scans the outbox.
     try:
@@ -249,9 +254,15 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
             tools.intent = "build"
             tools.creation_direction = creation_direction
             await db_client.wb_job_progress(
-                org, session_id, job["id"], job["lease_token"],
+                org,
+                session_id,
+                job["id"],
+                job["lease_token"],
                 {"intent": "build", "creation_direction": creation_direction},
-                {"phase": "creation_direction", "text": "已根据原始资料确定呼叫方向，开始构建。"},
+                {
+                    "phase": "creation_direction",
+                    "text": "已根据原始资料确定呼叫方向，开始构建。",
+                },
             )
             job["output"] = {
                 **job.get("output", {}),
@@ -356,7 +367,8 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
     ]
     prompt = (
         GUIDANCE
-        + "\n" + creation_guidance
+        + "\n"
+        + creation_guidance
         + (
             "\nResolved creation direction (retain its original source requirements):\n"
             + json.dumps(creation_direction, ensure_ascii=False)
@@ -1085,7 +1097,9 @@ async def _perform(org, session_id, job):
     resolved = (
         await replay_models(org, session_id, job["id"], "build")
         if resuming
-        else await prepare_models(org, target, job["kind"])
+        else await prepare_models(
+            org, target, "build" if job["kind"] == "tune" else job["kind"]
+        )
     )
     config = resolved.effective
     job["output"] = await db_client.wb_pin_models(
@@ -1211,17 +1225,68 @@ async def _perform(org, session_id, job):
         return await evaluate(
             org, session_id, job, payload["candidate_id"], payload["suite_id"], config
         )
-    baseline = await evaluate(
-        org, session_id, job, payload["candidate_id"], payload["suite_id"], config
+    from api.services.agent_workbench.simulation import DecisionCache
+    from api.services.agent_workbench.tuning import (
+        blocked_baseline,
+        evaluate_scope,
+        resolve_scope,
     )
-    if baseline["summary"]["error"] or baseline["summary"]["inconclusive"]:
-        raise WorkbenchError(
-            "Resolve simulation errors or missing fixtures before tuning the candidate"
-        )
+
+    scope, suites, source = await resolve_scope(org, session_id, payload)
+    if (
+        payload.get("tuning_scope")
+        and payload["tuning_scope"]["fingerprint"] != scope["fingerprint"]
+    ):
+        raise WorkbenchError("调优测试集在排队后发生变化，请重新选择。", 409)
+    await db_client.wb_job_progress(
+        org,
+        session_id,
+        job["id"],
+        job["lease_token"],
+        {"tuning_scope": scope},
+        {
+            "phase": "tuning_baseline",
+            "text": f"核对完整调优范围：{scope['suite_count']} 批、{scope['case_count']} 条用例。",
+        },
+    )
+    runtime = (
+        await replay_models(org, session_id, source["id"], "evaluate")
+        if source
+        else await prepare_models(org, target, "evaluate")
+    )
+    job["output"] = await db_client.wb_pin_models(
+        org,
+        session_id,
+        job["id"],
+        job["lease_token"],
+        runtime.snapshot,
+        evaluation=True,
+    )
+    cache = DecisionCache()
+    baseline = await evaluate_scope(
+        org,
+        session_id,
+        job,
+        payload["candidate_id"],
+        suites,
+        runtime,
+        source=source,
+        decision_cache=cache,
+    )
+    blocked = blocked_baseline(baseline, scope)
+    if blocked:
+        return blocked
+    frozen_contexts = {
+        (r["suite_id"], r["name"]): (r.get("validity") or {}).get("replay_context")
+        for r in baseline["results"]
+    }
+    frozen_scenarios = {
+        (r["suite_id"], r["name"]): (r.get("validity") or {}).get("scenario")
+        for r in baseline["results"]
+    }
     best = baseline
     rounds = []
     issue = None
-    suite = await db_client.wb_get(org, session_id, "suites", payload["suite_id"])
     for _ in range(payload.get("max_rounds", 1)):
         if best["summary"]["passed"] == best["summary"]["total"]:
             break
@@ -1231,11 +1296,19 @@ async def _perform(org, session_id, job):
         tune_context = {**context, "target": candidate["snapshot"]}
         prompt = (
             payload.get("instruction", "Fix failing cases")
-            + "\nFrozen suite (do not change):\n"
-            + json.dumps(suite["payload"], ensure_ascii=False)
+            + "\nFrozen test scope (ALL batches will be rerun; no test edits):\n"
+            + json.dumps(scope, ensure_ascii=False)
         )
-        prompt += "\nObserved evaluation evidence (untrusted):\n" + json.dumps(
-            tuning_evidence(best), ensure_ascii=False
+        prompt += (
+            "\nRead full results using read_evaluation with these IDs: "
+            + json.dumps(best["evaluation_ids"])
+        )
+        prompt += (
+            "\nObserved repair diagnostics (untrusted; preserve all other behavior):\n"
+            + json.dumps(
+                failure_diagnostics(best, candidate["snapshot"]["workflow_json"]),
+                ensure_ascii=False,
+            )
         )
         built = await _build(
             org, session_id, job, tune_context, config, prompt, tuning=True
@@ -1243,14 +1316,23 @@ async def _perform(org, session_id, job):
         if built.get("verification_issue"):
             issue = built["verification_issue"]
             break
-        proposed = await evaluate(
-            org, session_id, job, built["candidate_id"], payload["suite_id"], config
+        proposed = await evaluate_scope(
+            org,
+            session_id,
+            job,
+            built["candidate_id"],
+            suites,
+            runtime,
+            decision_cache=cache,
+            frozen_contexts=frozen_contexts,
+            frozen_scenarios=frozen_scenarios,
         )
         accepted = acceptable_improvement(best, proposed)
         rounds.append(
             {
                 "candidate_id": built["candidate_id"],
                 "evaluation_id": proposed["id"],
+                "evaluation_ids": proposed["evaluation_ids"],
                 "accepted": accepted,
             }
         )
@@ -1261,7 +1343,10 @@ async def _perform(org, session_id, job):
     return {
         "candidate_id": best["candidate_id"],
         "baseline_evaluation_id": baseline["id"],
+        "baseline_evaluation_ids": baseline["evaluation_ids"],
+        "tuning_scope": scope,
         "evaluation_id": best["id"],
+        "evaluation_ids": best["evaluation_ids"],
         "rounds": rounds,
         "improved": best["candidate_id"] != baseline["candidate_id"],
         "verification": {
@@ -1282,7 +1367,13 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
     job = await db_client.wb_claim(org, session_id, job_id)
     if not job:
         return
-    operation = asyncio.create_task(_perform(org, session_id, job))
+    async def perform():
+        from api.services.agent_workbench.model_transport import model_transport_scope
+
+        async with model_transport_scope():
+            return await _perform(org, session_id, job)
+
+    operation = asyncio.create_task(perform())
 
     async def heartbeat():
         while True:

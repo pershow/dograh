@@ -157,10 +157,22 @@ async def test_pure_decision_retries_transport_but_not_semantic_errors(monkeypat
     from api.services.agent_workbench import test_tasks
 
     driver = simulation.ConversationDriver(source_case(), {}, None, AsyncMock(), "chat")
-    call = AsyncMock(
-        side_effect=[WorkbenchError("Responses request did not complete"), scenario()]
+
+    async def submit(client, *_args, **_kwargs):
+        client.dispatcher.report = scenario()
+
+    outcomes = iter([WorkbenchError("Responses request did not complete"), None])
+
+    async def run(client, *args, **kwargs):
+        error = next(outcomes)
+        if error:
+            raise error
+        await submit(client, *args, **kwargs)
+
+    call = AsyncMock(side_effect=run)
+    monkeypatch.setattr(
+        test_tasks.CodexClient, "run", lambda client, *a, **kw: call(client, *a, **kw)
     )
-    monkeypatch.setattr(test_tasks, "decision", call)
     monkeypatch.setattr(simulation.asyncio, "sleep", AsyncMock())
     assert await driver.decide("scenario", "rules", {}, {}) == scenario()
     assert call.await_count == 2

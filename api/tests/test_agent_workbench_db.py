@@ -776,3 +776,53 @@ async def test_diagnostic_probe_receipts_survive_jobs_and_remain_session_scoped(
     assert await db_session.wb_diagnostic_probes(org, other['id'], [run.id]) == []
     with pytest.raises(WorkbenchError):
         await db_session.wb_diagnostic_probes(org + 999, sid, [run.id])
+
+
+async def test_tuning_task_scope_is_tenant_scoped_complete_and_read_only(
+    db_session, wb, monkeypatch
+):
+    from api.services.agent_workbench import tuning
+
+    org, user, sid = wb
+    monkeypatch.setattr(tuning, "db_client", db_session)
+    before = await db_session.wb_context(org, sid)
+    queued = await db_session.wb_enqueue(
+        org, sid, "build", {"text": "test only"}, "scope-test"
+    )
+    job = await db_session.wb_claim(org, sid, queued["id"])
+    suites = [
+        await db_session.wb_save_suite(
+            org,
+            sid,
+            {
+                "name": f"batch {i}",
+                "cases": [{"name": f"case {i}-{n}"} for n in range(size)],
+            },
+        )
+        for i, size in enumerate([3, 1])
+    ]
+    await db_session.wb_finish(
+        org,
+        sid,
+        job["id"],
+        job["lease_token"],
+        "completed",
+        output={
+            "outcome": "test",
+            "candidate_id": "frozen",
+            "suite_ids": [s["id"] for s in suites],
+            "summary": {"total": 4},
+        },
+    )
+    payload = {"candidate_id": "frozen", "test_job_id": job["id"]}
+    scope, selected, _ = await tuning.resolve_scope(org, sid, payload)
+    assert scope["case_count"] == 4 and scope["suite_count"] == 2
+    assert [s["id"] for s in selected] == [s["id"] for s in suites]
+    with pytest.raises(WorkbenchError):
+        await tuning.resolve_scope(org + 999, sid, payload)
+    other = await db_session.wb_create_session(org, user, name="Other task")
+    with pytest.raises(WorkbenchError):
+        await tuning.resolve_scope(org, other["id"], payload)
+    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == before[
+        "target_fingerprint"
+    ]

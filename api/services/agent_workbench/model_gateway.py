@@ -18,6 +18,10 @@ import httpx
 from aiohttp import web
 
 from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.model_transport import (
+    finish_response,
+    model_http_client,
+)
 from api.services.agent_workbench.streaming import (
     ChatStream,
     sse_data,
@@ -311,6 +315,8 @@ class ModelGateway:
         on_event=None,
         progress_interval=5,
         tool_specs=None,
+        trust_env=True,
+        proxy=None,
     ):
         if protocol not in {"chat", "responses"}:
             raise WorkbenchError("Unknown model protocol")
@@ -331,7 +337,14 @@ class ModelGateway:
         self.last_error = None
         self.last_error_code = None
         self.invalid_tool_name = None
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(idle_timeout, connect=15))
+        # A service may explicitly opt out of environment proxy settings without
+        # changing the Agent connection or silently falling back between routes.
+        self.client, self.owns_client = model_http_client(
+            llm_config,
+            idle_timeout=idle_timeout,
+            trust_env=trust_env,
+            proxy=proxy,
+        )
 
     async def __aenter__(self):
         from api.utils.url_security import validate_user_configured_service_url
@@ -349,9 +362,12 @@ class ModelGateway:
         return self
 
     async def __aexit__(self, *_):
-        if self.runner:
-            await self.runner.cleanup()
-        await self.client.aclose()
+        try:
+            if self.runner:
+                await self.runner.cleanup()
+        finally:
+            if self.owns_client:
+                await self.client.aclose()
 
     def check_budget(self):
         request_limit = (
@@ -506,10 +522,11 @@ class ModelGateway:
                     }:
                         yield event
                 return
+            lines = upstream.aiter_lines()
             if self.protocol == "chat":
                 adapter = ChatStream(self.allowed, output_limit)
                 try:
-                    async for chunk in sse_data(upstream):
+                    async for chunk in sse_data(upstream, lines=lines):
                         reasoning = sum(
                             len(
                                 str(
@@ -536,7 +553,7 @@ class ModelGateway:
             else:
                 completed = False
                 pending = []
-                async for event in sse_data(upstream):
+                async for event in sse_data(upstream, lines=lines):
                     kind = event.get("type", "")
                     if "item" in event:
                         validate_response_item(event["item"], self.allowed)
@@ -576,6 +593,7 @@ class ModelGateway:
                     )
                 for event in pending:
                     yield event
+            await finish_response(lines)
 
     async def progressing_events(self, payload, result, output_limit, client_headers):
         # Network keepalives and empty SSE events are not model progress. Keep

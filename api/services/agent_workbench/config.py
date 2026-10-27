@@ -17,6 +17,8 @@ class WorkbenchSettings:
     model_idle_timeout: int = 90
     model_request_timeout: int | None = None
     model_max_retries: int = 2
+    model_trust_env: bool = True
+    model_proxy: str | None = None
     build_repair_rounds: int | None = None
     evaluation_concurrency: int = 3
     model_context_window: int = 131072
@@ -57,6 +59,9 @@ class WorkbenchSettings:
             model_max_retries=max(
                 0, min(3, int(os.getenv("WORKBENCH_MODEL_MAX_RETRIES", "2")))
             ),
+            model_trust_env=os.getenv("WORKBENCH_MODEL_TRUST_ENV", "true").lower()
+            == "true",
+            model_proxy=os.getenv("WORKBENCH_MODEL_PROXY") or None,
             # No arbitrary round cutoff by default. The repair loop stops on
             # convergence, infrastructure failure or repeated lack of progress.
             # Preserve explicit deployment caps, including 0 to disable repairs.

@@ -12,7 +12,9 @@ def safe_message(error, secrets=()):
             text = text.replace(secret, "[redacted]")
     # URLs may carry userinfo, API keys or signed query parameters.
     text = re.sub(
-        r"https?://[^\s'\"<>]+", lambda m: urlsplit(m[0]).hostname or "[url]", text
+        r"(?:https?|socks[45]h?|socks4a)://[^\s'\"<>]+",
+        lambda m: urlsplit(m[0]).hostname or "[url]",
+        text,
     )
     text = re.sub(r"(?i)\b(bearer|basic)\s+[^\s,'\";]+", r"\1 [redacted]", text)
     text = re.sub(

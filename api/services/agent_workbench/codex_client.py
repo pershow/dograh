@@ -212,7 +212,9 @@ If a frozen expectation contradicts the source or cannot be justified, use
 report_verification_issue with the exact conflict and stop. Do not change the agent
 to satisfy an invalid test, and do not resave an unchanged candidate as a repair.
 """
-INSTRUCTIONS += "\n" + STRUCTURE_GUIDANCE + CONVERSATION_GUIDANCE + BEHAVIOR_TEST_GUIDANCE
+INSTRUCTIONS += (
+    "\n" + STRUCTURE_GUIDANCE + CONVERSATION_GUIDANCE + BEHAVIOR_TEST_GUIDANCE
+)
 
 
 def tool_content(result):
@@ -310,8 +312,16 @@ class CodexClient:
             import traceback
 
             from loguru import logger
-            logger.warning("Workbench tool {} failed: {} at {}", params["tool"], type(error).__name__,
-                           [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)])
+
+            logger.warning(
+                "Workbench tool {} failed: {} at {}",
+                params["tool"],
+                type(error).__name__,
+                [
+                    (frame.name, frame.lineno)
+                    for frame in traceback.extract_tb(error.__traceback__)
+                ],
+            )
 
             if getattr(self.dispatcher, "fatal_error", None) and not self.done.done():
                 self.done.set_exception(self.dispatcher.fatal_error)
@@ -437,6 +447,8 @@ class CodexClient:
             idle_timeout=settings.model_idle_timeout,
             request_timeout=settings.model_request_timeout,
             max_retries=settings.model_max_retries,
+            trust_env=settings.model_trust_env,
+            proxy=settings.model_proxy,
             on_event=self.on_event,
             tool_specs=self.dispatcher.specs if durable else None,
         ) as gateway:

@@ -6,7 +6,7 @@ import type { WorkbenchState } from '../types';
 
 const mocks = vi.hoisted(() => ({
   replace: vi.fn(), capabilities: vi.fn(), create: vi.fn(), session: vi.fn(), sessions: vi.fn(), events: vi.fn(),
-  runs: vi.fn(), instruct: vi.fn(), candidate: vi.fn(), adopt: vi.fn(), voice: vi.fn(), dependencies: vi.fn(),
+  runs: vi.fn(), instruct: vi.fn(), candidate: vi.fn(), adopt: vi.fn(), voice: vi.fn(), dependencies: vi.fn(), tune: vi.fn(),
   auth: { user: { id: '1' }, loading: false, getAccessToken: vi.fn(), redirectToLogin: vi.fn() },
 }));
 vi.mock('../workbench.module.css', () => ({ default: {} }));
@@ -25,6 +25,7 @@ vi.mock('@/client/sdk.gen', () => ({
   workbenchCandidateApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdGet: mocks.candidate,
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost: mocks.adopt,
   workbenchDependenciesApiV1AgentWorkbenchSessionsSessionIdDependenciesGet: mocks.dependencies,
+  workbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePost: mocks.tune,
 }));
 const response = (data: unknown) => ({ data: { data } });
 const snapshot = { name: 'Agent', workflow_json: { nodes: [], edges: [] }, workflow_configurations: {}, template_context_variables: {} };
@@ -46,10 +47,45 @@ beforeEach(() => {
   mocks.candidate.mockResolvedValue(response(candidate));
   mocks.adopt.mockResolvedValue(response({}));
   mocks.instruct.mockResolvedValue(response({}));
+  mocks.tune.mockResolvedValue(response({}));
   mocks.runs.mockResolvedValue(response({runs: [{id: 42, created_at: "2026-10-20", state: "completed", has_transcript: true}]}));
   mocks.dependencies.mockResolvedValue(response({ ready: true, issues: [], services: [] }));
   mocks.voice.mockReturnValue({ status: 'off', start: vi.fn(), stop: vi.fn() });
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+it('tunes the complete task even when the selected suite is its last small batch', async () => {
+  const suites = [{id: 'first', payload: {name: 'First', cases: [{}, {}, {}]}}, {id: 'last', payload: {name: 'Last', cases: [{}]}}];
+  mocks.session.mockResolvedValue(response({...state, suites, jobs: [{id: 'full-test', kind: 'build', status: 'completed', input: {}, output: {outcome: 'test', candidate_id: 'candidate', suite_ids: ['first', 'last'], suite_id: 'last', summary: {total: 4}}}], evaluations: []}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'task.completed', payload: {output: {candidate_id: 'candidate', suite_id: 'last'}}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '文本仿真'}));
+  expect(await screen.findByText(/完整测试任务 · 2 批 \/ 4 条/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', {name: '开始调优'}));
+  await waitFor(() => expect(mocks.tune).toHaveBeenCalledOnce());
+  expect(mocks.tune.mock.calls[0][0].body.test_job_id).toBe('full-test');
+  expect(mocks.tune.mock.calls[0][0].body.suite_id).toBeUndefined();
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});
+
+it('opens the exact full-task baseline receipt from a blocked tuning task', async () => {
+  const result = (text: string) => ({name: 'Case', status: 'inconclusive', transcript: [{role: 'assistant', text}], assertions: [], tool_calls: []});
+  mocks.session.mockResolvedValue(response({...state,
+    suites: [{id: 'unrelated', payload: {name: 'Other', cases: []}}, {id: 'frozen', payload: {name: 'Frozen', cases: []}}],
+    evaluations: [
+      {id: 'newer', candidate_id: 'candidate', suite_id: 'frozen', status: 'completed', summary: {}, results: [result('Unrelated newer reply')]},
+      {id: 'baseline', candidate_id: 'candidate', suite_id: 'frozen', status: 'completed', summary: {}, results: [result('Frozen baseline reply')]},
+    ],
+    jobs: [{id: 'tune', kind: 'tune', status: 'needs_attention', input: {test_job_id: 'test'}, output: {candidate_id: 'candidate', evaluation_ids: ['baseline'], blocked_reason: 'baseline_incomplete', verification_issue: 'Missing evidence', tuning_scope: {suite_count: 2, case_count: 4}}}],
+  }));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: /^调优$/}));
+  fireEvent.click(screen.getByRole('button', {name: '查看基线结果'}));
+  expect(await screen.findByText('Frozen baseline reply')).toBeTruthy();
+  expect(screen.queryByText('Unrelated newer reply')).toBeNull();
+  expect((screen.getByLabelText('测试集') as HTMLSelectElement).value).toBe('frozen');
+  expect(mocks.adopt).not.toHaveBeenCalled();
+  expect(mocks.instruct).not.toHaveBeenCalled();
 });
 
 it('resumes the saved build without starting a new generation or adopting a candidate', async () => {
