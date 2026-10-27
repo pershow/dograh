@@ -63,7 +63,7 @@ export function AgentMemory({session, revision, onChanged}: {session: string; re
     setSources(previous => offset && previous ? {...page, items: [...previous.items, ...page.items]} : page);
   };
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger asChild><Button variant="ghost" size="icon" aria-label="Agent 长期记忆" title="Agent 长期记忆"><Brain size={16}/></Button></PopoverTrigger>
+    <PopoverTrigger asChild><Button variant="ghost" size="icon" className={styles.headerIconButton} aria-label="Agent 长期记忆" title="Agent 长期记忆"><Brain size={16}/></Button></PopoverTrigger>
     <PopoverContent align="end" className={styles.memoryPanel} aria-label="Agent 长期记忆">
       <h3>此 Agent 的长期记忆</h3>
       <p className={styles.subtle}>同一 Agent 的会话共用已确认要求。用户原文和附件可查回；历史问题和模型推测不会自动变成已确认事实。</p>

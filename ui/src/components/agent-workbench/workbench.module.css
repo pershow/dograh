@@ -11,26 +11,46 @@
 .header {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
 }
-.header > strong {
-  font-size: 15px;
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
-.header > svg {
+.headerTitle > strong {
+  font-size: 15px;
+  white-space: nowrap;
+}
+.headerTitle > svg {
   color: var(--primary);
 }
 .headerActions {
   display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
   align-items: center;
   margin-left: auto;
-  gap: 2px;
+  max-width: 100%;
+  gap: 4px;
 }
-.headerActions button {
+.headerActions > button {
   position: relative;
-  width: 30px;
   height: 30px;
+}
+.headerActions > .headerIconButton {
+  width: 30px;
+  padding: 0;
+}
+.capabilityPopover {
+  width: min(480px, calc(100vw - 24px));
+  max-height: min(75vh, var(--radix-popover-content-available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .warningDot {
   position: absolute;

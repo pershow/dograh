@@ -666,12 +666,14 @@ export function AgentWorkbench({
   return (
     <div className={styles.workbench}>
       <header className={styles.header}>
-        <Sparkles size={18} />
-        <strong>Agent 工作台</strong>
+        <div className={styles.headerTitle}>
+          <Sparkles size={18} />
+          <strong>Agent 工作台</strong>
+        </div>
         <div className={styles.headerActions}>
           <Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="工作台会话" title="工作台会话">
+              <Button variant="ghost" size="icon" className={styles.headerIconButton} aria-label="工作台会话" title="工作台会话">
                 <MessageSquare size={16} />
               </Button>
             </PopoverTrigger>
@@ -712,12 +714,28 @@ export function AgentWorkbench({
             </PopoverContent>
           </Popover>
           <AgentMemory key={session} session={session} revision={state.memory_revision} onChanged={() => void reload()} />
-          <Popover><PopoverTrigger asChild><Button variant="ghost" size="sm">能力配置</Button></PopoverTrigger><PopoverContent align="end" className="w-[480px] max-h-[75vh] overflow-y-auto"><CapabilityEditor key={`${session}:${candidateId}:${state.target_fingerprint}`} session={session} snapshot={candidate?.snapshot || state.target} candidateId={candidateId || undefined} fingerprint={state.target_fingerprint || ""} disabled={locked || (!!candidateId && !candidate?.snapshot)} onCreated={id => {setCandidateId(id); void reload();}}/></PopoverContent></Popover>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm">能力配置</Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className={styles.capabilityPopover} aria-label="能力配置">
+              <CapabilityEditor
+                key={`${session}:${candidateId}:${state.target_fingerprint}`}
+                session={session}
+                snapshot={candidate?.snapshot || state.target}
+                candidateId={candidateId || undefined}
+                fingerprint={state.target_fingerprint || ""}
+                disabled={locked || (!!candidateId && !candidate?.snapshot)}
+                onCreated={id => { setCandidateId(id); void reload(); }}
+              />
+            </PopoverContent>
+          </Popover>
           <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
+                className={styles.headerIconButton}
                 aria-label="工作台设置"
                 title="工作台设置"
               >
@@ -791,6 +809,7 @@ export function AgentWorkbench({
             <Button
               variant="ghost"
               size="icon"
+              className={styles.headerIconButton}
               aria-label={expanded ? "收起工作台" : "展开工作台"}
               title={expanded ? "收起工作台" : "展开工作台"}
               onClick={() => onExpandedChange(!expanded)}
@@ -801,6 +820,7 @@ export function AgentWorkbench({
           <Button
             variant="ghost"
             size="icon"
+            className={styles.headerIconButton}
             aria-label="关闭工作台"
             title="关闭工作台"
             onClick={onClose}
