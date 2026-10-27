@@ -6552,11 +6552,19 @@ export type TuneRequest = {
     /**
      * Suite Id
      */
-    suite_id: string;
+    suite_id?: string | null;
     /**
      * Idempotency Key
      */
     idempotency_key: string;
+    /**
+     * Suite Ids
+     */
+    suite_ids?: Array<string>;
+    /**
+     * Test Job Id
+     */
+    test_job_id?: string | null;
     /**
      * Asset Ids
      */

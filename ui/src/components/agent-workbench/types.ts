@@ -62,6 +62,7 @@ export type CaseResult = {
   validity?: {
     status: string; mode?: string; scope?: string; stop_reason?: string; source_turn?: number;
     context_is_inferred?: boolean;
+    replay_context?: {variables: Record<string, unknown>; assumption: string; limitations: string[]; bindings: {variable: string; value: string; quote: string; reason: string}[]};
     context_selection?: {node_id: string | null; reason: string; history_quote: string; ambiguous: boolean};
     scenario?: {fingerprint: string; facts: {id: string; statement: string; provenance: string; quote: string; reason: string; applies_when?: string}[]; goals: {id: string; description: string; quote: string}[]; limitations: string[]};
     checks?: {turn: number; verdict: string; reason: string; delivered: boolean; proposal: {text: string; simulated_action?: string}}[];

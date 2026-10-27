@@ -70,6 +70,9 @@ CHECK = obj(
             ]
         },
         "applicability": TEXT,
+        "timing_scope": {"enum": ["same_turn", "before_action", "eventual", "none"]},
+        "timing_citation": {"anyOf": [CITATION, {"type": "null"}]},
+        "independent_of_mismatch": {"type": "boolean"},
         "citations": {"type": "array", "minItems": 1, "items": CITATION},
     }
 )
@@ -141,6 +144,16 @@ quality requirement without breaking the process or facts. suggestion is optiona
 experience advice; unknown is unresolved. Do not label every repetition blocking.
 State applicability/preconditions separately. Unvisited downstream steps are uncovered,
 not automatically violated.
+An SOP node or example utterance is not by itself a one-turn deadline. timing_scope
+must be same_turn/before_action only when an ORIGINAL explicitly requires that timing;
+timing_citation must quote that original deadline/prerequisite. Otherwise use eventual
+or none and search later actual replies before claiming omission. Required ordering,
+authorization, operational confirmations and explicit immediate-stop rules still apply.
+Set independent_of_mismatch=true only for a defect already evidenced in actual replies
+whose applicability and proof do not depend on a mismatched/undelivered customer turn
+or missing downstream behavior. Both reviewers must verify that causal independence.
+Frozen replay identity bindings are test inputs, not changes to Agent policy or proof
+of actual real-world identity. Judge the variables actually supplied to this run.
 requirement_type distinguishes fact/process/constraint/quality from none (task commands,
 examples, observations and optional suggestions). A test-only instruction is a task
 command, not an Agent business requirement. It cannot establish business correctness.
@@ -270,9 +283,23 @@ def build_evidence(case, transcript, events, candidate, instructions, basis=None
     leaves(
         snapshot.get("template_context_variables", {}), "/template_context_variables"
     )
+    validity = next(
+        (e.get("payload") for e in events if e.get("type") == "test_validity"), None
+    )
+    replay_context = (validity or {}).get("replay_context")
+    for key, value in (
+        (replay_context or {}).get("variables", case.initial_context).items()
+    ):
+        add(
+            f"test_context:{key}",
+            "test_context",
+            str(value),
+            path=f"/initial_context/{key}",
+        )
     return {
         "current_test_request": instructions,
         "test_method": case.mode,
+        "frozen_replay_context": replay_context,
         "source_turn": case.source_turn,
         "validity": next(
             (e.get("payload") for e in events if e.get("type") == "test_validity"), None
@@ -305,6 +332,18 @@ def build_evidence(case, transcript, events, candidate, instructions, basis=None
 
 
 def validate_check(check, records):
+    if check.get("timing_scope") in {"same_turn", "before_action"}:
+        citation = check.get("timing_citation") or {}
+        source = records.get(citation.get("id"), {})
+        if (
+            source.get("source") != "basis"
+            or source.get("source_kind") == "reference"
+            or not citation.get("quote")
+            or citation["quote"] not in source.get("text", "")
+        ):
+            raise WorkbenchError(
+                "同轮或动作前置时限必须引用原始要求的明确时序依据，不能从示例轮次或生成配置推断。"
+            )
     cited = []
     for citation in check["citations"]:
         record = records.get(citation["id"])

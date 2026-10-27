@@ -16,6 +16,15 @@ export function SimulationEvidence({result, session}: {result: CaseResult; sessi
     {result.business_state && Object.keys(result.business_state).length > 0 && <details><summary>模拟业务最终状态</summary><pre>{JSON.stringify(result.business_state, null, 2)}</pre></details>}
     <strong>{simulationModes[result.mode || "scripted"]} · {result.status === "running" ? "检查中" : ({valid: "对话有效", invalid: "测试无效", inconclusive: "有效性未确定", unchecked: "未检查"} as Record<string,string>)[v.status] || v.status}</strong>
     {stop && <p>{stop}</p>}
+    {v.stop_reason === "alignment_uncertain" && <p>缺少足够证据确认下一句的前提，已暂停回放；尚未认定脚本错位。</p>}
+    {v.stop_reason === "execution_error" && <p>仿真执行异常；不能据此判定 Agent 业务失败。</p>}
+    {v.stop_reason === "replay_context_ambiguous" && <p>无法可靠确定样本的初始身份，已保留原因，未使用冲突身份启动仿真。</p>}
+    {v.replay_context && <details><summary>本次冻结的测试变量及来源</summary>
+      <p>{v.replay_context.assumption}</p>
+      {Object.entries(v.replay_context.variables).map(([key, value]) => <p key={key}>{key}：{String(value)}</p>)}
+      {v.replay_context.bindings.map(b => <p key={b.variable}>{b.variable} 的来源：“{b.quote}” · {b.reason}</p>)}
+      {v.replay_context.limitations.map((s, i) => <p key={i}>限制：{s}</p>)}
+    </details>}
     {v.status === "invalid" && <p>本条不计入 Agent 正常流程通过率；已观察到的回复与评审线索仍保留。</p>}
     {v.scope === "single_reply" && <p>仅测试原始第 {v.source_turn} 轮的一个回复，不代表完整流程通过。起始节点是依据前文推定的测试条件。</p>}
     {v.context_selection && <p>上下文定位：{v.context_selection.node_id || "无法定位"} · {v.context_selection.reason}</p>}

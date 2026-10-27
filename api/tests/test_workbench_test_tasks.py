@@ -190,6 +190,8 @@ async def test_completed_runtime_evidence_is_reused_without_running_it_again(
 async def test_resume_chain_reuses_original_completed_cases_and_rejects_changed_contract(
     monkeypatch,
 ):
+    from api.services.agent_workbench.evaluation import EVALUATION_VERSION
+
     def case(name):
         return {
             "name": name,
@@ -226,6 +228,7 @@ async def test_resume_chain_reuses_original_completed_cases_and_rejects_changed_
             "job_id": "new",
             "candidate_id": "c",
             "suite_id": "s",
+            "summary": {"evaluation_version": EVALUATION_VERSION},
             "results": [result("b", "failed", 12)],
         },
         ("evaluations", "eo"): {
@@ -233,6 +236,7 @@ async def test_resume_chain_reuses_original_completed_cases_and_rejects_changed_
             "job_id": "old",
             "candidate_id": "c",
             "suite_id": "s",
+            "summary": {"evaluation_version": EVALUATION_VERSION},
             "results": [result("a", "passed", 10), result("b", "error", 11)],
         },
         ("suites", "s"): {"payload": {"cases": [case("a"), case("b")]}},
@@ -271,6 +275,27 @@ async def test_resume_chain_reuses_original_completed_cases_and_rejects_changed_
     }
     reused = await tasks.reusable_test_results(*args)
     assert reused["b"]["run_id"] == 12 and reused["b"]["review_pending"]
+    uncertain.update(
+        status="error",
+        validity={"replay_context": {"variables": {"recipient": "Frozen subject"}}},
+    )
+    reused = await tasks.reusable_test_results(*args)
+    assert reused["b"]["replay_pending"] is True
+    assert reused["b"]["validity"]["replay_context"]["variables"] == {
+        "recipient": "Frozen subject"
+    }
+    records["evaluations", "eo"]["results"][0].update(
+        status="inconclusive",
+        run_id=None,
+        transcript=[],
+        validity={"stop_reason": "replay_context_ambiguous"},
+    )
+    reused = await tasks.reusable_test_results(*args)
+    assert reused["a"]["validity"]["stop_reason"] == "replay_context_ambiguous"
+    assert reused["a"]["review_pending"] is False
+    records["evaluations", "en"]["summary"]["evaluation_version"] = 0
+    records["evaluations", "eo"]["summary"] = {}
+    assert await tasks.reusable_test_results(*args) == {}
     records["jobs", "old"]["input"]["text"] = "different requirements"
     with pytest.raises(WorkbenchError, match="测试要求已变化"):
         await tasks.reusable_test_results(*args)

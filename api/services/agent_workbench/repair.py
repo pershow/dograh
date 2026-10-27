@@ -44,7 +44,8 @@ REPAIR_PLAN_SCHEMA = {
 }
 
 EXECUTION_MARKER = "[WORKFLOW_EXECUTION_CONTRACT]"
-EXECUTION_CONTRACT = """
+EXECUTION_CONTRACT = (
+    """
 [WORKFLOW_EXECUTION_CONTRACT]
 内部对话执行提示，不对用户朗读，不是硬性状态机保证：当前节点是非结束的对话步骤，可以承载多个内部业务阶段。
 只扮演助手，不代替用户说操作完成的话。一次回复明确报告多个步骤时一起接收，保留已知进度，只补缺失前置事实；不从后续结果倒推未知操作、授权或工具成功。完成当前步骤不等于完成整个流程。
@@ -56,7 +57,11 @@ EXECUTION_CONTRACT = """
 每轮更新事实和次数后，优先检查原文结束/上限条件，再选择未完成步骤。终止条件已满足就本轮依照当前工具范围执行结束或静默交接，不用新状态、待办事项或自创替代操作继续重试；不能只说成功或再见，也不增加原文没有的工具结果确认。
 触发进入新节点的上一句回复，只证明此前步骤的条件满足。如果本节点原文要求新的确认，先完整说本节点原说明，再等待用户新回复，不能把上一句再次用作对新说明的确认。原文明确允许自动衔接的步骤仍按原文执行。
 内部业务阶段不要求物理跳转或额外等待。成功结束必须满足适用前置条件、必要工具结果和最终核对；取消、拒绝、失败等按原有独立条件结束，不伪称成功。以上不改变原有业务事实、条件、例外和分支。
-""" + FACT_CONTINUITY_GUIDANCE + TOOL_SCOPE_GUIDANCE + "[/WORKFLOW_EXECUTION_CONTRACT]"
+"""
+    + FACT_CONTINUITY_GUIDANCE
+    + TOOL_SCOPE_GUIDANCE
+    + "[/WORKFLOW_EXECUTION_CONTRACT]"
+)
 
 
 def compile_execution_contracts(graph, source, diagnostics):
@@ -125,8 +130,7 @@ def failure_diagnostics(evaluation, graph=None):
     names = {str(n["id"]): n["data"]["name"] for n in graph.get("nodes", [])}
     result = []
     for case in evaluation["results"]:
-        if case.get("validity", {}).get("status") in {"invalid", "inconclusive"}:
-            continue
+        invalid = case.get("validity", {}).get("status") in {"invalid", "inconclusive"}
         if case["status"] == "passed":
             continue
         failures = [
@@ -135,6 +139,13 @@ def failure_diagnostics(evaluation, graph=None):
             if not a.get("passed")
             and not a.get("informational")
             and (a.get("kind") != "reference" or a.get("repair_target") == "agent")
+            and (
+                not invalid
+                or (
+                    a.get("kind") == "reference"
+                    and a.get("independent_of_mismatch") is True
+                )
+            )
         ]
         if not failures:
             continue
