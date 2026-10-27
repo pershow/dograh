@@ -34,10 +34,10 @@ def test_every_run_mode_belongs_to_exactly_one_channel():
 
 def test_direction_filter_matches_call_type():
     assert _where(_radio("callDirection", "inbound")) == (
-        "WHERE workflow_runs.call_type = 'inbound'"
+        "WHERE workflow_runs.purpose = 'normal' AND workflow_runs.call_type = 'inbound'"
     )
     assert _where(_radio("callDirection", "outbound")) == (
-        "WHERE workflow_runs.call_type = 'outbound'"
+        "WHERE workflow_runs.purpose = 'normal' AND workflow_runs.call_type = 'outbound'"
     )
 
 
@@ -61,7 +61,7 @@ def test_channel_and_direction_combine():
 
 def test_unrecognized_values_do_not_constrain_the_query():
     """'all' means no filter; anything unexpected must not reach the SQL."""
-    assert _where(_radio("callDirection", "all")) == ""
-    assert _where(_radio("callChannel", "all")) == ""
-    assert _where(_radio("callDirection", "'; DROP TABLE workflow_runs;--")) == ""
-    assert _where(_radio("callChannel", "voip")) == ""
+    assert _where(_radio("callDirection", "all")) == "WHERE workflow_runs.purpose = 'normal'"
+    assert _where(_radio("callChannel", "all")) == "WHERE workflow_runs.purpose = 'normal'"
+    assert _where(_radio("callDirection", "'; DROP TABLE workflow_runs;--")) == "WHERE workflow_runs.purpose = 'normal'"
+    assert _where(_radio("callChannel", "voip")) == "WHERE workflow_runs.purpose = 'normal'"

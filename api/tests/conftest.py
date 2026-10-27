@@ -128,6 +128,7 @@ def mock_engine():
     from api.services.workflow.pipecat_engine import PipecatEngine
 
     engine = Mock()
+    engine.evaluation_policy = None
     from api.tests.pipecat_test_utils import stub_agent_runtime
 
     engine.active_agent = stub_agent_runtime()

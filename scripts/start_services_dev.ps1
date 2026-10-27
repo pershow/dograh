@@ -67,6 +67,10 @@ if ($IncludeTelephonyWorkers) {
 $serviceSpecs += @{ Name = 'uvicorn'; Cmd = "uvicorn api.app:app --host 0.0.0.0 --port $($env:UVICORN_BASE_PORT) --reload --reload-dir api" }
 $serviceSpecs += @{ Name = 'arq';     Cmd = "python -m arq api.tasks.arq.WorkerSettings --custom-log-dict api.tasks.arq.LOG_CONFIG" }
 
+if ($env:AGENT_WORKBENCH_ENABLED -eq 'true') {
+    $serviceSpecs += @{ Name = 'workbench'; Cmd = "python -m api.tasks.agent_workbench" }
+}
+
 ###############################################################################
 ### 3) Activate virtual environment
 ###############################################################################
@@ -87,7 +91,12 @@ if (Test-Path $VenvActivateScript) {
 
 New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
 
-foreach ($spec in $serviceSpecs) {
+if ($env:AGENT_WORKBENCH_ENABLED -eq 'true') {
+    python -m api.services.codex
+    if ($LASTEXITCODE -ne 0) { throw 'Codex startup check failed; build it with python scripts/build_codex.py.' }
+}
+
+foreach ($spec in (@($serviceSpecs) + @(@{ Name = 'workbench' }))) {
     $pidFile = Join-Path $RunDir "$($spec.Name).pid"
     if (Test-Path $pidFile) {
         $oldPid = (Get-Content $pidFile -Raw).Trim()

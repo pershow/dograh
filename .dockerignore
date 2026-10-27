@@ -19,3 +19,6 @@ evals/
 api/mcp_server/ts_validator/node_modules/
 sdk/
 venv
+.runtime
+codex/.git
+codex/codex-rs/target

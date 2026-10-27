@@ -36,6 +36,7 @@ from api.constants import REDIS_URL
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
+from api.services.pipecat.recording_audio_cache import handle_recording_cache_sync
 from api.services.pipecat.tracing_config import (
     handle_langfuse_sync,
     load_all_org_langfuse_credentials,
@@ -67,6 +68,9 @@ async def lifespan(app: FastAPI):
         sync_manager = WorkerSyncManager(REDIS_URL)
         sync_manager.register(
             WorkerSyncEventType.LANGFUSE_CREDENTIALS, handle_langfuse_sync
+        )
+        sync_manager.register(
+            WorkerSyncEventType.RECORDINGS, handle_recording_cache_sync
         )
         await sync_manager.start()
         set_worker_sync_manager(sync_manager)
@@ -102,8 +106,13 @@ async def lifespan(app: FastAPI):
                 try:
                     await close_speech_cache()
                 finally:
-                    await loop_lag.stop()
-                    metrics.stop()
+                    from api.services.pipecat.jev_client_pool import close_jev_connections
+
+                    try:
+                        await close_jev_connections()
+                    finally:
+                        await loop_lag.stop()
+                        metrics.stop()
 
 
 app = FastAPI(

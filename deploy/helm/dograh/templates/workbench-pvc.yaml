@@ -1,0 +1,17 @@
+{{- if and .Values.workbench.enabled (not .Values.workbench.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "dograh.fullname" . }}-workbench
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.workbench.persistence.storageClass }}
+  storageClassName: {{ .Values.workbench.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.workbench.persistence.size | quote }}
+{{- end }}

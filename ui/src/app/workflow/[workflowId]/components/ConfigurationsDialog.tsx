@@ -19,6 +19,8 @@ import {
     WorkflowConfigurations,
 } from "@/types/workflow-configurations";
 
+import { SpeakerTrackingSettings } from "./SpeakerTrackingSettings";
+
 interface ConfigurationsDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -61,6 +63,7 @@ export const ConfigurationsDialog = ({
     const [contextCompactionEnabled, setContextCompactionEnabled] = useState<boolean>(
         resolvedWorkflowConfigurations.context_compaction_enabled
     );
+    const [speakerTrackingEnabled, setSpeakerTrackingEnabled] = useState(resolvedWorkflowConfigurations.speaker_tracking_enabled);
     const [ttsCacheEnabled, setTtsCacheEnabled] = useState<boolean>(
         resolvedWorkflowConfigurations.tts_cache_enabled
     );
@@ -91,6 +94,7 @@ export const ConfigurationsDialog = ({
                 turn_stop_strategy: turnStopStrategy,
                 transcript_configuration: resolvedWorkflowConfigurations.transcript_configuration,
                 context_compaction_enabled: contextCompactionEnabled,
+                speaker_tracking_enabled: speakerTrackingEnabled,
                 tts_cache_enabled: ttsCacheEnabled,
                 external_pbx_field_mappings: externalPbxFieldMappings,
             }, name);
@@ -115,6 +119,7 @@ export const ConfigurationsDialog = ({
             setTurnStartMinWords(nextWorkflowConfigurations.turn_start_min_words);
             setTurnStopStrategy(nextWorkflowConfigurations.turn_stop_strategy);
             setContextCompactionEnabled(nextWorkflowConfigurations.context_compaction_enabled);
+            setSpeakerTrackingEnabled(nextWorkflowConfigurations.speaker_tracking_enabled);
             setTtsCacheEnabled(nextWorkflowConfigurations.tts_cache_enabled);
             setExternalPbxFieldMappings(nextWorkflowConfigurations.external_pbx_field_mappings);
         }
@@ -317,6 +322,8 @@ export const ConfigurationsDialog = ({
                             </div>
                         )}
                     </div>
+
+                    <SpeakerTrackingSettings enabled={speakerTrackingEnabled} onChange={setSpeakerTrackingEnabled} />
 
                     {/* Context Management Section */}
                     <div className="space-y-4">

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Dograh · Agent 工作台原型</title>
+  <link rel="icon" href="../../dograh-mark.png">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./editor-shell.css">
+</head>
+<body>
+  <div class="prototype-bar"><span><span class="prototype-dot"></span>交互原型</span><span>所有生成、测试与语音均为演示 · 不连接模型或麦克风</span><button id="reset-demo">重置演示</button></div>
+  <div class="app-shell">
+    <div class="app-body">
+      <header class="app-header">
+        <div class="breadcrumbs"><button data-action="agents" class="icon-button" aria-label="返回 Agents" data-icon="back"></button><img src="../../dograh-mark.png" alt="Dograh" class="header-logo"><strong id="agent-name">预约助手</strong><span class="header-divider"></span><span class="header-subtitle">Agent 工作台</span></div>
+        <div class="header-actions"><button class="button" data-action="history"><span data-icon="history"></span><span id="working-version">工作版本 v2</span></button><button class="button phone-entry" data-action="voice-test"><span data-icon="phone"></span>Phone Call</button><button class="button" data-action="show-tester"><span data-icon="play"></span>Test Agent</button><button class="button" id="publish-button" data-action="publish">Publish</button><button class="button primary" id="save-button" data-action="save-all">Save</button><button class="icon-button" data-action="team" aria-label="空间与成员权限" data-icon="users"></button><button class="icon-button" data-action="new" aria-label="新建 Agent" data-icon="plus"></button></div>
+      </header>
+      <div class="workspace-heading" hidden><h1 id="workspace-title">预约助手</h1><p id="agent-description"></p><span id="team-label"></span><span id="draft-state"></span></div>
+      <div class="workbench">
+        <main class="workspace">
+          <nav class="workspace-tabs" aria-label="工作台视图" role="tablist">
+            <button role="tab" id="tab-build" aria-controls="workspace-content" aria-selected="true" data-view="build"><span data-icon="workflow"></span>流程画布</button>
+            <button role="tab" id="tab-test" aria-controls="workspace-content" aria-selected="false" data-view="test"><span data-icon="play"></span>文本仿真<span class="tab-count" id="test-count">6</span></button>
+            <button role="tab" id="tab-tune" aria-controls="workspace-content" aria-selected="false" data-view="tune"><span data-icon="sparkles"></span>调优记录<span class="attention-dot" id="tune-dot" hidden></span></button>
+            <span class="tabs-end" id="saved-status"><span data-icon="check"></span>已保存到本机演示</span>
+          </nav>
+          <div id="workspace-content" class="workspace-content" role="tabpanel" aria-labelledby="tab-build"></div>
+          <footer class="workspace-footer"><span><span class="tiny-dot"></span><span id="footer-context">工作版本 v2 · 线上版本 v1</span></span><button class="plain" data-action="settings"><span data-icon="shield"></span>测试工具 · 沙盒数据</button></footer>
+        </main>
+        <aside class="assistant-panel" id="assistant-panel" aria-label="构建助手">
+          <nav class="panel-switch" aria-label="右侧面板"><button data-action="show-builder" id="builder-switch" aria-pressed="true"><span data-icon="sparkles"></span>构建助手</button><button data-action="show-tester" id="tester-switch" aria-pressed="false"><span data-icon="play"></span>Test Agent</button></nav><div id="builder-content" class="builder-content"><div class="assistant-heading"><div class="assistant-brand"><span class="assistant-glyph" data-icon="sparkles"></span><div><strong>构建助手</strong><span>构建 · 测试 · 调优</span></div></div><button id="voice-toggle" class="button voice-trigger" data-action="voice"><span data-icon="audio"></span>语音协作</button></div>
+          <div class="assistant-context"><span data-icon="focus"></span><span id="assistant-context">预约助手 / 确认预约</span><span class="context-dot"></span></div>
+          <section id="voice-panel" class="voice-panel" aria-label="语音协作演示" hidden></section>
+          <div id="conversation" class="conversation" aria-label="工作台会话" role="log" aria-live="polite"></div>
+          <div id="task-status" class="task-status" role="status" hidden></div>
+          <div id="quick-actions" class="quick-actions"></div>
+          <form id="chat-form" class="composer" data-dropzone="true"><div id="chat-attachments" class="attachment-list"></div>
+            <label class="sr-only" for="chat-input">给构建助手的指令</label><textarea id="chat-input" rows="3" placeholder="描述需求，或添加文件让助手参考…"></textarea>
+            <div class="composer-footer"><div class="composer-tools"><button type="button" class="icon-button" data-action="attach" aria-label="添加附件" title="添加附件" data-icon="paperclip"></button><button type="button" class="icon-button" data-action="attachment-library" aria-label="会话附件" title="会话附件" data-icon="folder"></button><span id="composer-caption">文字、附件与语音共享上下文</span></div><button type="submit" class="send-button" aria-label="发送指令" data-icon="arrow-up"></button></div>
+          </form>
+          <div class="assistant-note">可拖入文档、表格或图片 · 仅在本机预览</div></div><div id="tester-content" class="tester-content" hidden></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+  <input type="file" id="attachment-input" multiple hidden accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.json,.png,.jpg,.jpeg,.webp">
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="./app.js"></script>
+</body>
+</html>

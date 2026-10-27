@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
@@ -34,6 +34,7 @@ import {
   workbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPost as instruct,
   workbenchRetryAssetApiV1AgentWorkbenchSessionsSessionIdAssetsAssetIdRetryPost as retryAsset,
   workbenchSessionApiV1AgentWorkbenchSessionsSessionIdGet as getSession,
+  workbenchSessionsApiV1AgentWorkbenchSessionsGet as getSessions,
   workbenchSettingsApiV1AgentWorkbenchSessionsSessionIdPatch as settings,
   workbenchSuiteApiV1AgentWorkbenchSessionsSessionIdSuitesPost as saveSuite,
   workbenchTuneApiV1AgentWorkbenchSessionsSessionIdTunePost as tune,
@@ -51,15 +52,30 @@ import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
 import { referencedVariables } from "@/lib/workflowVariables";
 
+import { conversationRows } from "./activity";
+import { AgentMemory } from "./AgentMemory";
+import { BuildModelSettings } from "./BuildModelSettings";
+import { EvaluationArchive } from "./EvaluationArchive";
+import { EvidenceReads } from "./EvidenceReads";
+import { pollRequest } from "./pollRequest";
+import { ReviewCounts, ReviewFindings } from "./ReviewFindings";
+import { SimulationEvidence } from "./SimulationEvidence";
+import { TaskActivity } from "./TaskActivity";
+import { type BasisSummary,RequirementCoverage, TaskBasis } from "./TaskBasis";
+import { modelProgressText, taskCompletionText, taskProgress, workbenchErrorText } from "./taskProgress";
 import type {
   Candidate,
+  Evaluation,
+  EventPage,
   Snapshot,
   WorkbenchEvent,
   WorkbenchSession,
+  WorkbenchSessionListItem,
   WorkbenchState,
 } from "./types";
 import { useWorkbenchVoice } from "./useWorkbenchVoice";
 import styles from "./workbench.module.css";
+import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 
 function result<T>(response: {
   data?: { data: Record<string, unknown> };
@@ -87,6 +103,12 @@ const statusText: Record<string, string> = {
   error: "执行错误",
   inconclusive: "无法判定",
 };
+
+function mergeEvents(previous: WorkbenchEvent[], incoming: WorkbenchEvent[]) {
+  const seen = new Set(previous.map(event => event.sequence));
+  const added = incoming.filter(event => !seen.has(event.sequence));
+  return added.length ? [...previous, ...added].sort((a, b) => a.sequence - b.sequence) : previous;
+}
 
 export function AgentWorkbench({
   workflowId,
@@ -121,6 +143,13 @@ export function AgentWorkbench({
   const [state, setState] = useState<WorkbenchState>();
   const [session, setSession] = useState<string>("");
   const [events, setEvents] = useState<WorkbenchEvent[]>([]);
+  const [historyBefore, setHistoryBefore] = useState<number | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessions, setSessions] = useState<WorkbenchSessionListItem[]>([]);
+  const [sessionsError, setSessionsError] = useState("");
   const [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [notice, setNotice] = useState("");
@@ -131,8 +160,13 @@ export function AgentWorkbench({
   const [candidate, setCandidate] = useState<Candidate>();
   const [suiteId, setSuiteId] = useState("");
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
-  const [instructionMode, setInstructionMode] = useState<"auto" | "analyze" | "build">("auto");
+  const [instructionMode, setInstructionMode] = useState<"auto" | "analyze" | "build" | "test">("auto");
+  const [testClarification, setTestClarification] = useState("");
+  const [testMode, setTestMode] = useState<"dynamic" | "single_step" | "scripted">("dynamic");
+  const followedTestJob = useRef("");
   const [runsOpen, setRunsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [buildModelRevision, setBuildModelRevision] = useState(0);
   const [runsLoading, setRunsLoading] = useState(false);
   const [agentRuns, setAgentRuns] = useState<{
     id: number; created_at: string; state: string; definition_id: number | null;
@@ -149,45 +183,114 @@ export function AgentWorkbench({
     }[];
   }>();
   const [suiteEditor, setSuiteEditor] = useState<string | null>(null);
-  const [caseIndex, setCaseIndex] = useState(0);
+  const [caseName, setCaseName] = useState("");
+  const [evaluationId, setEvaluationId] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
   const [followingMessages, setFollowingMessages] = useState(true);
   const followMessages = useRef(true);
   const fileInput = useRef<HTMLInputElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const resultsPane = useRef<HTMLElement>(null);
+  const resultDetail = useRef<HTMLDivElement>(null);
+  const openResultRequested = useRef(false);
+  const scrollToResult = useCallback(() => {
+    const pane = resultsPane.current;
+    const detail = resultDetail.current;
+    if (pane && detail) {
+      pane.scrollTop += detail.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+      detail.focus({preventScroll: true});
+    }
+  }, []);
   const bottom = useRef<HTMLDivElement>(null);
-  const cursor = useRef(0);
+  const messagesPane = useRef<HTMLDivElement>(null);
+  const historyInFlight = useRef(false);
+  const historyAnchor = useRef<{ sequence: string; top: number } | null>(null);
+  const cursor = useRef<number | undefined>(undefined);
+  const completedCursor = useRef(0);
+  const revision = useRef<string | undefined>(undefined);
+  const lastStateSync = useRef(0);
   const init = useRef<Promise<WorkbenchSession> | null>(null);
   const inFlight = useRef(false);
   const active = state?.jobs.find((j) =>
     ["queued", "running"].includes(j.status),
   );
   const locked = busy || !!active;
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (force = true) => {
     if (!session || inFlight.current) return;
     inFlight.current = true;
     try {
-      const [snapshot, updates] = await Promise.all([
-        getSession({ path: { session_id: session } }),
-        getEvents({
-          path: { session_id: session },
-          query: { after: cursor.current },
-        }),
-      ]);
-      setState(result<WorkbenchState>(snapshot));
-      setSyncError("");
-      const fresh = result<{ events: WorkbenchEvent[] }>(updates).events;
-      if (fresh.length) {
-        cursor.current = fresh[fresh.length - 1].sequence;
-        setEvents((old) => [...old, ...fresh].slice(-400));
+      const initial = cursor.current === undefined;
+      const fresh: WorkbenchEvent[] = [];
+      let more = false;
+      do {
+        const previousCursor = cursor.current;
+        const page = result<EventPage>(await pollRequest(signal => getEvents({
+          signal, path: { session_id: session },
+          query: { after: cursor.current, limit: previousCursor === undefined ? 60 : 200 },
+        })));
+        cursor.current = page.after ?? page.events.at(-1)?.sequence ?? cursor.current ?? 0;
+        if (previousCursor === undefined) {
+          setHistoryBefore(page.before ?? null);
+          completedCursor.current = page.events[0] ? page.events[0].sequence - 1 : cursor.current;
+        }
+        fresh.push(...page.events);
+        if (page.events.length) setEvents((old) => mergeEvents(old, page.events));
+        // Drain a background-tab backlog immediately instead of one page per
+        // throttled timer tick. Older history still loads only on demand.
+        more = !!page.has_more && cursor.current !== previousCursor;
+      } while (more);
+      // Progress tokens update the conversation, not the entire graph/test archive.
+      if (force || initial || Date.now() - lastStateSync.current > 30000 ||
+          fresh.some(e => e.type !== "evaluation.case.progress" && /^(task\.|candidate\.|suite\.|evaluation\.|asset\.|memory\.)/.test(e.type))) {
+        const snapshot = result<WorkbenchState & { unchanged?: boolean }>(await pollRequest(signal => getSession({
+          signal, path: { session_id: session }, query: { if_revision: revision.current },
+        })));
+        revision.current = snapshot.revision;
+        lastStateSync.current = Date.now();
+        if (!snapshot.unchanged) setState(snapshot);
       }
+      setSyncError("");
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : "无法同步工作台");
     } finally {
       inFlight.current = false;
     }
   }, [session]);
+  const loadOlder = useCallback(async () => {
+    if (!session || historyBefore === null || historyInFlight.current) return;
+    historyInFlight.current = true;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const page = result<EventPage>(await getEvents({
+        path: { session_id: session }, query: { before: historyBefore, limit: 60 },
+      }));
+      const pane = messagesPane.current;
+      const visible = pane && Array.from(pane.querySelectorAll<HTMLElement>("[data-event-sequence]"))
+        .find(el => el.getBoundingClientRect().bottom > pane.getBoundingClientRect().top);
+      historyAnchor.current = visible ? {
+        sequence: visible.dataset.eventSequence!, top: visible.getBoundingClientRect().top,
+      } : null;
+      followMessages.current = false;
+      setFollowingMessages(false);
+      setEvents(old => mergeEvents(old, page.events));
+      setHistoryBefore(page.before ?? null);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "历史记录加载失败");
+    } finally {
+      historyInFlight.current = false;
+      setHistoryLoading(false);
+    }
+  }, [session, historyBefore]);
+  useLayoutEffect(() => {
+    const pane = messagesPane.current;
+    const anchor = historyAnchor.current;
+    if (pane && anchor) {
+      const el = pane.querySelector<HTMLElement>(`[data-event-sequence="${anchor.sequence}"]`);
+      if (el) pane.scrollTop += el.getBoundingClientRect().top - anchor.top;
+      historyAnchor.current = null;
+    }
+  }, [events]);
   const voice = useWorkbenchVoice(
     session || undefined,
     getAccessToken,
@@ -264,9 +367,51 @@ export function AgentWorkbench({
   useEffect(() => {
     if (authLoading || !user || !session) return;
     void reload();
-    const interval = setInterval(reload, 2000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => void reload(false), 2000);
+    const resume = () => { if (document.visibilityState === "visible") void reload(false); };
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", resume);
+    };
   }, [authLoading, user, session, reload]);
+  const sessionWorkflowId = state?.session.workflow_id;
+  useEffect(() => {
+    if (!sessionsOpen || authLoading || !user || !sessionWorkflowId) return;
+    let disposed = false;
+    let pending = false;
+    setSessions([]);
+    setSessionsLoading(true);
+    setSessionsError("");
+    const refresh = async () => {
+      if (disposed || pending || document.visibilityState === "hidden") return;
+      pending = true;
+      try {
+        const response = await pollRequest(signal => getSessions({
+          signal, query: {workflow_id: sessionWorkflowId},
+        }));
+        const data = result<{sessions: WorkbenchSessionListItem[]}>(response);
+        if (!disposed) {
+          setSessions([...data.sessions].sort((a, b) => Number(!!b.active_job_status) - Number(!!a.active_job_status)));
+          setSessionsError("");
+        }
+      } catch {
+        if (!disposed) setSessionsError("会话状态更新失败，显示的状态可能已过期，正在重试。");
+      } finally {
+        pending = false;
+        if (!disposed) setSessionsLoading(false);
+      }
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), 3000);
+    const resume = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [sessionsOpen, authLoading, user, sessionWorkflowId]);
   const choiceInitialized = useRef(false);
   useEffect(() => {
     if (authLoading || !user || !session) return;
@@ -289,7 +434,7 @@ export function AgentWorkbench({
     return () => {
       disposed = true;
     };
-  }, [authLoading, user, session, candidateId]);
+  }, [authLoading, user, session, candidateId, settingsOpen, buildModelRevision]);
   useEffect(() => {
     if (!choiceInitialized.current && state) {
       choiceInitialized.current = true;
@@ -300,6 +445,14 @@ export function AgentWorkbench({
   useEffect(() => {
     if (!suiteId && state?.suites[0]) setSuiteId(state.suites[0].id);
   }, [state, suiteId]);
+  useEffect(() => {
+    const active = state?.jobs.find(j => j.status === "running" && Array.isArray(j.output.suite_ids) && j.output.suite_ids.length);
+    if (!active || followedTestJob.current === active.id) return;
+    followedTestJob.current = active.id;
+    setSuiteId((active.output.suite_ids as string[])[0]);
+    if (typeof active.output.candidate_id === "string") setCandidateId(active.output.candidate_id);
+    setCaseName(""); setEvaluationId("");
+  }, [state]);
   useEffect(() => {
     if (!candidateId || !session) {
       setCandidate(undefined);
@@ -318,24 +471,26 @@ export function AgentWorkbench({
       disposed = true;
     };
   }, [candidateId, session]);
-  const completedCursor = useRef(0);
   useEffect(() => {
     const completed = events
       .filter(
         (e) =>
-          ["task.completed", "candidate.adopted"].includes(e.type) &&
+          ["task.completed", "task.needs_attention", "task.awaiting_input", "candidate.adopted"].includes(e.type) &&
           e.sequence > completedCursor.current,
       )
       .at(-1);
     if (!completed) return;
     completedCursor.current = completed.sequence;
     if (completed.type === "candidate.adopted") {
+      choiceInitialized.current = true;
       setCandidateId("");
       return;
     }
     const output = completed.payload.output as Record<string, unknown>;
-    if (typeof output?.candidate_id === "string")
+    if (typeof output?.candidate_id === "string") {
+      choiceInitialized.current = true;
       setCandidateId(output.candidate_id);
+    }
     if (typeof output?.suite_id === "string") setSuiteId(output.suite_id);
   }, [events]);
   useEffect(() => {
@@ -343,8 +498,14 @@ export function AgentWorkbench({
       bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [events.length, tab]);
   useEffect(() => {
-    if (resultsPane.current) resultsPane.current.scrollTop = 0;
+    if (resultsPane.current && !openResultRequested.current) resultsPane.current.scrollTop = 0;
   }, [tab, candidateId, suiteId]);
+  useEffect(() => {
+    if (tab === "tests" && openResultRequested.current && resultDetail.current) {
+      scrollToResult();
+      openResultRequested.current = false;
+    }
+  }, [tab, candidateId, suiteId, evaluationId, caseName, scrollToResult]);
   const action = async (operation: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
@@ -366,11 +527,29 @@ export function AgentWorkbench({
     state?.evaluations.filter(
       (e) => e.candidate_id === candidateId && e.suite_id === suiteId,
     ) || [];
-  const evaluation = evaluations[0];
-  const currentCase =
-    evaluation?.results[
-      Math.min(caseIndex, (evaluation?.results.length || 1) - 1)
-    ];
+  const evaluation = evaluations.find(e => e.id === evaluationId) || evaluations[0];
+  const testTask = state?.jobs.find(j => j.id === evaluation?.job_id) || state?.jobs.find(j =>
+    (j.output.intent === "test" || j.output.outcome === "test") &&
+    j.output.candidate_id === candidateId &&
+    Array.isArray(j.output.suite_ids) && j.output.suite_ids.includes(suiteId));
+  const testTaskSummary = testTask?.output.summary as Record<string, number> | undefined;
+  const inFlightTests = testTask ? (state?.evaluations || [])
+    .filter(e => e.job_id === testTask.id)
+    .flatMap(e => e.results).filter(r => r.status === "running").length : 0;
+  const currentCase = evaluation?.results.find(result => result.name === caseName) || evaluation?.results[0];
+  const openTestResult = (selected: Evaluation, name: string) => {
+    if (evaluationId === selected.id && caseName === name && tab === "tests") {
+      scrollToResult();
+      return;
+    }
+    choiceInitialized.current = true;
+    openResultRequested.current = true;
+    setCandidateId(selected.candidate_id);
+    setSuiteId(selected.suite_id);
+    setEvaluationId(selected.id);
+    setCaseName(name);
+    setTab("tests");
+  };
   const addFiles = async (files: File[]) => {
     if (!session || locked) return;
     if (files.length + selectedAssets.length > 5) {
@@ -427,6 +606,7 @@ export function AgentWorkbench({
         path: { session_id: session },
         body: {
           text: instruction, mode, candidate_id: candidateId || null,
+          test_mode: mode === "test" ? testMode : null,
           asset_ids: selectedAssets, idempotency_key: crypto.randomUUID(),
         },
       }));
@@ -452,23 +632,12 @@ export function AgentWorkbench({
   };
   const composerExpanded =
     tab === "canvas" || composerOpen || !!text || voice.status !== "off";
-  const messages = events.filter((e) =>
-    [
-      "task.queued",
-      "assistant.message",
-      "voice.transcript",
-      "task.completed",
-      "task.failed",
-      "task.cancelled",
-      "candidate.adopted",
-      "evidence.read",
-    ].includes(e.type),
-  );
+  const messages = conversationRows(events, state?.jobs || []);
   if (!state || !onPreviewChange)
     return (
       <div className={styles.loading}>
         {error ? (
-          <p role="alert">{error}</p>
+          <p role="alert">{workbenchErrorText(error)}</p>
         ) : (
           <>
             <Loader2 className="animate-spin" />
@@ -489,7 +658,50 @@ export function AgentWorkbench({
         <Sparkles size={18} />
         <strong>Agent 工作台</strong>
         <div className={styles.headerActions}>
-          <Popover>
+          <Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="工作台会话" title="工作台会话">
+                <MessageSquare size={16} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className={styles.popover} aria-label="工作台会话">
+              <h3>此 Agent 的会话</h3>
+              <p className={styles.subtle}>共用 Agent 草稿和长期记忆，聊天分别保留，历史用户原文与资料可跨会话查回。切换前请发送或清空输入。</p>
+              {sessionsLoading && <p>正在加载会话…</p>}
+              {sessionsError && <p role="alert">{sessionsError}</p>}
+              {!!sessions.length && <p className={styles.subtle}>运行中 {sessions.filter(item => item.active_job_status === "running").length} · 排队中 {sessions.filter(item => item.active_job_status === "queued").length}</p>}
+              <div className={styles.sessionList}>
+                {sessions.map(item => <Button key={item.id} variant={item.id === session ? "secondary" : "ghost"}
+                  className={styles.sessionRow}
+                  disabled={locked || !!text.trim() || voice.status !== "off"}
+                  onClick={() => {
+                    setSessionsOpen(false);
+                    if (item.id !== session) {
+                      onPreviewChange?.(undefined);
+                      router.replace(`/workflow/${state.session.workflow_id}?workbench=1&session=${item.id}`);
+                    }
+                  }}>
+                  <span className={styles.sessionLabel}>
+                    <span>{item.id === session ? "当前 · " : ""}{new Date(item.created_at).toLocaleString("zh-CN")}</span>
+                    <span className={styles.sessionMeta}>{item.id.slice(0, 6)}</span>
+                  </span>
+                  <span className={styles.sessionStatus} data-status={item.active_job_status || "idle"}>
+                    {item.active_job_status === "running" && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+                    {item.active_job_status === "running" ? "运行中" : item.active_job_status === "queued" ? "排队中" : "未运行"}
+                  </span>
+                </Button>)}
+              </div>
+              <Button variant="outline" disabled={locked || !!text.trim() || voice.status !== "off"} onClick={() => action(async () => {
+                const next = result<WorkbenchSession>(await createSession({body: {
+                  workflow_id: state.session.workflow_id, model_protocol: state.session.model_protocol, new_session: true,
+                }}));
+                onPreviewChange?.(undefined);
+                router.replace(`/workflow/${state.session.workflow_id}?workbench=1&session=${next.id}`);
+              })}>新建会话</Button>
+            </PopoverContent>
+          </Popover>
+          <AgentMemory key={session} session={session} revision={state.memory_revision} onChanged={() => void reload()} />
+          <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
@@ -509,7 +721,7 @@ export function AgentWorkbench({
               aria-label="工作台设置"
             >
               <h3>工作台设置</h3>
-              <p className={styles.subtle}>Codex · 使用 Dograh 模型连接</p>
+              <BuildModelSettings disabled={locked} onSaved={() => setBuildModelRevision(revision => revision + 1)} />
               <div className={styles.protocol}>
                 <label htmlFor="model-protocol">构建模型协议</label>
                 <select
@@ -551,10 +763,10 @@ export function AgentWorkbench({
                   ))}
                   {dependencies.issues.map((issue, i) => (
                     <p role="alert" key={i}>
-                      {detailFromError(
+                      {workbenchErrorText(detailFromError(
                         { detail: issue },
                         "模型配置无法解析，请检查 Models",
-                      )}
+                      ))}
                     </p>
                   ))}
                   <Link href="/model-configurations">管理模型连接</Link>
@@ -607,7 +819,7 @@ export function AgentWorkbench({
           <select
             value={candidateId}
             aria-label="候选版本"
-            onChange={(e) => setCandidateId(e.target.value)}
+            onChange={(e) => { setCandidateId(e.target.value); setEvaluationId(""); setCaseName(""); }}
           >
             <option value="">当前草稿</option>
             {state.candidates.map((c, i) => (
@@ -706,13 +918,11 @@ export function AgentWorkbench({
       {active && (
         <div role="status" className={styles.taskStatus}>
           <Loader2 size={15} className="animate-spin" />
-          <span>
-            {statusText[active.status]} ·{" "}
-            {String(
-              events.filter((e) => e.type === "tool.started").at(-1)?.payload
-                .name || active.kind,
-            )}
-          </span>
+          <span>{taskProgress(active, events)}</span>
+          {!!state.evaluations.length && <button onClick={() => {
+            setTab("tests");
+            if (resultsPane.current) resultsPane.current.scrollTop = 0;
+          }}>查看已保存结果</button>}
           <button
             onClick={() =>
               action(async () => {
@@ -735,6 +945,7 @@ export function AgentWorkbench({
             className={styles.main}
             aria-label={tab === "tests" ? "文本仿真结果" : "调优记录"}
           >
+            {tab === "tests" && <EvaluationArchive state={state} onOpen={openTestResult} />}
             <div className={styles.runActions}>
               <Button
                 size="sm"
@@ -754,6 +965,14 @@ export function AgentWorkbench({
                 <Sparkles size={14} />
                 开始调优
               </Button>
+              <select aria-label="重跑测试方式" className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
+                <option value="dynamic">动态客户仿真</option>
+                <option value="single_step">真实上下文单步</option>
+                <option value="scripted">固定脚本与错位检查</option>
+              </select>
+              <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={() => void action(async () => {
+                result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: testMode, test_suite_ids: [suiteId], candidate_id: candidateId, text: "使用所选测试方式重新执行此测试集，检查对话有效性，按原始资料评审。保留 Agent 和对话模型。", idempotency_key: crypto.randomUUID()}}));
+              })}>按所选方式重跑</Button>
               {(!candidateId || !suiteId) && (
                 <p className={styles.subtle}>请先选择候选版本和测试集。</p>
               )}
@@ -766,7 +985,7 @@ export function AgentWorkbench({
                   value={suiteId}
                   onChange={(e) => {
                     setSuiteId(e.target.value);
-                    setCaseIndex(0);
+                    setCaseName(""); setEvaluationId("");
                   }}
                 >
                   {!state.suites.length && (
@@ -810,36 +1029,43 @@ export function AgentWorkbench({
             {tab === "tests" && (
               <div className={styles.tests}>
                 <p className={styles.testHelp}>
-                  固定用户脚本 · 真实文本引擎 · 业务工具使用测试夹具
+                  真实文本引擎 · 动态客户 / 原始上下文单步 / 固定脚本 · 独立对话有效性检查
                 </p>
+                {testTaskSummary && <section className={styles.candidateResult} aria-label="本次测试汇总">
+                  <strong>{testTask?.output.resumed_from_job_id ? "恢复任务：已汇总" : "本次任务：已汇总实际运行"} {testTaskSummary.executed}/{testTaskSummary.total} 条</strong>
+                  {inFlightTests > 0 && <p>另有 {inFlightTests} 条正在对话或评审，完成后纳入上方汇总。</p>}
+                  <p>通过 {testTaskSummary.passed} · 未通过 {testTaskSummary.failed} · 执行错误 {testTaskSummary.error} · 无法判定 {testTaskSummary.inconclusive}</p>
+                  {testTaskSummary.valid !== undefined && <p>对话有效 {testTaskSummary.valid} · 无效 {testTaskSummary.invalid || 0} · 有效性未确定 {testTaskSummary.validity_inconclusive || 0}。无效测试不计入正常流程通过率。</p>}
+                  {Number(testTaskSummary.reused) > 0 && <p>其中 {testTaskSummary.reused} 条保留原实际对话；补评不重复运行 Agent。</p>}
+                  <ReviewCounts summary={testTaskSummary} />
+                  <p className={styles.subtle}>下方显示当前批次的实际回复与检查依据。参考对话由模型逐项评审，保留原文供核对。</p>
+                </section>}
                 {evaluation ? (
                   <>
                     <div className={styles.metrics}>
                       <b>
                         {evaluation.summary.passed || 0}
-                        <small> / {evaluation.summary.total || 0} 通过</small>
+                        <small> / {evaluation.summary.valid ?? evaluation.summary.total ?? 0} {evaluation.summary.valid !== undefined ? "有效测试通过" : "通过"}</small>
                       </b>
                       <span>
                         {statusText[evaluation.status] || evaluation.status}
                       </span>
                       <span>
-                        失败 {evaluation.summary.failed || 0} · 错误{" "}
-                        {evaluation.summary.error || 0}
+                        当前批次：失败 {evaluation.summary.failed || 0} · 错误{" "}
+                        {evaluation.summary.error || 0} · 无法判定 {evaluation.summary.inconclusive || 0}
                       </span>
                     </div>
-                    <div className={styles.results}>
+                    <div className={styles.results} ref={resultDetail} tabIndex={-1} role="region" aria-label="测试用例详情">
+                      <p className={styles.testHelp}>当前详情：{selectedSuite?.payload.name} · 测试记录 {evaluation.id.slice(0, 8)}</p>
                       <label className={styles.caseSelector}>
                         测试场景
                         <select
                           aria-label="测试场景"
-                          value={Math.min(
-                            caseIndex,
-                            evaluation.results.length - 1,
-                          )}
-                          onChange={(e) => setCaseIndex(Number(e.target.value))}
+                          value={currentCase ? evaluation.results.indexOf(currentCase) : ""}
+                          onChange={(e) => setCaseName(evaluation.results[Number(e.target.value)]?.name || "")}
                         >
                           {evaluation.results.map((c, i) => (
-                            <option key={i} value={i}>
+                            <option key={c.name} value={i}>
                               {i + 1}. {c.name} ·{" "}
                               {statusText[c.status] || c.status}
                             </option>
@@ -853,8 +1079,15 @@ export function AgentWorkbench({
                         tabIndex={0}
                       >
                         {currentCase?.error && (
-                          <p role="alert">{currentCase.error}</p>
+                          <p role="alert">{workbenchErrorText(currentCase.error)}</p>
                         )}
+                        {currentCase?.run_id && <p className={styles.subtle}>运行记录 #{currentCase.run_id}{currentCase.source?.row ? ` · ${currentCase.source.sheet} 第 ${currentCase.source.row} 行 · ${currentCase.source.column}` : ""}</p>}
+                        {currentCase?.trace_url && /^https?:\/\//i.test(currentCase.trace_url) && <p className={styles.subtle}><a href={currentCase.trace_url} target="_blank" rel="noreferrer">查看 Langfuse 调用链</a></p>}
+                        {currentCase?.run_id && <p className={styles.subtle}>测试运行单独保存在这里，不计入普通通话记录和业务统计。</p>}
+                        {currentCase && <SimulationEvidence result={currentCase} />}
+                        {currentCase?.reference_review && <p className={styles.subtle}>参考对话检查：{/no data for|timed out|I\/O timeout/.test(currentCase.reference_review.reason) ? "评审模型响应超时，实际对话已保留，本条暂无法判定。" : /app-server exited|connection is closed/i.test(currentCase.reference_review.reason) ? "评审连接中断，实际对话已保留，本条暂无法判定。" : workbenchErrorText(currentCase.reference_review.reason)}</p>}
+                        <ReviewCounts summary={evaluation.summary} />
+                        <ReviewFindings review={currentCase?.reference_review} />
                         {currentCase?.transcript.map((m, i) => (
                           <div
                             key={i}
@@ -874,10 +1107,15 @@ export function AgentWorkbench({
                           {currentCase?.assertions.map((a, i) => (
                             <p
                               key={i}
-                              data-status={a.passed ? "passed" : "failed"}
+                              data-status={a.informational ? "inconclusive" : a.passed ? "passed" : "failed"}
                             >
-                              {a.passed ? "✓" : "×"} {a.kind} ·{" "}
-                              {String(a.value ?? "")}
+                              {a.informational ? "·" : a.passed ? "✓" : "×"}{" "}
+                              {a.kind === "script_consumed"
+                                ? `已执行用户轮次 · ${a.actual}/${String(a.value)}`
+                                : `${a.kind === "reference" ? "参考对话" : a.kind}${a.turn != null ? ` · ${a.turn === 0 ? "开场" : `第 ${a.turn} 轮回复`}` : ""} · ${String(a.value ?? "")}`}
+                              {a.reason && <span> · {workbenchErrorText(a.reason)}</span>}
+                              {a.reference_quote && <span> · 参考：“{a.reference_quote}”</span>}
+                              {a.actual_quote && <span> · 实际：“{a.actual_quote}”</span>}
                             </p>
                           ))}
                         </div>
@@ -887,10 +1125,8 @@ export function AgentWorkbench({
                 ) : (
                   <div className={styles.empty}>
                     <FlaskConical size={32} />
-                    <h2>验证 Agent 的实际表现</h2>
-                    <p>
-                      选择候选版本和测试集，运行后可查看逐轮对话与断言结果。
-                    </p>
+                    <h2>{state.evaluations.length ? "当前版本与测试集没有匹配结果" : "验证 Agent 的实际表现"}</h2>
+                    <p>{state.evaluations.length ? "已有结果保留在上方列表，点击“查看对话与评审”打开对应测试记录。" : "选择候选版本和测试集，运行后可查看逐轮对话与断言结果。"}</p>
                   </div>
                 )}
               </div>
@@ -910,7 +1146,7 @@ export function AgentWorkbench({
                         <span>{statusText[j.status] || j.status}</span>
                       </div>
                       <p>
-                        {j.error ||
+                        {(j.error && workbenchErrorText(j.error)) ||
                           (j.output.improved
                             ? "已找到通过更多用例且无回退的候选版本。"
                             : j.status === "completed"
@@ -925,7 +1161,7 @@ export function AgentWorkbench({
                             setCandidateId(String(j.output.candidate_id));
                             if (typeof j.input.suite_id === "string")
                               setSuiteId(j.input.suite_id);
-                            setCaseIndex(0);
+                            setCaseName(""); setEvaluationId("");
                             setTab("tests");
                           }}
                         >
@@ -953,6 +1189,7 @@ export function AgentWorkbench({
           }}
         >
           <div
+            ref={messagesPane}
             className={styles.messages}
             hidden={tab !== "canvas"}
             role="region"
@@ -964,14 +1201,22 @@ export function AgentWorkbench({
                 el.scrollHeight - el.scrollTop - el.clientHeight < 64;
               followMessages.current = following;
               setFollowingMessages(following);
+              if (el.scrollTop < 80 && !following) void loadOlder();
             }}
           >
+            {historyBefore !== null && (
+              <button className={styles.historyMore} disabled={historyLoading} onClick={() => void loadOlder()}>
+                {historyLoading ? "正在加载更早消息…" : "加载更早消息"}
+              </button>
+            )}
+            {historyError && <p role="alert">{workbenchErrorText(historyError)}</p>}
             {messages.length > 0 && (
               <p className={styles.conversationLabel}>
-                构建对话 <span>Codex</span>
+                构建对话
               </p>
             )}
-            {!messages.length && (
+            {!messages.length && historyBefore !== null && <p className={styles.subtle}>当前页是任务进度，向前加载可查看之前的对话。</p>}
+            {!messages.length && historyBefore === null && (
               <div className={styles.welcome}>
                 <h2>你想构建什么 Agent？</h2>
                 <p>
@@ -992,24 +1237,43 @@ export function AgentWorkbench({
               </div>
             )}
             {messages.map((e) => {
-              if (e.type === "evidence.read")
-                return (
-                  <div key={e.sequence} className={styles.evidence}>
-                    {e.payload.source === "agent_runs" ? (
-                      <Link href={`/workflow/${state.session.workflow_id}/run/${e.payload.run_id}`} target="_blank">
-                        <FileText size={12} /> 已读取运行 #{String(e.payload.run_id)}
-                        · {({ transcript: "对话", variables: "变量", logs: "日志", logs_raw: "原始日志", definition: "运行版本", overview: "概览" } as Record<string, string>)[String(e.payload.section)] || String(e.payload.section)}
-                      </Link>
-                    ) : (
-                      <span><Paperclip size={12} /> 按需读取 · {String(e.payload.name)}</span>
-                    )}
-                  </div>
-                );
+              if (e.type === "basis.frozen") return <div key={e.sequence} data-event-sequence={e.sequence} className={styles.botBubble}><TaskBasis session={session} jobId={String(e.payload.job_id)} basis={e.payload as unknown as BasisSummary} /></div>;
+              if (e.activity)
+                return <div key={e.sequence} data-event-sequence={e.sequence}><TaskActivity steps={e.activity} running={e.running} workflowId={state.session.workflow_id} /></div>;
+              if (e.evidence)
+                return <div key={e.sequence} data-event-sequence={e.sequence}><EvidenceReads events={e.evidence} workflowId={state.session.workflow_id} /></div>;
               const input = e.payload.input as
                 | Record<string, unknown>
                 | undefined;
               const isUser =
                 e.type === "task.queued" || e.payload.role === "user";
+              const output = ["task.completed", "task.needs_attention", "task.awaiting_input"].includes(e.type)
+                ? e.payload.output as Record<string, unknown> | undefined
+                : undefined;
+              const associatedJob = state.jobs.find(j => j.id === e.payload.job_id);
+              const resumableOutput = associatedJob?.output;
+              const resumableBuild = ["task.failed", "task.cancelled"].includes(e.type)
+                && associatedJob?.kind === "build" && resumableOutput?.outcome === "build"
+                && !!resumableOutput?.candidate_id && !!resumableOutput?.suite_id
+                && !state.jobs.some(j => j.input.resume_build_job_id === associatedJob?.id);
+              const resumableSummary = resumableOutput?.summary as Record<string, number> | undefined;
+              const resumableTest = ["task.cancelled", "task.failed", "task.completed"].includes(e.type)
+                && resumableOutput?.intent === "test" && resumableOutput?.outcome !== "review" && Array.isArray(resumableOutput.evaluation_ids)
+                && resumableOutput.evaluation_ids.length > 0
+                && (e.type !== "task.completed" || !!(resumableSummary?.error || (resumableSummary?.review_pending ?? resumableSummary?.inconclusive)));
+              const resultEvaluation = state.evaluations.find(v =>
+                v.id === (output?.evaluation_id || output?.id));
+              const resultCandidateId = output?.candidate_id || resultEvaluation?.candidate_id;
+              const resultIndex = state.candidates.findIndex(c => c.id === resultCandidateId);
+              const resultCandidate = state.candidates[resultIndex];
+              const resultVersion = state.candidates.length - resultIndex;
+              const resultSuiteId = typeof output?.suite_id === "string"
+                ? output.suite_id : resultEvaluation?.suite_id;
+              const verification = output?.verification as Record<string, unknown> | undefined;
+              const testSummary = (["test", "review"].includes(String(output?.outcome)) ? output?.summary as Record<string, unknown> : undefined) || verification || resultEvaluation?.summary;
+              const testCounts = typeof testSummary?.passed === "number" && typeof testSummary?.total === "number"
+                ? `${testSummary.passed}/${testSummary.total} 项通过`
+                : undefined;
               const content =
                 e.type === "task.queued"
                   ? String(
@@ -1019,27 +1283,106 @@ export function AgentWorkbench({
                           ? "运行文本仿真"
                           : "调优 Agent"),
                     )
-                  : e.type === "task.completed"
-                    ? (e.payload.output as Record<string, unknown>)?.outcome === "analysis"
-                      ? "分析已完成。可以继续追问，或提出修改要求。"
-                      : "任务已完成，可查看候选版本或测试结果。"
+                  : e.type === "context.compaction"
+                    ? "已整理上下文，原始对话仍可向前翻阅。"
+                  : ["task.completed", "task.needs_attention", "task.awaiting_input"].includes(e.type)
+                    ? taskCompletionText(e.payload.output as Record<string, unknown>)
                     : e.type === "task.failed"
-                      ? String(e.payload.error)
+                      ? workbenchErrorText(String(e.payload.error))
                       : e.type === "task.cancelled"
                         ? "任务已取消。"
                         : e.type === "candidate.adopted"
                           ? "候选版本已应用到草稿。"
-                          : String(e.payload.text || "");
+                          : e.type === "model.progress"
+                            ? modelProgressText(e.payload)
+                            : String(e.payload.text || "");
               return (
                 <div
                   key={e.sequence}
+                  data-event-sequence={e.sequence}
                   className={isUser ? styles.userBubble : styles.botBubble}
                 >
                   <small>
                     {isUser ? "你" : "构建助手"}
                     {e.type === "voice.transcript" ? " · 语音" : ""}
+                    {e.payload.phase === "commentary" ? " · 进展" : ""}
+                    {e.type === "assistant.message.progress" ? (e.running ? " · 正在输出" : " · 输出未完成") : ""}
                   </small>
-                  <p>{content}</p>
+                  {isUser ? <p>{content}</p> : <WorkbenchMarkdown>{content}</WorkbenchMarkdown>}
+                  <RequirementCoverage report={output?.requirement_review as Parameters<typeof RequirementCoverage>[0]["report"]} />
+                  {resumableBuild && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "build", text: "从已保存的候选和断点继续需求审查与调优，不从头构建，不自动应用到 Agent。", resume_build_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                  })}>从断点继续调优</Button>}
+                  {output?.task_basis ? <TaskBasis session={session} jobId={String(e.payload.job_id)} basis={output.task_basis as BasisSummary} /> : null}
+                  {output && Array.isArray(output.evaluation_ids) && output.evaluation_ids.length > 0 && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "test", text: "基于原始业务资料、用户明确要求和已确认约束，重新复核已有实际对话。区分业务问题、配置执行不一致、脚本不匹配、资料冲突和体验建议；不要重新运行对话，不修改 Agent。", review_evaluation_ids: (output.evaluation_ids as string[]), idempotency_key: crypto.randomUUID()}}));
+                  })}>仅重新评审已有对话</Button>}
+                  {associatedJob?.output.outcome === "review" && ["task.cancelled", "task.failed"].includes(e.type) && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "test", text: "继续未完成的评审，保留已有结果，不重跑或修改 Agent。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                  })}>继续未完成评审</Button>}
+                  {resumableTest && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "test", text: "继续原测试，只重试未完成或异常的用例，保留已完成结果。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                  })}>继续未完成或异常测试</Button>}
+                  {output?.outcome === "needs_input" && output.task_mode === "test" && (
+                    <section className={styles.candidateResult} aria-label="补充测试信息">
+                      <input aria-label="补充回答" value={testClarification} onChange={event => setTestClarification(event.target.value)} placeholder="填写补充信息，继续本次测试" />
+                      <Button disabled={locked || !testClarification.trim()} onClick={() => void action(async () => {
+                        result(await instruct({path: {session_id: session}, body: {mode: "test", text: testClarification, continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                        setTestClarification("");
+                      })}>补充并继续</Button>
+                    </section>
+                  )}
+                  {["test", "review"].includes(String(output?.outcome)) && output && (
+                    <section className={styles.candidateResult} aria-label="只运行测试结果">
+                      <strong>{output.outcome === "review" ? "已有对话复核" : "测试结果"} · {testCounts}</strong>
+                      <ReviewCounts summary={testSummary} />
+                      {output.outcome === "test" && <Button variant="outline" size="sm" disabled={locked} onClick={() => void action(async () => {
+                        result(await instruct({path: {session_id: session}, body: {mode: "test", text: "重新执行全部用例，沿用原测试版本和对话模型，评审使用当前工作台模型，不复用运行结果，不修改 Agent。", rerun_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                      })}>全部重新运行</Button>}
+                      <p>使用固定版本，未修改 Agent。可按批次查看实际对话和检查依据。</p>
+                      {Number(testSummary?.reused) > 0 && <p>其中 {Number(testSummary?.reused)} 条复用此前已完成的真实运行结果，其余为本次执行。</p>}
+                      {Array.isArray(output.source_manifest) && output.source_manifest.map((source: {suite_id?: string; asset_id?: string; sheet?: string; name?: string; dialogue_column?: string; rows: number}, index: number) => <p className={styles.subtle} key={source.suite_id || `${source.asset_id}:${source.sheet}:${index}`}>来源：{[source.name || (source.suite_id ? "保存的测试集" : "附件"), source.sheet, source.dialogue_column].filter(Boolean).join(" · ")} · {source.rows} 条</p>)}
+                      <div className={styles.candidateResultActions}>
+                        {(Array.isArray(output.suite_ids) ? output.suite_ids : []).map((id, index) => (
+                          <Button key={String(id)} variant="outline" size="sm" onClick={() => {
+                            setCandidateId(String(resultCandidateId)); setSuiteId(String(id)); setCaseName(""); setEvaluationId(""); setTab("tests");
+                          }}>第 {index + 1} 批结果</Button>
+                        ))}
+                      </div>
+                      {Array.isArray(output.import_issues) && output.import_issues.length > 0 && <p>有 {output.import_issues.length} 条样本未能执行：{output.import_issues.map((issue: { name?: string; error?: string }) => `${issue.name}：${issue.error}`).join("；")}</p>}
+                    </section>
+                  )}
+                  {resultCandidate && !["test", "review", "needs_input"].includes(String(output?.outcome)) && (
+                    <section
+                      className={styles.candidateResult}
+                      aria-label={`候选版本 ${resultVersion} · ${resultCandidate.name}`}
+                    >
+                      <strong>候选版本 {resultVersion} · {resultCandidate.name}</strong>
+                      <p>{resultCandidate.summary}</p>
+                      <span className={styles.subtle}>
+                        {testCounts ? `自动测试：${testCounts}` : "尚未验证"}
+                        {verification?.status === "inconclusive" ? " · 调优未完成" : ""}
+                      </span>
+                      <div className={styles.candidateResultActions}>
+                        <Button variant="outline" size="sm" onClick={() => {
+                          setCandidateId(resultCandidate.id);
+                          setTab("canvas");
+                        }}>
+                          查看候选
+                        </Button>
+                        {resultEvaluation && resultSuiteId && (
+                          <Button variant="ghost" size="sm" onClick={() => {
+                            setCandidateId(resultCandidate.id);
+                            setSuiteId(resultSuiteId);
+                            setCaseName(""); setEvaluationId("");
+                            setTab("tests");
+                          }}>
+                            查看测试结果
+                          </Button>
+                        )}
+                      </div>
+                    </section>
+                  )}
                   {Array.isArray(input?.asset_ids) &&
                     input.asset_ids.map((id) => (
                       <span key={String(id)} className={styles.fileTag}>
@@ -1071,7 +1414,7 @@ export function AgentWorkbench({
             )}
             {(error || syncError) && (
               <div role="alert" className={styles.error}>
-                {error || syncError}
+                {workbenchErrorText(error || syncError)}
                 <button
                   onClick={() => {
                     setError("");
@@ -1090,7 +1433,7 @@ export function AgentWorkbench({
             )}
             {voice.error && (
               <p role="alert" className={styles.error}>
-                {voice.error}
+                {workbenchErrorText(voice.error)}
               </p>
             )}
             <div className={styles.composerContext}>
@@ -1104,7 +1447,7 @@ export function AgentWorkbench({
                   <h3>Agent Runs · 最近运行</h3>
                   <p className={styles.subtle}>读取这个 Agent 的实际对话、变量和日志，分析后可继续提出修改要求。</p>
                   <Button size="sm" disabled={locked || runsLoading || !agentRuns.length}
-                    onClick={() => void sendInstruction("请分析 Agent Runs 中最新一次运行的对话、变量和日志，指出问题、证据和调优建议。先只分析，不修改 Agent。", "analyze")}>
+                    onClick={() => void sendInstruction("请分析 Agent Runs 中最新一次运行，按需查看相关证据，指出问题、依据和调优建议。先只分析，不修改 Agent。", "analyze")}>
                     分析最新运行
                   </Button>
                   {runsLoading ? <p>正在读取…</p> : !agentRuns.length ? <p>这个 Agent 还没有运行记录。</p> :
@@ -1115,7 +1458,7 @@ export function AgentWorkbench({
                           <small>{run.state} · {run.has_transcript ? "有对话记录" : "暂无已保存对话"}</small>
                         </Link>
                         <Button size="sm" variant="outline" disabled={locked}
-                          onClick={() => void sendInstruction(`请分析 Agent Runs 运行 #${run.id} 的对话、变量和日志，给出问题依据和调优建议。先只分析，不修改 Agent。`, "analyze")}>分析</Button>
+                          onClick={() => void sendInstruction(`请分析 Agent Runs 运行 #${run.id}，按需查看相关证据，给出问题依据和调优建议。先只分析，不修改 Agent。`, "analyze")}>分析</Button>
                       </div>
                     ))}
                 </PopoverContent>
@@ -1174,7 +1517,7 @@ export function AgentWorkbench({
                       {a.status === "failed" ? (
                         <button
                           disabled={busy}
-                          title={a.error}
+                          title={a.error ? workbenchErrorText(a.error) : undefined}
                           onClick={() =>
                             action(async () => {
                               result(
@@ -1215,7 +1558,7 @@ export function AgentWorkbench({
                   ? selectedAssets
                       .map((id) => state.assets.find((a) => a.id === id)?.name)
                       .join(" · ")
-                  : "对话保留 · 资料按需读取"}
+                  : "会话记录 · 自动整理上下文"}
               </span>
               {tab !== "canvas" &&
                 composerExpanded &&
@@ -1282,8 +1625,14 @@ export function AgentWorkbench({
                   onChange={(e) => setInstructionMode(e.target.value as typeof instructionMode)}>
                   <option value="auto">自动判断</option>
                   <option value="analyze">仅分析</option>
+                  <option value="test">只运行测试</option>
                   <option value="build">构建修改</option>
                 </select>
+                {instructionMode === "test" && <select aria-label="测试方式" className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
+                  <option value="dynamic">动态客户仿真</option>
+                  <option value="single_step">真实上下文单步</option>
+                  <option value="scripted">固定脚本与错位检查</option>
+                </select>}
                 <button
                   className={voice.status !== "off" ? styles.voiceActive : ""}
                   onClick={() =>

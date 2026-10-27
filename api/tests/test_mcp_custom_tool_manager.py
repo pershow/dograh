@@ -35,6 +35,7 @@ async def test_get_tool_schemas_and_handler_for_mcp(monkeypatch):
         await session.start()
 
         engine = MagicMock()
+        engine.evaluation_policy = None
         engine.active_agent = stub_agent_runtime(llm=MagicMock())
         engine.active_agent.mcp_sessions = {tool.tool_uuid: session}
         registered = {}
@@ -97,6 +98,7 @@ async def test_unavailable_mcp_session_contributes_nothing(monkeypatch):
     await session.start()  # degrades
 
     engine = MagicMock()
+    engine.evaluation_policy = None
     engine.active_agent = stub_agent_runtime(llm=MagicMock())
     engine.active_agent.mcp_sessions = {tool.tool_uuid: session}
     mgr = CustomToolManager(engine)
@@ -140,6 +142,7 @@ async def test_per_node_mcp_filter_intersection(monkeypatch):
         await session.start()
 
         engine = MagicMock()
+        engine.evaluation_policy = None
         engine.active_agent = stub_agent_runtime(llm=MagicMock())
         engine.active_agent.mcp_sessions = {tool.tool_uuid: session}
         registered = {}

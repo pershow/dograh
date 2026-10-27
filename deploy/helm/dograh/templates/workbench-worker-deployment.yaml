@@ -1,0 +1,84 @@
+{{- if .Values.workbench.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dograh.fullname" . }}-workbench-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dograh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: workbench-worker
+spec:
+  replicas: {{ .Values.workbench.replicaCount }}
+  minReadySeconds: 15
+  selector:
+    matchLabels:
+      {{- include "dograh.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: workbench-worker
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "dograh.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: workbench-worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "dograh.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: workbench-worker
+          image: {{ include "dograh.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["./scripts/run_workbench_worker.sh"]
+          envFrom:
+            {{- include "dograh.backendEnvFrom" . | nindent 12 }}
+          env:
+            {{- include "dograh.dbEnv" . | nindent 12 }}
+            - name: WORKBENCH_DATA_DIR
+              value: /data/workbench
+          volumeMounts:
+            - name: workbench-data
+              mountPath: /data/workbench
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "grep -qa api.tasks.agent_workbench /proc/1/cmdline"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  grep -qa api.tasks.agent_workbench /proc/1/cmdline || exit 1
+                  python -c "import os, socket
+                  from urllib.parse import urlparse
+                  u = urlparse(os.environ['REDIS_URL'])
+                  socket.create_connection((u.hostname, u.port or 6379), timeout=3).close()"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.workbench.resources | nindent 12 }}
+      volumes:
+        - name: workbench-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.workbench.persistence.existingClaim | default (printf "%s-workbench" (include "dograh.fullname" .)) }}
+      {{- with .Values.workbench.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.workbench.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.workbench.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

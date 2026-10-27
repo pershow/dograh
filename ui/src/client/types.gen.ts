@@ -206,7 +206,7 @@ export type Assertion = {
     /**
      * Kind
      */
-    kind: 'contains' | 'not_contains' | 'node_visited' | 'tool_called' | 'context_equals' | 'completed';
+    kind: 'contains' | 'contains_any' | 'not_contains' | 'node_visited' | 'node_not_visited' | 'node_sequence' | 'tool_called' | 'context_equals' | 'completed';
     /**
      * Value
      */
@@ -215,6 +215,12 @@ export type Assertion = {
      * Key
      */
     key?: string | null;
+    /**
+     * Turn
+     *
+     * For text checks, 0 is the opening; 1 is the reply to the first user message. Omit to check all assistant speech.
+     */
+    turn?: number | null;
 };
 
 /**
@@ -330,6 +336,24 @@ export type BodyWorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPost = 
      * File
      */
     file: Blob | File;
+};
+
+/**
+ * BuildModelSettings
+ */
+export type BuildModelSettings = {
+    llm: ServiceSelection | null;
+};
+
+/**
+ * BuildModelSettingsResponse
+ */
+export type BuildModelSettingsResponse = {
+    llm: ServiceSelection | null;
+    /**
+     * Supported Providers
+     */
+    supported_providers: Array<string>;
 };
 
 /**
@@ -863,6 +887,40 @@ export type CloudonixConfigurationRequest = {
 };
 
 /**
+ * ConfirmMemory
+ */
+export type ConfirmMemory = {
+    /**
+     * Kind
+     */
+    kind: 'requirement' | 'constraint' | 'sop';
+    /**
+     * Content
+     */
+    content: string;
+    /**
+     * Expected Revision
+     */
+    expected_revision: string;
+    /**
+     * Replaces Id
+     */
+    replaces_id?: string | null;
+    /**
+     * Source Type
+     */
+    source_type?: 'request' | 'attachment';
+    /**
+     * Source Id
+     */
+    source_id?: string | null;
+    /**
+     * Source Quote
+     */
+    source_quote?: string | null;
+};
+
+/**
  * ContextDestinationMappingConfig
  *
  * Resolve a transfer destination from gathered or initial context.
@@ -1087,6 +1145,10 @@ export type CreateServiceKeyResponse = {
  * CreateSession
  */
 export type CreateSession = {
+    /**
+     * New Session
+     */
+    new_session?: boolean;
     /**
      * Model Protocol
      */
@@ -1528,6 +1590,20 @@ export type DefaultModelConfigurationResponse = {
      * Model Configuration Uuid
      */
     model_configuration_uuid: string | null;
+};
+
+/**
+ * DialogueTurn
+ */
+export type DialogueTurn = {
+    /**
+     * Role
+     */
+    role: 'user' | 'assistant';
+    /**
+     * Text
+     */
+    text: string;
 };
 
 /**
@@ -2534,13 +2610,45 @@ export type InitiateCallRequest = {
  */
 export type Instruction = {
     /**
+     * Test Suite Ids
+     */
+    test_suite_ids?: Array<string>;
+    /**
+     * Test Mode
+     */
+    test_mode?: 'scripted' | 'single_step' | 'dynamic' | null;
+    /**
+     * Single Step Turns
+     */
+    single_step_turns?: Array<number>;
+    /**
      * Candidate Id
      */
     candidate_id?: string | null;
     /**
+     * Test Target Session Id
+     */
+    test_target_session_id?: string | null;
+    /**
+     * Continue Test Job Id
+     */
+    continue_test_job_id?: string | null;
+    /**
+     * Resume Build Job Id
+     */
+    resume_build_job_id?: string | null;
+    /**
+     * Rerun Test Job Id
+     */
+    rerun_test_job_id?: string | null;
+    /**
+     * Review Evaluation Ids
+     */
+    review_evaluation_ids?: Array<string>;
+    /**
      * Mode
      */
-    mode?: 'auto' | 'analyze' | 'build';
+    mode?: 'auto' | 'analyze' | 'build' | 'test';
     /**
      * Text
      */
@@ -2559,6 +2667,30 @@ export type Instruction = {
  * ItemKind
  */
 export type ItemKind = 'node' | 'edge' | 'workflow';
+
+/**
+ * JevNodeRoutingConfiguration
+ *
+ * Optional fast routing for text and STT → LLM → TTS conversations.
+ */
+export type JevNodeRoutingConfiguration = {
+    /**
+     * Mode
+     */
+    mode?: 'off' | 'shadow' | 'on';
+    /**
+     * Confidence Threshold
+     */
+    confidence_threshold?: number;
+    /**
+     * Timeout Ms
+     */
+    timeout_ms?: number;
+    /**
+     * Model
+     */
+    model?: string;
+};
 
 /**
  * LangfuseCredentialsRequest
@@ -4339,6 +4471,16 @@ export type RetryConfigResponse = {
 };
 
 /**
+ * RevokeMemory
+ */
+export type RevokeMemory = {
+    /**
+     * Expected Revision
+     */
+    expected_revision: string;
+};
+
+/**
  * RewindTextChatSessionRequest
  */
 export type RewindTextChatSessionRequest = {
@@ -4601,11 +4743,33 @@ export type SignupRequest = {
  */
 export type SimulationCase = {
     /**
+     * Mode
+     */
+    mode?: 'scripted' | 'single_step' | 'dynamic';
+    /**
+     * Reference Turns
+     */
+    reference_turns?: Array<DialogueTurn>;
+    /**
+     * History
+     */
+    history?: Array<DialogueTurn>;
+    /**
+     * Source Turn
+     */
+    source_turn?: number | null;
+    /**
+     * Max Turns
+     */
+    max_turns?: number;
+    /**
      * Name
      */
     name: string;
     /**
      * User Messages
+     *
+     * Only the simulated USER's utterances, in order. Never include assistant greetings or replies; the runtime generates those.
      */
     user_messages: Array<string>;
     /**
@@ -4631,7 +4795,17 @@ export type SimulationCase = {
     /**
      * Assertions
      */
-    assertions: Array<Assertion>;
+    assertions?: Array<Assertion>;
+    /**
+     * Source
+     */
+    source?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Reference Dialogue
+     */
+    reference_dialogue?: string | null;
 };
 
 /**
@@ -4642,6 +4816,10 @@ export type SimulationSuite = {
      * Name
      */
     name: string;
+    /**
+     * Instructions
+     */
+    instructions?: string;
     /**
      * Cases
      */
@@ -5770,9 +5948,10 @@ export type TrafficVariantStats = {
  *
  * Most of how a handoff sounds is fixed: the caller hears a ringer while the
  * next agent is prepared. The handover line is configurable because it is
- * caller-facing and Dograh runs in more than one language, and so is whether
- * the next agent opens with its greeting, because an agent that greets
- * callers on its own number should not re-introduce itself mid-conversation.
+ * caller-facing and Dograh runs in more than one language, and so is how the
+ * next agent opens: an agent that greets callers on its own number should
+ * not re-introduce itself mid-conversation, and one that only ever answers
+ * handoffs needs a line of its own before it picks the conversation up.
  */
 export type TransferAgentConfig = {
     /**
@@ -5782,11 +5961,17 @@ export type TransferAgentConfig = {
      */
     workflow_id: number;
     /**
-     * Play Greeting
+     * Greeting Mode
      *
-     * Whether the destination agent opens with its Start Call greeting. When false, it skips the greeting and opens with a reply generated from the handover note, continuing the conversation instead of introducing itself.
+     * How the destination agent opens. 'start_greeting' plays its Start Call greeting and waits for the caller. 'continue' skips the greeting and opens with a reply generated from the handover note. 'introduce_and_continue' speaks the introduction in the destination's own voice and then opens with a generated reply, so the caller hears who picked up without having to repeat themselves.
      */
-    play_greeting?: boolean;
+    greeting_mode?: 'start_greeting' | 'continue' | 'introduce_and_continue';
+    /**
+     * Introduction
+     *
+     * What the destination agent says as it takes over, in its own voice, before its first generated reply. Required with greeting_mode 'introduce_and_continue' and not accepted otherwise. Supports template variables.
+     */
+    introduction?: string | null;
 };
 
 /**
@@ -6880,6 +7065,16 @@ export type WorkflowConfigurationDefaults = {
      * Context Compaction Enabled
      */
     context_compaction_enabled?: boolean;
+    /**
+     * Speaker Tracking Enabled
+     *
+     * Evaluate call-local speakers in shadow mode; never changes transcription or interruptions.
+     */
+    speaker_tracking_enabled?: boolean;
+    /**
+     * Jev node routing: off, observe without applying, or apply confident decisions.
+     */
+    node_routing?: JevNodeRoutingConfiguration;
     /**
      * Tts Cache Enabled
      *
@@ -16409,6 +16604,128 @@ export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses = {
 
 export type WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponse = WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses[keyof WorkbenchCapabilitiesApiV1AgentWorkbenchCapabilitiesGetResponses];
 
+export type GetWorkbenchBuildModelData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/agent-workbench/build-model';
+};
+
+export type GetWorkbenchBuildModelErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkbenchBuildModelError = GetWorkbenchBuildModelErrors[keyof GetWorkbenchBuildModelErrors];
+
+export type GetWorkbenchBuildModelResponses = {
+    /**
+     * Successful Response
+     */
+    200: BuildModelSettingsResponse;
+};
+
+export type GetWorkbenchBuildModelResponse = GetWorkbenchBuildModelResponses[keyof GetWorkbenchBuildModelResponses];
+
+export type UpdateWorkbenchBuildModelData = {
+    body: BuildModelSettings;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/agent-workbench/build-model';
+};
+
+export type UpdateWorkbenchBuildModelErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateWorkbenchBuildModelError = UpdateWorkbenchBuildModelErrors[keyof UpdateWorkbenchBuildModelErrors];
+
+export type UpdateWorkbenchBuildModelResponses = {
+    /**
+     * Successful Response
+     */
+    200: BuildModelSettingsResponse;
+};
+
+export type UpdateWorkbenchBuildModelResponse = UpdateWorkbenchBuildModelResponses[keyof UpdateWorkbenchBuildModelResponses];
+
+export type WorkbenchSessionsApiV1AgentWorkbenchSessionsGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query: {
+        /**
+         * Workflow Id
+         */
+        workflow_id: number;
+    };
+    url: '/api/v1/agent-workbench/sessions';
+};
+
+export type WorkbenchSessionsApiV1AgentWorkbenchSessionsGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchSessionsApiV1AgentWorkbenchSessionsGetError = WorkbenchSessionsApiV1AgentWorkbenchSessionsGetErrors[keyof WorkbenchSessionsApiV1AgentWorkbenchSessionsGetErrors];
+
+export type WorkbenchSessionsApiV1AgentWorkbenchSessionsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchSessionsApiV1AgentWorkbenchSessionsGetResponse = WorkbenchSessionsApiV1AgentWorkbenchSessionsGetResponses[keyof WorkbenchSessionsApiV1AgentWorkbenchSessionsGetResponses];
+
 export type WorkbenchCreateSessionApiV1AgentWorkbenchSessionsPostData = {
     body: CreateSession;
     headers?: {
@@ -16466,7 +16783,12 @@ export type WorkbenchSessionApiV1AgentWorkbenchSessionsSessionIdGetData = {
          */
         session_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * If Revision
+         */
+        if_revision?: string | null;
+    };
     url: '/api/v1/agent-workbench/sessions/{session_id}';
 };
 
@@ -16660,7 +16982,15 @@ export type WorkbenchEventsApiV1AgentWorkbenchSessionsSessionIdEventsGetData = {
         /**
          * After
          */
-        after?: number;
+        after?: number | null;
+        /**
+         * Before
+         */
+        before?: number | null;
+        /**
+         * Limit
+         */
+        limit?: number;
     };
     url: '/api/v1/agent-workbench/sessions/{session_id}/events';
 };
@@ -16730,6 +17060,322 @@ export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructions
 };
 
 export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponse = WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses[keyof WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses];
+
+export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: {
+        /**
+         * Source Id
+         */
+        source_id?: string | null;
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/jobs/{job_id}/basis';
+};
+
+export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetError = WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetErrors[keyof WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetErrors];
+
+export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetResponse = WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetResponses[keyof WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetResponses];
+
+export type WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Include History
+         */
+        include_history?: boolean;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/memory';
+};
+
+export type WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetError = WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetErrors[keyof WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetErrors];
+
+export type WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetResponse = WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetResponses[keyof WorkbenchMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryGetResponses];
+
+export type WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostData = {
+    body: ConfirmMemory;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/memory';
+};
+
+export type WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostError = WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostErrors[keyof WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostErrors];
+
+export type WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostResponse = WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostResponses[keyof WorkbenchConfirmMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryPostResponses];
+
+export type WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostData = {
+    body: RevokeMemory;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Memory Id
+         */
+        memory_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/memory/{memory_id}/revoke';
+};
+
+export type WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostError = WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostErrors[keyof WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostErrors];
+
+export type WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostResponse = WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostResponses[keyof WorkbenchRevokeMemoryApiV1AgentWorkbenchSessionsSessionIdMemoryMemoryIdRevokePostResponses];
+
+export type WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+    };
+    query?: {
+        /**
+         * Source Type
+         */
+        source_type?: 'request' | 'attachment';
+        /**
+         * Query
+         */
+        query?: string;
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/memory-sources';
+};
+
+export type WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetError = WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetErrors[keyof WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetErrors];
+
+export type WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetResponse = WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetResponses[keyof WorkbenchMemorySourcesApiV1AgentWorkbenchSessionsSessionIdMemorySourcesGetResponses];
+
+export type WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Source Id
+         */
+        source_id: string;
+    };
+    query?: {
+        /**
+         * Source Type
+         */
+        source_type?: 'request' | 'attachment';
+    };
+    url: '/api/v1/agent-workbench/sessions/{session_id}/memory-sources/{source_id}';
+};
+
+export type WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetError = WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetErrors[keyof WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetErrors];
+
+export type WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetResponse = WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetResponses[keyof WorkbenchMemorySourceApiV1AgentWorkbenchSessionsSessionIdMemorySourcesSourceIdGetResponses];
 
 export type WorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPostData = {
     body: BodyWorkbenchUploadApiV1AgentWorkbenchSessionsSessionIdAssetsPost;

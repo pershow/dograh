@@ -298,6 +298,7 @@ async def test_empty_turn_does_not_pass_using_the_fixed_greeting(monkeypatch):
         ("wb_context", {"session": {"workflow_id": 1}}),
         ("wb_evaluation", {"id": "e"}),
         ("wb_create_run", 1),
+        ("wb_emit", None),
         ("wb_heartbeat", None),
         ("wb_evaluation_result", None),
         ("update_workflow_run", None),

@@ -33,6 +33,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/componen
 import { Skeleton } from '@/components/ui/skeleton';
 import { ConversationRailFrame, RealtimeFeedback, WorkflowRunLogs } from '@/components/workflow/conversation';
 import { conversationItemsFromRealtimeFeedbackEvents } from '@/components/workflow/conversation/adapters/fromRealtimeFeedback';
+import { SpeakerTrackingPanel } from '@/components/workflow/speaker-tracking/SpeakerTrackingPanel';
 import { PostHogEvent } from '@/constants/posthog-events';
 import { WORKFLOW_RUN_MODES } from '@/constants/workflowRunModes';
 import { useOrganizationTimezone } from '@/hooks/useOrganizationTimezone';
@@ -971,6 +972,10 @@ export default function WorkflowRunPage() {
                                 userRecordingUrl={userSplitRecordingUrl as string}
                                 botRecordingUrl={botSplitRecordingUrl as string}
                             />
+                        )}
+
+                        {!isTextChatRun && (
+                            <SpeakerTrackingPanel key={runId} events={workflowRun?.logs?.realtime_feedback_events} />
                         )}
 
                         <div className="grid gap-6 md:grid-cols-2">

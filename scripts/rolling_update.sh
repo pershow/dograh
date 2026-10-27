@@ -273,6 +273,10 @@ else
   log_warn "No virtual environment at $VENV_PATH, continuing without"
 fi
 
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  python -m api.services.codex
+fi
+
 if ! alembic -c "$BASE_DIR/api/alembic.ini" upgrade head; then
   log_error "Alembic migration failed. Aborting — nothing has been touched."
   exit 1
@@ -553,6 +557,13 @@ for ((i = 1; i <= ARQ_WORKERS; i++)); do
   RESTART_NAMES+=("arq$i")
   RESTART_COMMANDS+=("python -m arq api.tasks.arq.WorkerSettings --custom-log-dict api.tasks.arq.LOG_CONFIG")
 done
+
+if [[ "${AGENT_WORKBENCH_ENABLED:-false}" == "true" ]]; then
+  RESTART_NAMES+=("workbench")
+  RESTART_COMMANDS+=("python -m api.tasks.agent_workbench")
+else
+  DISABLED_NAMES+=("workbench")
+fi
 
 stop_managed_service() {
   local name=$1

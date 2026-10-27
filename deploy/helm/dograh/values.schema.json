@@ -3,6 +3,15 @@
   "title": "Dograh Helm chart values",
   "type": "object",
   "properties": {
+    "workbench": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replicaCount": {"type": "integer", "minimum": 1, "maximum": 1},
+        "assetBucket": {"type": "string", "minLength": 1}
+      },
+      "required": ["enabled", "replicaCount", "assetBucket"]
+    },
     "database": {
       "type": "object",
       "properties": {

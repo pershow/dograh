@@ -48,6 +48,7 @@ from pipecat.services.llm_service import (
 )
 
 from api.schemas.tool import ToolMessages
+from api.schemas.workflow_configurations import JevNodeRoutingConfiguration
 from api.services.workflow.tool_execution import ToolExecutionOwner
 
 if TYPE_CHECKING:
@@ -91,6 +92,7 @@ class AgentRuntime:
     recording_router: Any = None
     user_config: Any = None
     runtime_configuration: dict[str, Any] = field(default_factory=dict)
+    model_configuration_snapshot: dict[str, Any] = field(default_factory=dict)
     is_realtime: bool = False
     # False for the call-owned runtime, whose worker is the call itself and
     # must never be shut down by a retirement.
@@ -109,6 +111,7 @@ class AgentRuntime:
     greeting_override: dict | None = None
     tools: Any = None
     system_prompt: str = ""
+    node_routing: JevNodeRoutingConfiguration = field(default_factory=JevNodeRoutingConfiguration)
     mcp_sessions: dict[str, Any] = field(default_factory=dict)
     tool_tasks: set[asyncio.Task] = field(default_factory=set, repr=False)
     _tool_execution_owner: ToolExecutionOwner | None = field(
@@ -273,11 +276,17 @@ class AgentRuntime:
     async def run_llm(self, context: "LLMContext") -> None:
         """Ask this agent's LLM for a generation against the shared context.
 
-        Queued on the LLM service rather than on the worker so it lands after
-        whatever gate sits in front of the generation stage, matching how the
-        single-worker pipeline has always started a node's opening turn.
+        A child agent's LLM heads its own pipeline, so the request is queued
+        at the worker like any speech queued for that agent, and generation
+        follows that speech in order. The call-owned agent queues on the LLM
+        service itself so the request lands after whatever gate sits in front
+        of the generation stage, matching how the single-worker pipeline has
+        always started a node's opening turn.
         """
-        await self.llm.queue_frame(LLMContextFrame(context))
+        if self.is_child and self.worker is not None:
+            await self.queue_frame(LLMContextFrame(context))
+        else:
+            await self.llm.queue_frame(LLMContextFrame(context))
 
     # -- lifecycle -------------------------------------------------------
 

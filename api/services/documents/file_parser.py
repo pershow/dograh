@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_TEXT = 200_000
 
 
-def parse_file(path):
+def parse_file(path, *, tables=False, full_text=False):
     suffix = path.suffix.lower()
     parts = []
     if suffix in {".docx", ".xlsx"}:
@@ -37,6 +37,8 @@ def parse_file(path):
             rows = [row for _, row in zip(range(5001), rows)]
             if len(rows) > 5000:
                 raise ValueError("CSV exceeds 5000-row limit")
+            if tables:
+                return {"tables": [{"sheet": "CSV", "rows": rows}]}
             text = "\n".join(" | ".join(row) for row in rows)
         parts = [("document", text)]
     elif suffix == ".pdf":
@@ -71,14 +73,23 @@ def parse_file(path):
         book = load_workbook(path, read_only=True, data_only=True, keep_links=False)
         try:
             count = 0
+            structured = []
             for sheet in book:
                 lines = []
+                rows = []
                 for row in sheet.iter_rows(values_only=True):
                     count += len(row)
                     if count > 50000:
                         raise ValueError("Spreadsheet exceeds 50000-cell limit")
-                    lines.append(" | ".join("" if v is None else str(v) for v in row))
+                    values = ["" if v is None else str(v) for v in row]
+                    if tables:
+                        rows.append(values)
+                    else:
+                        lines.append(" | ".join(values))
+                structured.append({"sheet": sheet.title, "rows": rows})
                 parts.append((sheet.title, "\n".join(lines)))
+            if tables:
+                return {"tables": structured}
         finally:
             book.close()
     elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -111,7 +122,12 @@ def parse_file(path):
         }
     else:
         raise ValueError("Unsupported file format")
-    segments, remaining = [], MAX_TEXT
+    total = sum(len(t) for _, t in parts)
+    if full_text and total > 20 * 1024 * 1024:
+        raise ValueError(
+            "Extracted text exceeds the safe document size; split the source into files"
+        )
+    segments, remaining = [], total if full_text else MAX_TEXT
     for location, text in parts:
         if remaining <= 0:
             break
@@ -121,7 +137,7 @@ def parse_file(path):
         "kind": "text",
         "text": "\n\n".join(s["text"] for s in segments),
         "segments": segments,
-        "truncated": sum(len(t) for _, t in parts) > MAX_TEXT,
+        "truncated": not full_text and total > MAX_TEXT,
         "parser": "local-v1",
     }
 
@@ -133,7 +149,11 @@ def main():
     if sys.platform == "linux":
         resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
     try:
-        result = parse_file(Path(sys.argv[1]))
+        result = parse_file(
+            Path(sys.argv[1]),
+            tables="--tables" in sys.argv[2:],
+            full_text="--full-text" in sys.argv[2:],
+        )
     except (ValueError, UnicodeError, zipfile.BadZipFile) as error:
         result = {"error": str(error)}
     print(json.dumps(result, ensure_ascii=False))

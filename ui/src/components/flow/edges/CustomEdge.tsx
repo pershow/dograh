@@ -1,4 +1,4 @@
-import { BaseEdge, type Edge, EdgeLabelRenderer, type EdgeProps, getSmoothStepPath, useReactFlow } from '@xyflow/react';
+import { BaseEdge, type Edge, EdgeLabelRenderer, type EdgeProps, useReactFlow, useStore } from '@xyflow/react';
 import { AlertCircle, Pencil, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { cn } from "@/lib/utils";
 
 import { FlowEdge, FlowEdgeData, FlowNode } from '../types';
+import { EDGE_LABEL_MAX_WIDTH, getEdgeGeometry, getParallelEdgeLane } from './edgeGeometry';
 type CustomEdge = Edge<{ value: number }, 'custom'>;
 
 
@@ -152,75 +153,27 @@ interface CustomEdgeProps extends EdgeProps {
 export default function CustomEdge(props: CustomEdgeProps) {
     const { id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, style, selected } = props;
 
-    const { getEdges, setNodes } = useReactFlow<FlowNode, FlowEdge>();
+    const { getInternalNode, setNodes } = useReactFlow<FlowNode, FlowEdge>();
     const { saveWorkflow, readOnly } = useWorkflow();
     const updateEdge = useWorkflowStore((state) => state.updateEdge);
     const deleteEdge = useWorkflowStore((state) => state.deleteEdge);
     const [open, setOpen] = useState(false);
     const [isHovered, setIsHovered] = useState(false);
 
-    const parallel = getEdges().filter(
-        (e) =>
-            (e.source === source && e.target === target) ||
-            (e.source === target && e.target === source)
+    // Subscribe to membership changes: adding/removing a sibling must also
+    // reroute existing edges whose own props have not changed.
+    const lane = useStore(
+        state => getParallelEdgeLane(state.edges, id, source, target),
+        (previous, next) => previous.index === next.index && previous.count === next.count,
     );
-
-    // 2) if there are two, sort by id and pick an index
-    let offsetX = 0;
-    let offsetY = 0;
-    if (parallel.length > 1) {
-        const sorted = parallel.slice().sort((a, b) => a.id.localeCompare(b.id));
-        const idx = sorted.findIndex((e) => e.id === id);
-
-        // first edge (idx 0) moves right & down;
-        // second edge (idx 1) moves left & up
-        if (idx === 0) {
-            offsetX = 100;
-            offsetY = 0;
-        } else {
-            offsetX = 0;
-            offsetY = -50;
-        }
-    }
-
-    // Check if this is a self-loop (source and target are the same node)
-    const isSelfLoop = source === target;
-
-    // 3) draw the edge path + get label coords
-    // Use custom arc path for self-loops, smoothstep for regular edges
-    let edgePath: string;
-    let labelX: number;
-    let labelY: number;
-
-    if (isSelfLoop) {
-        // Create a loop arc that goes out and around the node
-        const loopRadius = 50;
-        const loopOffsetX = 80;
-        // Arc path: start from source, curve out and back to target
-        edgePath = `M ${sourceX} ${sourceY}
-                    C ${sourceX + loopOffsetX} ${sourceY - loopRadius},
-                      ${targetX + loopOffsetX} ${targetY + loopRadius},
-                      ${targetX} ${targetY}`;
-        labelX = sourceX + loopOffsetX;
-        labelY = sourceY;
-    } else {
-        // Use smoothstep path for orthogonal/elbow edges
-        // borderRadius: 8 gives slightly rounded corners for a clean look
-        // offset: 20 provides spacing before the first bend
-        const [path, lx, ly] = getSmoothStepPath({
-            sourceX,
-            sourceY,
-            sourcePosition,
-            targetX,
-            targetY,
-            targetPosition,
-            borderRadius: 8,
-            offset: 20,
-        });
-        edgePath = path;
-        labelX = lx;
-        labelY = ly;
-    }
+    const sourceNode = getInternalNode(source);
+    const { path: edgePath, labelX, labelY } = getEdgeGeometry({
+        sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, lane,
+        isSelfLoop: source === target,
+        sourceRight: sourceNode
+            ? sourceNode.internals.positionAbsolute.x + (sourceNode.measured.width ?? 0)
+            : undefined,
+    });
 
     // Update connected nodes when edge is selected or hovered
     useEffect(() => {
@@ -293,12 +246,13 @@ export default function CustomEdge(props: CustomEdgeProps) {
             {/* Always show label, expand on select/hover */}
             <EdgeLabelRenderer>
                 <div
+                    data-edge-label-id={id}
                     style={{
                         position: 'absolute',
                         pointerEvents: 'all',
                         transformOrigin: 'center',
-                        transform: `translate(-50%, -50%) translate(${labelX + offsetX}px, ${labelY + offsetY}px)`,
-                        zIndex: 1000,
+                        transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+                        zIndex: selected || isHovered ? 1001 : 1000,
                     }}
                     className="nodrag nopan"
                     onMouseEnter={() => setIsHovered(true)}
@@ -326,6 +280,7 @@ export default function CustomEdge(props: CustomEdgeProps) {
                                 </span>
                                 <div className="flex items-center gap-1">
                                     <Button
+                                        aria-label="Delete condition"
                                         variant="ghost"
                                         size="icon"
                                         className="h-6 w-6 p-0 hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
@@ -334,6 +289,7 @@ export default function CustomEdge(props: CustomEdgeProps) {
                                         <Trash2 className="h-3 w-3" />
                                     </Button>
                                     <Button
+                                        aria-label="Edit condition"
                                         variant="ghost"
                                         size="icon"
                                         className="h-6 w-6 p-0 hover:bg-muted text-muted-foreground"
@@ -352,8 +308,8 @@ export default function CustomEdge(props: CustomEdgeProps) {
                         </div>
                     ) : (
                         /* Simple label shown by default - amber/orange colored pill style */
-                        <div className={cn(
-                            "px-3 py-1.5 rounded-full text-xs font-medium shadow-md",
+                        <div title={data?.label || data?.condition || 'No condition'} style={{ maxWidth: EDGE_LABEL_MAX_WIDTH }} className={cn(
+                            "truncate px-3 py-1.5 rounded-full text-xs font-medium shadow-md",
                             "transition-all duration-200",
                             data?.invalid
                                 ? "bg-destructive text-destructive-foreground"

@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useOnboarding } from '@/context/OnboardingContext';
 import { UnsavedChangesProvider, useUnsavedChangesContext } from '@/context/UnsavedChangesContext';
 import { detailFromError } from '@/lib/apiError';
+import { uniqueEdgeIds } from '@/lib/uniqueEdgeIds';
 import { WorkflowConfigurations } from '@/types/workflow-configurations';
 
 import AddNodePanel from "../../../components/flow/AddNodePanel";
@@ -120,7 +121,7 @@ function WorkflowEditor({
     const handlePreviewChange = useCallback((candidate: Candidate | undefined) => {
         setCandidatePreview(candidate);
         setPreviewNodes(structuredClone(candidate?.snapshot?.workflow_json.nodes ?? []) as FlowNode[]);
-        setPreviewEdges(structuredClone(candidate?.snapshot?.workflow_json.edges ?? []) as FlowEdge[]);
+        setPreviewEdges(uniqueEdgeIds(structuredClone(candidate?.snapshot?.workflow_json.edges ?? []) as FlowEdge[]));
     }, []);
     const setWorkbenchOpen = useCallback((open: boolean) => {
         const query = new URLSearchParams(searchParams.toString());
@@ -227,6 +228,13 @@ function WorkflowEditor({
         user,
         onVersionSaved,
     });
+
+    // Also normalize at the render boundary: old mounted/hydrated state and
+    // historical candidate previews can predate normalization in the setters.
+    const displayEdges = useMemo(
+        () => uniqueEdgeIds(isCandidatePreview ? previewEdges : edges),
+        [isCandidatePreview, previewEdges, edges],
+    );
 
     // Single generic component for every node type. Seed with core node types
     // so the initial render is stable before specs load, then merge in any
@@ -737,9 +745,9 @@ function WorkflowEditor({
                             <ReactFlow
                                 key={isCandidatePreview ? candidatePreview.id : activeVersionId ?? 'current'}
                                 nodes={displayNodes}
-                                edges={isCandidatePreview ? previewEdges : edges}
+                                edges={displayEdges}
                                 onNodesChange={isCandidatePreview ? changes => setPreviewNodes(current => applyNodeChanges(changes, current)) : onNodesChange}
-                                onEdgesChange={isCandidatePreview ? changes => setPreviewEdges(current => applyEdgeChanges(changes, current)) : onEdgesChange}
+                                onEdgesChange={isCandidatePreview ? changes => setPreviewEdges(current => uniqueEdgeIds(applyEdgeChanges(changes, current))) : onEdgesChange}
                                 onDelete={canvasReadOnly ? undefined : onDelete}
                                 nodeTypes={nodeTypes}
                                 edgeTypes={edgeTypes}

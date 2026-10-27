@@ -77,6 +77,17 @@ def test_defaults_applied_from_spec(client: _StubClient):
     _ = start  # used implicitly; silence unused
 
 
+def test_parallel_edges_have_unique_ids(client: _StubClient):
+    wf = Workflow(client=client, name="parallel")
+    start = wf.add(type="startCall", name="greeting", prompt="hello")
+    end = wf.add(type="endCall", name="done", prompt="bye")
+    for label in ("accepted", "declined", "busy"):
+        wf.edge(start, end, label=label, condition=label)
+    edges = wf.to_json()["edges"]
+    assert [edge["id"] for edge in edges] == ["1-2", "1-2__2", "1-2__3"]
+    assert [edge["data"]["label"] for edge in edges] == ["accepted", "declined", "busy"]
+
+
 def test_webhook_complex_fields_validate(client: _StubClient):
     """Webhook's json + fixed_collection (custom_headers) round-trip."""
     wf = Workflow(client=client, name="wh")

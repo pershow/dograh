@@ -1,3 +1,6 @@
 [submodule "pipecat"]
 	path = pipecat
 	url = https://github.com/dograh-hq/pipecat.git
+[submodule "codex"]
+	path = codex
+	url = https://github.com/openai/codex.git

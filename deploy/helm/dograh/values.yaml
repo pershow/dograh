@@ -156,6 +156,9 @@ secrets:
   # secrets.existingSecret, put this under the DOGRAH_DEVOPS_SECRET key there.
   devopsSecret: ""
 
+  # Optional Jev node routing (workflow mode defaults to off).
+  typesafeApiKey: ""
+
   # Optional Langfuse tracing.
   langfuseSecretKey: ""
   langfusePublicKey: ""
@@ -259,6 +262,30 @@ web:
   tolerations: []
   # Recommend spreading web pods across zones / nodes.
   topologySpreadConstraints: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Workbench uses its own ARQ queue and the source-built Codex runtime in the
+# API image. Enabling this also enables the workbench routes on API pods.
+# -----------------------------------------------------------------------------
+workbench:
+  enabled: false
+  replicaCount: 1
+  assetBucket: private-workbench-assets
+  # Native Codex SQLite/thread storage requires durable local/POSIX storage.
+  persistence:
+    existingClaim: ""
+    storageClass: ""
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
   affinity: {}
 
 # -----------------------------------------------------------------------------

@@ -14,6 +14,7 @@ result in the context when generating the next response.
 """
 
 import asyncio
+import json
 from typing import List
 from unittest.mock import AsyncMock, patch
 
@@ -285,6 +286,26 @@ class TestContextUpdateBeforeNextCompletion:
         assert len(step_2_tool_messages) >= 2, (
             f"End node should see at least 2 tool results, got {len(step_2_tool_messages)}"
         )
+
+        # A successful tool result must identify the state that now owns the
+        # reply, including the final node, before the next completion starts.
+        # Earlier transition results remain historical context.
+        for captured, name in (
+            (step_1_ctx, "Collect Info"),
+            (step_2_ctx, "End Call"),
+        ):
+            result = json.loads(
+                [m for m in captured["messages"] if m.get("role") == "tool"][-1][
+                    "content"
+                ]
+            )
+            destination = next(
+                n for n in three_node_workflow.nodes.values() if n.name == name
+            )
+            assert result["status"] == "done"
+            assert result["current_node_id"] == destination.id
+            assert result["current_node_name"] == name
+            assert "current node instructions" in result["instruction"]
 
     @pytest.mark.asyncio
     async def test_context_messages_preserve_conversation_history(

@@ -4,6 +4,7 @@ import { create } from 'zustand';
 
 import { WorkflowError } from '@/client/types.gen';
 import { FlowEdge, FlowNode } from '@/components/flow/types';
+import { uniqueEdgeIds } from '@/lib/uniqueEdgeIds';
 import { WorkflowConfigurations } from '@/types/workflow-configurations';
 
 interface HistoryState {
@@ -142,6 +143,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   // Actions
   initializeWorkflow: (workflowId, workflowName, nodes, edges, templateContextVariables = {}, workflowConfigurations = null, dictionary = '') => {
+    edges = uniqueEdgeIds(edges);
     const initialHistory: HistoryState = { nodes, edges, workflowName };
     set({
       workflowId,
@@ -175,7 +177,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       const historicState = state.history[newIndex];
       set({
         nodes: historicState.nodes,
-        edges: historicState.edges,
+        edges: uniqueEdgeIds(historicState.edges),
         workflowName: historicState.workflowName,
         historyIndex: newIndex,
         isDirty: true,
@@ -190,7 +192,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       const historicState = state.history[newIndex];
       set({
         nodes: historicState.nodes,
-        edges: historicState.edges,
+        edges: uniqueEdgeIds(historicState.edges),
         workflowName: historicState.workflowName,
         historyIndex: newIndex,
         isDirty: true,
@@ -285,6 +287,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   },
 
   setEdges: (edges, changes) => {
+    edges = uniqueEdgeIds(edges);
     // Determine whether to push to history and set isDirty based on change types
     if (changes && changes.length > 0) {
       const hasImmediateHistoryChanges = changes.some(change =>
@@ -316,7 +319,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   addEdge: (edge) => {
     set((state) => {
-      const edges = [...state.edges, edge];
+      const edges = uniqueEdgeIds([...state.edges, edge]);
       return commitHistory(state, {
         nodes: state.nodes,
         edges,
@@ -327,9 +330,9 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
 
   updateEdge: (edgeId, updates) => {
     set((state) => {
-      const edges = state.edges.map((edge) =>
+      const edges = uniqueEdgeIds(state.edges.map((edge) =>
         edge.id === edgeId ? { ...edge, ...updates } : edge
-      );
+      ));
       return commitHistory(state, {
         nodes: state.nodes,
         edges,

@@ -7,7 +7,10 @@ from loguru import logger
 from api.db import db_client
 from api.enums import WorkflowRunMode
 from api.errors.failure import mark_failure_reported
-from api.schemas.answer_supervisor import resolve_answer_supervisor_config
+from api.schemas.answer_supervisor import (
+    resolve_answer_supervisor_config,
+    resolve_listening_window_ms,
+)
 from api.schemas.workflow_configurations import (
     DEFAULT_MAX_CALL_DURATION_SECONDS,
     DEFAULT_MAX_USER_IDLE_TIMEOUT_SECONDS,
@@ -35,11 +38,13 @@ from api.services.pipecat.agent_runtime_factory import (
     AgentRuntimeFactory,
 )
 from api.services.pipecat.audio_config import AudioConfig, create_audio_config
+from api.services.pipecat.call_opening import OpeningInputGate
 from api.services.pipecat.event_handlers import (
     register_audio_data_handler,
     register_event_handlers,
 )
 from api.services.pipecat.in_memory_buffers import InMemoryLogsBuffer
+from api.services.pipecat.node_routing import NodeRoutingProcessor
 from api.services.pipecat.pipeline_builder import (
     build_pipeline,
     build_realtime_pipeline,
@@ -102,7 +107,6 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.turns.user_mute import (
     CallbackUserMuteStrategy,
     FunctionCallUserMuteStrategy,
-    MuteUntilFirstBotCompleteUserMuteStrategy,
 )
 from pipecat.turns.user_start import (
     ExternalUserTurnStartStrategy,
@@ -169,13 +173,23 @@ def _create_answer_supervisor(
     return AnswerSupervisor(config, context=context, classify=classifier.classify)
 
 
+def _create_opening_input_gate(start_node, audio_buffer):
+    # The downstream aggregator cannot detect speech while this gate retains
+    # audio. Detect it here in both pipeline shapes, before delayed ASR results.
+    window_ms = resolve_listening_window_ms(start_node)
+    return OpeningInputGate(
+        capture_audio=audio_buffer.capture_opening_audio,
+        vad=SileroVADAnalyzer(params=VADParams(stop_secs=0.2))
+        if window_ms > 0
+        else None,
+    )
+
+
 def _create_user_mute_strategies(engine, answer_supervisor):
     strategies = [
         FunctionCallUserMuteStrategy(),
         CallbackUserMuteStrategy(should_mute_callback=engine.should_mute_user),
     ]
-    if answer_supervisor is None and getattr(engine, "_is_realtime", False):
-        strategies.insert(0, MuteUntilFirstBotCompleteUserMuteStrategy())
     return strategies
 
 
@@ -918,6 +932,8 @@ async def _run_pipeline_impl(
         is_realtime=is_realtime,
         context_compaction_enabled=context_compaction_enabled,
         call_dispositions=call_dispositions,
+        # Voice calls hand final extraction to the completion worker after hangup.
+        defer_final_extraction=True,
     )
 
     # Create pipeline components
@@ -954,6 +970,8 @@ async def _run_pipeline_impl(
         get_parent_context=engine._get_otel_context,
     )
     user_mute_strategies = _create_user_mute_strategies(engine, answer_supervisor)
+    if answer_supervisor is None:
+        engine.opening.input_gate = _create_opening_input_gate(start_node, audio_buffer)
     user_vad_analyzer = SileroVADAnalyzer(params=VADParams(stop_secs=0.2))
 
     # Configure turn strategies based on STT provider, model, and workflow configuration
@@ -1070,13 +1088,11 @@ async def _run_pipeline_impl(
         logger.info(
             f"Disabling voicemail detection for realtime workflow run {workflow_run_id}"
         )
-    # Recordings are only meaningful in non-realtime mode (the router switches
-    # between pre-recorded audio and dynamic TTS; realtime LLMs produce audio
-    # directly). Each agent visit gets its own router from the runtime factory.
-    if not is_realtime and has_recordings:
+    # Recorded openings use the same cache in both pipeline shapes.
+    if has_recordings:
         # Warm the recording cache in the background so audio is ready
         # before the first playback request.
-        asyncio.create_task(
+        engine.opening.prepare(
             warm_recording_cache(
                 organization_id=workflow.organization_id,
                 pipeline_sample_rate=audio_config.pipeline_sample_rate,
@@ -1100,6 +1116,7 @@ async def _run_pipeline_impl(
             ),
             pipeline_metrics_aggregator,
             termination_funnel,
+            opening_input=engine.opening.input_gate,
         )
     else:
         pipeline = build_pipeline(
@@ -1110,6 +1127,7 @@ async def _run_pipeline_impl(
             assistant_context_aggregator,
             call_monitor_processor,
             [
+                NodeRoutingProcessor(engine),
                 AgentBridgeProcessor(
                     bus=worker_runner.bus,
                     worker_name=call_worker_name,
@@ -1117,12 +1135,15 @@ async def _run_pipeline_impl(
                     allow_inference=lambda: engine.agent_can_generate(
                         engine.active_agent
                     ),
+                    generation_ready=lambda: engine.generation_ready,
+                    wait_for_generation=engine.wait_for_generation_ready,
                     name=f"{call_worker_name}::AgentBridge",
                 )
             ],
             pipeline_metrics_aggregator,
             termination_funnel,
             answer_supervisor=answer_supervisor,
+            opening_input=engine.opening.input_gate,
         )
 
     # Create pipeline task with audio configuration
@@ -1174,7 +1195,21 @@ async def _run_pipeline_impl(
         ),
     )
     task.add_observer(feedback_observer)
-    engine.greeting.log_generated_speech = feedback_observer.log_speech
+    speaker_tracking = None
+    if run_configs.get("speaker_tracking_enabled") is True:
+        from api.services.speaker_tracking.observer import SpeakerTrackingObserver
+
+        speaker_tracking = SpeakerTrackingObserver(
+            input_processor=transport.input(),
+            logs_buffer=in_memory_logs_buffer,
+            answer_supervisor=answer_supervisor,
+        )
+        task.add_observer(speaker_tracking)
+    engine.greeting.log_speech = feedback_observer.log_greeting
+    engine.greeting.log_background_speech = (
+        feedback_observer.log_background_greeting_speech
+    )
+    engine.greeting.get_log_context = feedback_observer.speech_log_context
 
     if not is_realtime:
 
@@ -1201,6 +1236,7 @@ async def _run_pipeline_impl(
             observers=[feedback_observer],
             run_definition=run_definition,
             run_model_configuration=user_config,
+            stt=stt,
         )
         engine.set_agent_factory(agent_factory)
         # The agent this call starts on. Its services are populated by the
@@ -1222,6 +1258,10 @@ async def _run_pipeline_impl(
         agent.workflow_name = workflow.name
         agent.user_config = user_config
         agent.runtime_configuration = runtime_configuration
+
+    engine.active_agent.model_configuration_snapshot = dict(
+        workflow_run.model_configuration_snapshot or {}
+    )
 
     # Initialize the engine to set the initial context with
     # System Prompt and Tools
@@ -1285,6 +1325,7 @@ async def _run_pipeline_impl(
         user_provider_id=user_provider_id,
         integration_runtime_sessions=integration_runtime_sessions,
         call_events_session=call_events_session,
+        speaker_tracking=speaker_tracking,
         include_transcript_end_timestamps=include_transcript_end_timestamps,
     )
 
@@ -1297,6 +1338,8 @@ async def _run_pipeline_impl(
     except asyncio.CancelledError:
         logger.warning("Received CancelledError in _run_pipeline")
     finally:
+        if speaker_tracking is not None:
+            await speaker_tracking.finish()
         # Close MCP sessions here, not in engine.cleanup(). The anyio cancel
         # scopes opened by MCPClient.start() in engine.initialize() are
         # task-affine; this finally runs in the same task as initialize(),

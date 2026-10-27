@@ -28,6 +28,7 @@ async def test_engine_opens_and_closes_mcp_sessions(monkeypatch):
         tool = _mcp_tool(base_url)
 
         engine = PipecatEngine.__new__(PipecatEngine)
+        engine.evaluation_policy = None
         engine._active_agent = stub_agent_runtime()
         engine._retired_agents = []
         node = MagicMock()
@@ -61,6 +62,7 @@ async def test_engine_opens_and_closes_mcp_sessions(monkeypatch):
 @pytest.mark.asyncio
 async def test_open_mcp_sessions_swallows_db_error(monkeypatch):
     engine = PipecatEngine.__new__(PipecatEngine)
+    engine.evaluation_policy = None
     engine._active_agent = stub_agent_runtime()
     engine._retired_agents = []
     node = MagicMock()
@@ -90,6 +92,7 @@ async def test_open_mcp_sessions_skips_tool_when_credential_fetch_fails(monkeypa
     tool.definition["config"]["credential_uuid"] = "cred-1234"
 
     engine = PipecatEngine.__new__(PipecatEngine)
+    engine.evaluation_policy = None
     engine._active_agent = stub_agent_runtime()
     engine._retired_agents = []
     node = MagicMock()

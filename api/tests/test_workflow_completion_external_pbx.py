@@ -21,6 +21,11 @@ def stub_completion_steps(monkeypatch):
     """Silence the other completion steps and capture the write-back call."""
     write_back = AsyncMock()
     monkeypatch.setattr(
+        workflow_completion.db_client,
+        "get_workflow_run_with_context",
+        AsyncMock(return_value=(SimpleNamespace(extra={}, gathered_context={}), 7)),
+    )
+    monkeypatch.setattr(
         workflow_completion, "sync_external_pbx_call_record", write_back
     )
     monkeypatch.setattr(
@@ -39,6 +44,27 @@ async def test_completion_job_writes_back_to_the_pbx(stub_completion_steps):
     await workflow_completion.process_workflow_completion(None, 11)
 
     stub_completion_steps.assert_awaited_once_with(11)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_completion_has_no_external_effects(monkeypatch, stub_completion_steps):
+    monkeypatch.setattr(
+        workflow_completion.db_client,
+        "get_workflow_run_with_context",
+        AsyncMock(return_value=(SimpleNamespace(purpose="evaluation"), 7)),
+    )
+    extraction = AsyncMock()
+    claim = AsyncMock()
+    monkeypatch.setattr(workflow_completion, "run_final_extraction", extraction)
+    monkeypatch.setattr(workflow_completion.db_client, "claim_workflow_completion", claim)
+
+    await workflow_completion.process_workflow_completion(None, 11)
+
+    claim.assert_not_awaited()
+    extraction.assert_not_awaited()
+    workflow_completion.run_integrations_post_workflow_run.assert_not_awaited()
+    workflow_completion.report_completed_workflow_run_platform_usage.assert_not_awaited()
+    stub_completion_steps.assert_not_awaited()
 
 
 @pytest.mark.asyncio

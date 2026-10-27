@@ -2,14 +2,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { RealtimeFeedbackEvent } from '@/components/workflow/conversation/types';
-
 import WorkflowRunPage from './page';
 
 const mocks = vi.hoisted(() => ({
     auth: { isAuthenticated: true, loading: false },
     toolResults: [] as unknown[],
-    events: [] as RealtimeFeedbackEvent[],
+    events: [] as unknown[],
+    mode: 'twilio',
 }));
 
 vi.mock('next/navigation', () => ({ useParams: () => ({ workflowId: '12', runId: '34' }) }));
@@ -34,6 +33,7 @@ vi.mock('@/client/sdk.gen', () => ({
     getWorkflowRunApiV1WorkflowWorkflowIdRunsRunIdGet: async () => ({
         data: {
             is_completed: true,
+            mode: mocks.mode,
             user_recording_url: '/user.wav',
             bot_recording_url: '/bot.wav',
             gathered_context: { tool_results: mocks.toolResults },
@@ -45,6 +45,7 @@ vi.mock('@/client/sdk.gen', () => ({
 beforeEach(() => {
     mocks.toolResults = [];
     mocks.events = [];
+    mocks.mode = 'twilio';
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ arrayBuffer: async () => new ArrayBuffer(0) }));
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(function (this: HTMLMediaElement) {
         // Native playback restarts an ended track, which would desynchronize shorter recordings.
@@ -76,6 +77,26 @@ it('shows the recorded timeout for call 2796 instead of leaving the tool running
     expect(screen.getByText('Tool Calls').parentElement?.textContent).toBe('Tool Calls1');
     fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     expect(screen.getAllByText(/Tool execution timed out/).length).toBeGreaterThan(0);
+});
+
+it('shows saved speaker analysis below recordings without adding it to the transcript', async () => {
+    mocks.events = [
+        { type: 'rtf-speaker-tracking', timestamp: '2026-10-23T10:00:00Z', payload: { action: 'primary_established', speaker: 'speaker_1', primary_speaker: 'speaker_1', similarity: 0.72, audio_start_seconds: 3.2, audio_end_seconds: 4.8 } },
+        { type: 'rtf-speaker-tracking', timestamp: '2026-10-23T10:00:10Z', payload: { action: 'summary', counts: { primary_established: 1 } } },
+    ];
+    render(<WorkflowRunPage />);
+    await screen.findByText('Speaker Analysis');
+    expect(screen.getByText('Last recorded primary').nextElementSibling?.textContent).toBe('Speaker 1');
+    expect(screen.getByText('0.720')).toBeTruthy();
+    expect(screen.getByText('User Turns').parentElement?.textContent).toBe('User Turns0');
+    expect(screen.getByRole('button', { name: 'Play split tracks' })).toBeTruthy();
+});
+
+it('does not show voice diagnostics for text chat sessions', async () => {
+    mocks.mode = 'textchat';
+    render(<WorkflowRunPage />);
+    await screen.findByText('Text Chat Session');
+    expect(screen.queryByText('Speaker Analysis')).toBeNull();
 });
 
 afterEach(() => {

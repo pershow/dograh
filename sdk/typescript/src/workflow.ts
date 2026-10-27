@@ -130,8 +130,12 @@ export class Workflow {
             data.transition_speech_recording_id = opts.transitionSpeechRecordingId;
         }
 
+        const baseId = `${source.id}-${target.id}`;
+        const usedIds = new Set(this.edges.map(edge => edge.id));
+        let edgeId = baseId;
+        for (let suffix = 2; usedIds.has(edgeId); suffix++) edgeId = `${baseId}__${suffix}`;
         this.edges.push({
-            id: `${source.id}-${target.id}`,
+            id: edgeId,
             source: source.id,
             target: target.id,
             data,

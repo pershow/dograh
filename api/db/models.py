@@ -728,6 +728,13 @@ class WorkflowRunModel(Base):
         ),
         Index("idx_workflow_runs_workflow_id", "workflow_id"),
         Index("idx_workflow_runs_campaign_id", "campaign_id"),
+        Index(
+            "idx_workflow_runs_pending_completion",
+            "id",
+            postgresql_where=text(
+                "is_completed IS TRUE AND (extra -> 'workflow_completion' ->> 'status') IN ('pending', 'running')"
+            ),
+        ),
     )
 
 
@@ -1603,6 +1610,24 @@ class WorkbenchSessionModel(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
     event_sequence = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class WorkbenchMemoryModel(Base):
+    """Human-confirmed Agent requirements; content is immutable across revisions."""
+
+    __tablename__ = "workbench_memories"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id"), nullable=False)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    kind = Column(String(24), nullable=False)
+    content = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    source = Column(JSON, nullable=False, default=dict)
+    status = Column(String(24), nullable=False, default="confirmed")
+    replaces_id = Column(String(36), ForeignKey("workbench_memories.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
 

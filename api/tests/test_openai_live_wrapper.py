@@ -197,7 +197,10 @@ async def test_transition_skips_text_without_muting_and_updates_next_node(
         in update["delegation"]["responses"]["instructions"]
     )
     result_callback.assert_awaited_once()
-    assert result_callback.await_args.args == ({"status": "done"},)
+    payload = result_callback.await_args.args[0]
+    assert payload["status"] == "done"
+    assert payload["current_node_id"] == "agent"
+    assert payload["current_node_name"] == "Collect Info"
 
 
 @pytest.mark.asyncio

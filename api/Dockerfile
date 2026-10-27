@@ -1,4 +1,27 @@
 # syntax=docker/dockerfile:1
+# Codex is compiled from the checked-out public submodule, using its pinned
+# toolchain and Cargo.lock. No desktop bundle or downloaded Codex executable.
+FROM rust:1.95.0-slim-bookworm AS codex-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 cmake pkg-config libssl-dev clang git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY codex ./codex
+COPY api/services/codex/source.json ./api/services/codex/source.json
+COPY scripts/build_codex.py ./scripts/build_codex.py
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    python3 scripts/build_codex.py --output /opt/dograh/codex
+
+# Small standalone image for CI/startup protocol verification.
+FROM python:3.13-slim AS codex-runtime
+WORKDIR /app
+COPY --from=codex-build /opt/dograh/codex /app/.runtime/codex
+COPY api/services/codex ./api/services/codex
+RUN useradd --system --no-create-home codex-probe
+USER codex-probe
+CMD ["python", "-m", "api.services.codex"]
+
 # Multi-stage Dockerfile
 # Stage 1: Builder - Install Python dependencies into a venv via uv
 # (mirrors .devcontainer/Dockerfile's venv-builder stage).
@@ -26,6 +49,10 @@ RUN python -m venv "$VIRTUAL_ENV"
 RUN --mount=type=bind,source=api/requirements.txt,target=/tmp/req.txt \
     --mount=type=cache,target=/root/.cache/uv \
     uv pip install -r /tmp/req.txt
+
+# Prepackage the checksum-pinned CAM++ weights; calls never download models.
+COPY api/services/speaker_tracking/model.py /tmp/speaker_model.py
+RUN SPEAKER_TRACKING_MODEL_PATH=/opt/models/campplus.onnx python /tmp/speaker_model.py
 
 # Layer 2: pipecat deps. Cache invalidates when pipecat source changes.
 # After installing pipecat, swap opencv-python (pulled by pipecat[webrtc]) for
@@ -108,6 +135,8 @@ FROM python:3.13-slim AS runner
 
 WORKDIR /app
 
+COPY --from=codex-build /opt/dograh/codex /app/.runtime/codex
+
 RUN groupadd --system dograh \
  && useradd --system --gid dograh --no-log-init --home-dir /app --shell /usr/sbin/nologin dograh \
  && chown dograh:dograh /app
@@ -123,6 +152,8 @@ COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
 
 # Copy the populated venv from the builder stage.
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/models /opt/models
+ENV SPEAKER_TRACKING_MODEL_PATH=/opt/models/campplus.onnx
 
 # Activate the venv for subsequent RUN/CMD layers.
 ENV VIRTUAL_ENV=/opt/venv \
@@ -151,6 +182,7 @@ COPY --chown=dograh:dograh \
      ./scripts/run_migrate.sh \
      ./scripts/run_web.sh \
      ./scripts/run_arq_worker.sh \
+     ./scripts/run_workbench_worker.sh \
      ./scripts/run_ari_manager.sh \
      ./scripts/run_campaign_orchestrator.sh \
      ./scripts/drain_web.sh \

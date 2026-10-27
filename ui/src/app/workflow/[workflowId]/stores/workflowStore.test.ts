@@ -26,6 +26,20 @@ describe('workflow history', () => {
     useWorkflowStore.getState().initializeWorkflow(1, 'Initial', [], []);
   });
 
+  it('loads legacy parallel branches so deleting one cannot delete the other', () => {
+    const original = [createEdge('a-b', 'a', 'b'), createEdge('a-b', 'a', 'b')];
+    const store = useWorkflowStore.getState();
+    store.initializeWorkflow(1, 'Legacy', [createNode('a'), createNode('b')], original);
+    expect(useWorkflowStore.getState().edges.map(edge => edge.id)).toEqual(['a-b', 'a-b__2']);
+    expect(useWorkflowStore.getState().isDirty).toBe(false);
+    store.setEdges(useWorkflowStore.getState().edges.filter(edge => edge.id !== 'a-b'), [{id: 'a-b', type: 'remove'}]);
+    store.commitDeletion();
+    expect(useWorkflowStore.getState().edges.map(edge => edge.id)).toEqual(['a-b__2']);
+    store.undo();
+    expect(useWorkflowStore.getState().edges.map(edge => edge.id)).toEqual(['a-b', 'a-b__2']);
+    expect(original.map(edge => edge.id)).toEqual(['a-b', 'a-b']);
+  });
+
   it('keeps every committed node state available to undo and redo', () => {
     const store = useWorkflowStore.getState();
     store.addNode(createNode('a'));
@@ -40,6 +54,18 @@ describe('workflow history', () => {
     store.redo();
     store.redo();
     expect(nodeIds()).toEqual(['a', 'b']);
+  });
+
+  it('repairs legacy history identities on undo and redo without losing branches', () => {
+    const legacy = [createEdge('a-b', 'a', 'b'), createEdge('a-b', 'a', 'b')];
+    const snapshot = {nodes: [], edges: legacy, workflowName: 'Legacy'};
+    useWorkflowStore.setState({history: [snapshot, snapshot], historyIndex: 1});
+    const store = useWorkflowStore.getState();
+    store.undo();
+    expect(useWorkflowStore.getState().edges.map(edge => edge.id)).toEqual(['a-b', 'a-b__2']);
+    store.redo();
+    expect(useWorkflowStore.getState().edges.map(edge => edge.id)).toEqual(['a-b', 'a-b__2']);
+    expect(legacy.map(edge => edge.id)).toEqual(['a-b', 'a-b']);
   });
 
   it('undoes a node and connected-edge deletion in one step', () => {

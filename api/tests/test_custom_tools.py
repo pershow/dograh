@@ -1687,6 +1687,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         from api.tests.pipecat_test_utils import stub_agent_runtime
 
         mock_engine.active_agent = stub_agent_runtime()
@@ -1768,6 +1769,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine import PipecatEngine
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         from api.tests.pipecat_test_utils import stub_agent_runtime
 
         mock_engine.active_agent = stub_agent_runtime()
@@ -1853,6 +1855,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         mock_engine._get_organization_id = AsyncMock(return_value=1)
         mock_engine.active_agent.llm.register_function = Mock()
         manager = CustomToolManager(mock_engine)
@@ -1888,6 +1891,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         from api.tests.pipecat_test_utils import stub_agent_runtime
 
         mock_engine.active_agent = stub_agent_runtime()
@@ -1985,6 +1989,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         from api.tests.pipecat_test_utils import stub_agent_runtime
 
         mock_engine.active_agent = stub_agent_runtime()
@@ -2289,6 +2294,7 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        mock_engine.evaluation_policy = None
         from api.tests.pipecat_test_utils import stub_agent_runtime
 
         mock_engine.active_agent = stub_agent_runtime()

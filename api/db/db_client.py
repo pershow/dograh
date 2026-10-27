@@ -18,7 +18,9 @@ from api.db.tool_client import ToolClient
 from api.db.user_client import UserClient
 from api.db.webhook_credential_client import WebhookCredentialClient
 from api.db.webhook_delivery_client import WebhookDeliveryClient
+from api.db.workbench_memory_client import WorkbenchMemoryClient
 from api.db.workflow_client import WorkflowClient
+from api.db.workflow_completion_client import WorkflowCompletionClient
 from api.db.workflow_recording_client import WorkflowRecordingClient
 from api.db.workflow_run_client import WorkflowRunClient
 from api.db.workflow_run_text_session_client import WorkflowRunTextSessionClient
@@ -26,9 +28,11 @@ from api.db.workflow_template_client import WorkflowTemplateClient
 
 
 class DBClient(
+    WorkbenchMemoryClient,
     AgentWorkbenchClient,
     ModelConnectionClient,
     WorkflowClient,
+    WorkflowCompletionClient,
     WorkflowRunClient,
     WorkflowRunTextSessionClient,
     UserClient,

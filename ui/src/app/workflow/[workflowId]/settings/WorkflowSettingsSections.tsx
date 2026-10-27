@@ -33,6 +33,7 @@ import {
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
     type ExternalPBXFieldMapping,
+    resolveNodeRouting,
     resolveWorkflowConfigurations,
     TURN_START_STRATEGY_OPTIONS,
     type TurnStartStrategy,
@@ -43,6 +44,7 @@ import {
 
 import { AnswerSupervisorFields, isVoicemailMessageMissing, readAnswerSupervisorSettings } from "../components/AnswerSupervisorFields";
 import { EmbedDialog } from "../components/EmbedDialog";
+import { SpeakerTrackingSettings } from "../components/SpeakerTrackingSettings";
 import type { useWorkflowState } from "../hooks/useWorkflowState";
 import {
     CallDispositionEditor,
@@ -266,6 +268,10 @@ function GeneralSection({
     const [contextCompactionEnabled, setContextCompactionEnabled] = useState(
         workflowConfigurations.context_compaction_enabled,
     );
+    const [nodeRouting, setNodeRouting] = useState(() => resolveNodeRouting(workflowConfigurations.node_routing));
+    const [routingConfidence, setRoutingConfidence] = useState(String(nodeRouting.confidence_threshold));
+    const [routingTimeout, setRoutingTimeout] = useState(String(nodeRouting.timeout_ms));
+    const [speakerTrackingEnabled, setSpeakerTrackingEnabled] = useState(workflowConfigurations.speaker_tracking_enabled);
     const [ttsCacheEnabled, setTtsCacheEnabled] = useState(
         workflowConfigurations.tts_cache_enabled,
     );
@@ -320,6 +326,10 @@ function GeneralSection({
             turnStartMinWords !== workflowConfigurations.turn_start_min_words ||
             turnStopStrategy !== workflowConfigurations.turn_stop_strategy ||
             contextCompactionEnabled !== workflowConfigurations.context_compaction_enabled ||
+            nodeRouting.mode !== resolveNodeRouting(workflowConfigurations.node_routing).mode ||
+            !routingConfidence.trim() || Number(routingConfidence) !== resolveNodeRouting(workflowConfigurations.node_routing).confidence_threshold ||
+            !routingTimeout.trim() || Number(routingTimeout) !== resolveNodeRouting(workflowConfigurations.node_routing).timeout_ms ||
+            speakerTrackingEnabled !== workflowConfigurations.speaker_tracking_enabled ||
             ttsCacheEnabled !== workflowConfigurations.tts_cache_enabled ||
             JSON.stringify(normalizedCallDispositions) !==
                 JSON.stringify(workflowConfigurations.call_dispositions) ||
@@ -330,7 +340,7 @@ function GeneralSection({
             JSON.stringify(externalPbxLeadHeaders) !==
             JSON.stringify(workflowConfigurations.external_pbx_lead_headers)
         );
-    }, [name, workflowName, ambientNoiseConfig, maxCallDuration, maxUserIdleTimeout, smartTurnStopSecs, turnStartStrategy, turnStartMinWords, turnStopStrategy, contextCompactionEnabled, ttsCacheEnabled, normalizedCallDispositions, includeTranscriptEndTimestamps, externalPbxFieldMappings, externalPbxLeadHeaders, workflowConfigurations]);
+    }, [name, workflowName, ambientNoiseConfig, maxCallDuration, maxUserIdleTimeout, smartTurnStopSecs, turnStartStrategy, turnStartMinWords, turnStopStrategy, contextCompactionEnabled, nodeRouting, routingConfidence, routingTimeout, speakerTrackingEnabled, ttsCacheEnabled, normalizedCallDispositions, includeTranscriptEndTimestamps, externalPbxFieldMappings, externalPbxLeadHeaders, workflowConfigurations]);
 
     useUnsavedChanges("general", isDirty);
 
@@ -393,6 +403,13 @@ function GeneralSection({
     };
 
     const handleSave = async () => {
+        const confidence = Number(routingConfidence);
+        const timeout = Number(routingTimeout);
+        if (!routingConfidence.trim() || !Number.isFinite(confidence) || confidence < 0 || confidence > 1 ||
+            !routingTimeout.trim() || !Number.isInteger(timeout) || timeout < 50 || timeout > 5000) {
+            toast.error("Jev confidence must be 0–1 and timeout must be an integer from 50 to 5000 ms.");
+            return;
+        }
         setIsSaving(true);
         const callDispositionRowsAtSave = callDispositionRows;
         try {
@@ -407,6 +424,8 @@ function GeneralSection({
                     turn_start_min_words: turnStartMinWords,
                     turn_stop_strategy: turnStopStrategy,
                     context_compaction_enabled: contextCompactionEnabled,
+                    node_routing: { ...nodeRouting, confidence_threshold: confidence, timeout_ms: timeout },
+                    speaker_tracking_enabled: speakerTrackingEnabled,
                     tts_cache_enabled: ttsCacheEnabled,
                     call_dispositions: normalizedCallDispositions,
                     transcript_configuration: {
@@ -695,6 +714,10 @@ function GeneralSection({
 
                 <Separator />
 
+                <SpeakerTrackingSettings enabled={speakerTrackingEnabled} onChange={setSpeakerTrackingEnabled} />
+
+                <Separator />
+
                 {/* Transcript */}
                 <div className="space-y-4">
                     <div>
@@ -740,6 +763,44 @@ function GeneralSection({
                             checked={contextCompactionEnabled}
                             onCheckedChange={setContextCompactionEnabled}
                         />
+                    </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                    <div>
+                        <h3 className="text-sm font-medium">Jev Node Routing</h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                            Compare routing decisions in shadow mode before enabling faster node transitions.
+                            Low confidence, unavailable service and timeouts use the normal model flow.
+                            Available for text and transcribed voice conversations; requires a server TypeSafe API key.
+                        </p>
+                    </div>
+                    <div className="space-y-2">
+                        <Label htmlFor="node-routing-mode">Routing mode</Label>
+                        <Select value={nodeRouting.mode} onValueChange={(mode: "off" | "shadow" | "on") => setNodeRouting(current => ({ ...current, mode }))}>
+                            <SelectTrigger id="node-routing-mode"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="off">Off — original model flow</SelectItem>
+                                <SelectItem value="shadow">Shadow — compare decisions</SelectItem>
+                                <SelectItem value="on">On — apply confident decisions</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="node-routing-confidence">Minimum confidence</Label>
+                            <Input id="node-routing-confidence" type="number" min="0" max="1" step="0.01"
+                                value={routingConfidence}
+                                onChange={event => setRoutingConfidence(event.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="node-routing-timeout">Decision timeout (ms)</Label>
+                            <Input id="node-routing-timeout" type="number" min="50" max="5000" step="50"
+                                value={routingTimeout}
+                                onChange={event => setRoutingTimeout(event.target.value)} />
+                        </div>
                     </div>
                 </div>
 

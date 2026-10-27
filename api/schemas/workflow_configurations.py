@@ -122,6 +122,17 @@ class AmbientNoiseConfigurationDefaults(BaseModel):
     volume: float = 0.3
 
 
+class JevNodeRoutingConfiguration(BaseModel):
+    """Optional fast routing for text and STT → LLM → TTS conversations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["off", "shadow", "on"] = "off"
+    confidence_threshold: float = Field(default=0.85, ge=0, le=1)
+    timeout_ms: int = Field(default=600, ge=50, le=5000)
+    model: str = Field(default="jev-1.13.0", pattern=r"^jev-[A-Za-z0-9._-]+$", max_length=80)
+
+
 class WorkflowConfigurationDefaults(BaseModel):
     model_config = ConfigDict(extra="allow")
     model_configuration_override: ModelConfigurationOverride | None = None
@@ -153,6 +164,14 @@ class WorkflowConfigurationDefaults(BaseModel):
     )
     dictionary: str = ""
     context_compaction_enabled: bool = DEFAULT_CONTEXT_COMPACTION_ENABLED
+    speaker_tracking_enabled: bool = Field(
+        default=False,
+        description="Evaluate call-local speakers in shadow mode; never changes transcription or interruptions.",
+    )
+    node_routing: JevNodeRoutingConfiguration = Field(
+        default_factory=JevNodeRoutingConfiguration,
+        description="Jev node routing: off, observe without applying, or apply confident decisions.",
+    )
     tts_cache_enabled: bool = Field(
         default=False,
         description="Reuse generated speech for repeated phrases. Supports MiniMax TTS.",

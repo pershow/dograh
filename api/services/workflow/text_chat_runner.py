@@ -32,18 +32,24 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
     LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 from pipecat.utils.run_context import set_current_org_id
 
 from api.db import db_client
 from api.enums import WorkflowRunMode, WorkflowRunState
-from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.schemas.workflow_configurations import (
+    JevNodeRoutingConfiguration,
+    WorkflowConfigurationDefaults,
+)
 from api.services.configuration.registry import ServiceProviders
 from api.services.configuration.run_model_configuration import (
     apply_pre_call_model_overrides,
 )
 from api.services.pipecat.audio_config import create_audio_config
+from api.services.pipecat.node_routing import NodeRoutingProcessor
 from api.services.pipecat.pipeline_builder import create_pipeline_task
 from api.services.pipecat.pipeline_metrics_aggregator import (
     PipelineMetricsAggregator,
@@ -504,7 +510,9 @@ async def execute_text_chat_pending_turn(
     workflow_run, _ = await db_client.get_workflow_run_with_context(workflow_run_id)
     if not workflow_run or workflow_run.workflow_id != workflow_id:
         raise ValueError("Workflow run not found for text chat execution")
-    if (getattr(workflow_run, "purpose", "normal") == "evaluation") != (evaluation_policy is not None):
+    if (getattr(workflow_run, "purpose", "normal") == "evaluation") != (
+        evaluation_policy is not None
+    ):
         raise ValueError("Evaluation runs require a server-owned effect policy")
     if workflow_run.definition is None:
         raise ValueError("Workflow run is missing a pinned definition")
@@ -608,9 +616,13 @@ async def execute_text_chat_pending_turn(
             )
 
     if evaluation_policy is not None and is_initial_node_opening:
-        initial_context = merge_external_initial_context(initial_context, evaluation_policy.case.pre_call_context or {})
+        initial_context = merge_external_initial_context(
+            initial_context, evaluation_policy.case.pre_call_context or {}
+        )
 
-    llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
+    llm = create_llm_service(
+        user_config, correlation_id=mps_correlation_id, spoken_output=False
+    )
     inference_llm = llm
     call_dispositions = WorkflowConfigurationDefaults.model_validate(
         {"call_dispositions": run_configs.get("call_dispositions") or []}
@@ -683,12 +695,17 @@ async def execute_text_chat_pending_turn(
         embeddings_endpoint = getattr(user_config.embeddings, "endpoint", None)
         embeddings_api_version = getattr(user_config.embeddings, "api_version", None)
 
-    has_recordings = False if evaluation_policy is not None else await db_client.has_active_recordings(workflow.organization_id)
-    context_compaction_enabled = run_configs.get(
-        "context_compaction_enabled", False
+    has_recordings = (
+        False
+        if evaluation_policy is not None
+        else await db_client.has_active_recordings(workflow.organization_id)
     )
+    context_compaction_enabled = run_configs.get("context_compaction_enabled", False)
     engine = PipecatEngine(
         evaluation_policy=evaluation_policy,
+        node_routing=JevNodeRoutingConfiguration.model_validate(
+            run_configs.get("node_routing") or {}
+        ),
         llm=llm,
         inference_llm=inference_llm,
         variable_extraction_llm=variable_extraction_llm,
@@ -715,10 +732,21 @@ async def execute_text_chat_pending_turn(
     capture_processor = _TextChatCaptureProcessor(
         response_window, context, engine, on_event=on_event
     )
+    if evaluation_policy is not None:
+        from api.services.agent_workbench.diagnostics import install_request_capture
+
+        install_request_capture(llm, engine, capture_processor._append_event)
 
     assistant_params = LLMAssistantAggregatorParams()
+    # HTTP messages already delimit text turns. The default user strategies
+    # load a local ONNX speech-turn model, which is unused in this pipeline
+    # and otherwise gets constructed again for every text message.
     context_aggregator = LLMContextAggregatorPair(
-        context, assistant_params=assistant_params
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=ExternalUserTurnStrategies()
+        ),
+        assistant_params=assistant_params,
     )
     assistant_context_aggregator = context_aggregator.assistant()
 
@@ -747,8 +775,10 @@ async def execute_text_chat_pending_turn(
     trace_span_attributes = {
         "langfuse.trace.name": workflow_run.name or f"text-chat-{workflow_run_id}"
     }
+    node_router = NodeRoutingProcessor(engine)
     pipeline = Pipeline(
         [
+            node_router,
             llm,
             capture_processor,
             assistant_context_aggregator,
@@ -764,9 +794,12 @@ async def execute_text_chat_pending_turn(
         additional_span_attributes=trace_span_attributes,
     )
     if evaluation_policy is not None:
+
         @task.event_handler("on_pipeline_error")
         async def evaluation_error(_worker, _frame):
-            evaluation_policy.errors.append("Text runtime reported a model or tool error")
+            evaluation_policy.errors.append(
+                "Text runtime reported a model or tool error"
+            )
 
     runner_task = asyncio.create_task(run_pipeline_worker(task))
 
@@ -823,7 +856,7 @@ async def execute_text_chat_pending_turn(
             generation_marker = capture_processor.activity_count
             response_window.note_direct_context_request()
             engine.expect_response()
-            await llm.queue_frame(LLMContextFrame(context))
+            await node_router.queue_frame(LLMContextFrame(context))
             await _wait_for_quiescence(
                 capture_processor=capture_processor,
                 response_window=response_window,

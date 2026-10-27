@@ -155,7 +155,12 @@ class Workflow:
         if transition_speech_recording_id is not None:
             data["transition_speech_recording_id"] = transition_speech_recording_id
 
-        edge_id = f"{source.id}-{target.id}"
+        base_id = f"{source.id}-{target.id}"
+        used_ids = {edge.id for edge in self._edges}
+        edge_id, suffix = base_id, 2
+        while edge_id in used_ids:
+            edge_id = f"{base_id}__{suffix}"
+            suffix += 1
         self._edges.append(
             _Edge(id=edge_id, source=source.id, target=target.id, data=data)
         )
@@ -208,7 +213,9 @@ class Workflow:
         for raw in data.get("nodes", []):
             node_id = str(raw.get("id"))
             spec: NodeSpec = client.get_node_type(raw["type"])
-            validated = validate_node_data(spec.model_dump(mode="json"), raw.get("data") or {})
+            validated = validate_node_data(
+                spec.model_dump(mode="json"), raw.get("data") or {}
+            )
             wf._nodes.append(
                 _Node(
                     id=node_id,

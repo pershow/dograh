@@ -23,9 +23,9 @@ export interface AgentNodeExtraction_variablesRow {
 }
 
 /**
- * Conversational step — the LLM runs one focused exchange.
+ * Multi-turn conversation — the LLM can handle several internal business stages.
  *
- * LLM hint: Mid-call step executed by the LLM. Most workflows are a chain of agent nodes connected by edges that describe transition conditions. Each agent node can invoke tools and reference documents.
+ * LLM hint: Mid-call conversation executed by the LLM. One agent node can handle multiple turns, internal stages and conditional branches, invoke tools and reference documents. Edges describe transitions to other physical nodes; internal prompt stages do not require separate nodes.
  */
 export interface AgentNode {
     type: "agentNode";
