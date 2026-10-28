@@ -724,3 +724,21 @@ reviews have now completed. The full backend suite passes 6,173 tests with 11 sk
 (520.79 seconds), including the unchanged idle-loop timing assertion. Ruff and diff
 whitespace checks pass. The live 266-case replay and candidate comparison remain
 in progress; these code checks do not certify business acceptance.
+
+At 12:14 CST the resumed task stopped through the new outage protection. It retains
+53 valid conversations with business failures; ten further cases ended with model
+connection errors before the guard fired, and unfinished work was stopped. The
+entire 266-case scope remains saved. A minimal request to the unchanged Qwen
+connection at 12:16 CST returned HTTP 400 with provider code `Arrearage` again.
+This is a new account/credit block, distinct from the earlier reviewer TLS outage.
+No full-scope tuning comparison has been started from this incomplete baseline.
+
+The gateway now preserves bounded, credential-safe provider error identifiers
+instead of suggesting that every HTTP 400 is a protocol mismatch. Task outage
+messages also retain the affected model and last cause. All 46 targeted gateway,
+transport and simulation tests pass. The final full backend rerun passes 6,181 tests
+with 11 skipped (507.02 seconds); Ruff and whitespace checks pass. A real gateway
+probe at 12:29 CST still returns upstream HTTP 400 / `Arrearage`, now retained in
+the gateway's structured diagnostics and user-visible error. Agent 28 and 12 draft
+fingerprints still match the pre-test values. The remaining 213 cases and the full
+candidate comparison require restoration of the original Qwen connection.

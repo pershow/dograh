@@ -51,21 +51,43 @@ async def test_transport_errors_preserve_cause_phase_and_retry_without_secrets()
     async def upstream(request):
         await request.extensions["trace"]("http11.receive_response_headers.failed", {})
         try:
-            raise ConnectionResetError("peer reset https://user:password@example.com/v1?token=private-query")
+            raise ConnectionResetError(
+                "peer reset https://user:password@example.com/v1?token=private-query"
+            )
         except ConnectionResetError as cause:
-            raise httpx.ReadError("provider-secret Authorization: Bearer private-header", request=request) from cause
+            raise httpx.ReadError(
+                "provider-secret Authorization: Bearer private-header", request=request
+            ) from cause
 
     async with gateway(protocol="responses", max_retries=1, on_event=notice) as gw:
         await mock_upstream(gw, upstream)
         async with httpx.AsyncClient() as client:
-            response = await client.post(gw.url + "/responses", headers={"Authorization": "Bearer " + gw.token}, json={})
+            response = await client.post(
+                gw.url + "/responses",
+                headers={"Authorization": "Bearer " + gw.token},
+                json={},
+            )
         errors = [data for kind, data in notices if kind == "model.error"]
         assert [e["attempt"] for e in errors] == [1, 2]
-        assert [e["type"] for e in errors[0]["exceptions"]] == ["ProviderFailure", "ReadError", "ConnectionResetError"]
-        assert errors[0]["transport"]["failed_phase"] == "http11.receive_response_headers"
+        assert [e["type"] for e in errors[0]["exceptions"]] == [
+            "ProviderFailure",
+            "ReadError",
+            "ConnectionResetError",
+        ]
+        assert (
+            errors[0]["transport"]["failed_phase"] == "http11.receive_response_headers"
+        )
         assert errors[0]["output_exposed"] is False
         encoded = json.dumps(notices)
-        assert all(secret not in encoded for secret in ("provider-secret", "private-query", "private-header", "user:password"))
+        assert all(
+            secret not in encoded
+            for secret in (
+                "provider-secret",
+                "private-query",
+                "private-header",
+                "user:password",
+            )
+        )
         assert response.status_code == 502
 
 
@@ -241,6 +263,44 @@ async def test_unknown_forbidden_body_is_not_exposed(content):
     assert error.code == "provider_http_error" and not error.retryable
     assert "HTTP 403" in str(error) and "access policy" in str(error)
     assert "private-secret" not in str(error)
+
+
+@pytest.mark.parametrize(
+    "body,code",
+    [
+        ({"error": {"code": "Arrearage", "message": "private-secret"}}, "Arrearage"),
+        (
+            {"error": {"type": "QuotaExceeded", "message": "private-secret"}},
+            "QuotaExceeded",
+        ),
+        (
+            {"code": "AccountUnavailable", "message": "private-secret"},
+            "AccountUnavailable",
+        ),
+    ],
+)
+async def test_http_error_preserves_provider_code_without_echoing_body(body, code):
+    error = await provider_http_failure(httpx.Response(400, json=body), "chat")
+    assert error.provider_code == code and code in str(error)
+    assert error.code == "provider_http_error" and not error.retryable
+    assert "HTTP 400" in str(error)
+    assert "private-secret" not in str(error)
+    assert "verify model/protocol compatibility" not in str(error)
+
+
+@pytest.mark.parametrize(
+    "code", ["private-key", "Bearer private-secret", "x" * 81, {"key": "private-key"}]
+)
+async def test_provider_code_rejects_credentials_and_arbitrary_text(code):
+    error = await provider_http_failure(
+        httpx.Response(
+            400, json={"error": {"code": code, "message": "private-secret"}}
+        ),
+        "chat",
+        secrets=("private-key",),
+    )
+    assert error.provider_code is None
+    assert "private-key" not in str(error) and "private-secret" not in str(error)
 
 
 async def test_error_read_is_bounded_and_does_not_drain_a_trailing_stream():

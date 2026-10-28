@@ -57,49 +57,69 @@ RESPONSES_OPTIONS = (
 CODEX_CLIENT_RESTRICTION = "This account only allows Codex official clients"
 
 
-async def provider_http_failure(upstream, protocol):
+async def provider_http_failure(upstream, protocol, *, secrets=()):
     status = upstream.status_code
-    if status == 403:
-        # Some gateways append SSE to their JSON error. Read only a bounded
-        # prefix and decode the first JSON value; never echo arbitrary provider
-        # bodies (which can contain credentials or request content) to the UI.
-        prefix = bytearray()
-        try:
-            async with asyncio.timeout(2):
-                async for chunk in upstream.aiter_bytes():
-                    prefix.extend(chunk[: 8192 - len(prefix)])
-                    try:
-                        data, _ = json.JSONDecoder().raw_decode(
-                            prefix.decode("utf-8").lstrip()
-                        )
-                    except (ValueError, UnicodeDecodeError):
-                        if len(prefix) >= 8192:
-                            break
-                        continue
-                    error = data.get("error") if isinstance(data, dict) else None
+    provider_code = None
+    # Some gateways append SSE to their JSON error. Read only a bounded prefix.
+    # Keep a machine-readable cause, never arbitrary bodies or echoed prompts.
+    prefix = bytearray()
+    try:
+        async with asyncio.timeout(2):
+            async for chunk in upstream.aiter_bytes():
+                prefix.extend(chunk[: 8192 - len(prefix)])
+                try:
+                    data, _ = json.JSONDecoder().raw_decode(
+                        prefix.decode("utf-8").lstrip()
+                    )
+                except (ValueError, UnicodeDecodeError):
+                    if len(prefix) >= 8192:
+                        break
+                    continue
+                error = data.get("error") if isinstance(data, dict) else None
+                if (
+                    status == 403
+                    and isinstance(error, dict)
+                    and error.get("message") == CODEX_CLIENT_RESTRICTION
+                ):
+                    return ProviderFailure(
+                        "Model provider rejected the Codex app-server client "
+                        "(HTTP 403): This account only allows Codex official clients. "
+                        "Check the provider's client access policy or select a "
+                        "permitted connection.",
+                        code="provider_client_restricted",
+                    )
+                values = (
+                    [error.get("code"), error.get("type")]
+                    if isinstance(error, dict)
+                    else []
+                )
+                if isinstance(data, dict):
+                    values.append(data.get("code"))
+                for value in values:
                     if (
-                        isinstance(error, dict)
-                        and error.get("message") == CODEX_CLIENT_RESTRICTION
+                        isinstance(value, str)
+                        and 0 < len(value) <= 80
+                        and value.isascii()
+                        and all(c.isalnum() or c in "_.-" for c in value)
+                        and not any(secret and secret in value for secret in secrets)
                     ):
-                        return ProviderFailure(
-                            "Model provider rejected the Codex app-server client "
-                            "(HTTP 403): This account only allows Codex official clients. "
-                            "Check the provider's client access policy or select a "
-                            "permitted connection.",
-                            code="provider_client_restricted",
-                        )
-                    break
-        except (httpx.HTTPError, TimeoutError):
-            pass  # Keep the known HTTP failure even if its body is unavailable.
+                        provider_code = value
+                        break
+                break
+    except (httpx.HTTPError, TimeoutError):
+        pass  # Keep the known HTTP failure even if its body is unavailable.
     return ProviderFailure(
-        f"Configured LLM {protocol} endpoint returned HTTP {status}; "
+        f"Configured LLM {protocol} endpoint returned HTTP {status}"
+        + (f" (provider code: {provider_code})" if provider_code else "")
+        + "; "
         + (
             "verify provider credentials and access policy"
             if status in {401, 403}
-            else "verify model/protocol compatibility"
+            else "check provider error details and connection settings"
         ),
         retryable=status == 429 or status >= 500,
         code="rate_limited" if status == 429 else "provider_http_error",
+        provider_code=provider_code,
     )
 
 
@@ -295,9 +315,12 @@ def response_events(response):
 
 
 class ProviderFailure(WorkbenchError):
-    def __init__(self, message, *, retryable=False, code="model_error"):
+    def __init__(
+        self, message, *, retryable=False, code="model_error", provider_code=None
+    ):
         super().__init__(message)
         self.retryable, self.code = retryable, code
+        self.provider_code = provider_code
 
 
 class ModelGateway:
@@ -498,7 +521,12 @@ class ModelGateway:
                 ):
                     transport["upstream_request_id"] = value
             if upstream.status_code != 200:
-                raise await provider_http_failure(upstream, self.protocol)
+                failure = await provider_http_failure(
+                    upstream, self.protocol, secrets=(self.config.api_key, self.token)
+                )
+                if failure.provider_code:
+                    transport["provider_error_code"] = failure.provider_code
+                raise failure
             if "text/event-stream" not in upstream.headers.get("content-type", ""):
                 # Some compatible providers ignore stream=true. Still bound their read.
                 data = json.loads(await upstream.aread())
@@ -820,7 +848,9 @@ class ModelGateway:
                             ),
                         )
                     if exposed or not failure.retryable or attempt > self.max_retries:
-                        record_model_outcome(self.config, failure.code)
+                        record_model_outcome(
+                            self.config, failure.code, detail=str(failure)
+                        )
                         raise failure
                     progress.update(
                         phase="retrying", reason=failure.code, next_attempt=attempt + 1

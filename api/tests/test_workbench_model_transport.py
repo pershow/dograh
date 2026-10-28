@@ -197,6 +197,30 @@ async def test_success_on_same_connection_resets_consecutive_failure_count():
             record_model_outcome(config)
 
 
+async def test_task_outage_explains_affected_model_and_redacts_provider_detail():
+    from api.services.agent_workbench.errors import WorkbenchError
+    from api.services.agent_workbench.model_transport import (
+        check_model_availability,
+        record_model_outcome,
+    )
+
+    config = SimpleNamespace(
+        base_url="https://one.example", api_key="private-key", model="voice-model"
+    )
+    async with model_transport_scope():
+        for _ in range(3):
+            record_model_outcome(
+                config,
+                "provider_http_error",
+                detail="HTTP 400 (provider code: BalanceUnavailable) private-key",
+            )
+        with pytest.raises(WorkbenchError) as caught:
+            check_model_availability()
+        assert "voice-model" in str(caught.value)
+        assert "BalanceUnavailable" in str(caught.value)
+        assert "private-key" not in str(caught.value)
+
+
 async def test_gateway_outage_counts_exhausted_requests_not_retry_attempts(
     aiohttp_server,
 ):

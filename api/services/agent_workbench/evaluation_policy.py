@@ -42,7 +42,9 @@ class EvaluationPolicy:
                 record_model_outcome,
             )
 
-            record_model_outcome(config, "model_connection_error")
+            record_model_outcome(
+                config, "model_connection_error", detail=self.errors[-1]
+            )
 
     def validate(self, graph):
         supported = {"startCall", "endCall", "agentNode", "globalNode", "trigger"}

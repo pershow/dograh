@@ -25,8 +25,9 @@ class ModelHealth:
     def __init__(self):
         self.failures = {}
         self.unavailable = False
+        self.reason = ""
 
-    def record(self, connection, code=None):
+    def record(self, connection, code=None, detail=None):
         if code is None:
             self.failures.pop(connection, None)
         elif code in {
@@ -37,20 +38,25 @@ class ModelHealth:
             "provider_client_restricted",
         }:
             self.failures[connection] = self.failures.get(connection, 0) + 1
-            self.unavailable |= self.failures[connection] >= 3
+            if self.failures[connection] >= 3 and not self.unavailable:
+                self.unavailable = True
+                self.reason = detail or code
 
     def check(self):
         if self.unavailable:
             raise WorkbenchError(
                 "同一模型连接连续三次请求失败，已停止本次测试，"
                 "避免继续消耗剩余用例。已保存实际对话和评审结果；"
-                "恢复连接后可继续原任务，不必重跑已完成的有效结果。",
+                "恢复连接后可继续原任务，不必重跑已完成的有效结果。"
+                + f" 最近原因：{self.reason}",
                 503,
             )
 
 
-def record_model_outcome(config, code=None):
+def record_model_outcome(config, code=None, *, detail=None):
     if (health := _health.get()) is not None:
+        from api.services.agent_workbench.transport_diagnostics import safe_message
+
         secret = getattr(config, "api_key", None) or ""
         if hasattr(secret, "get_secret_value"):
             secret = secret.get_secret_value()
@@ -60,7 +66,14 @@ def record_model_outcome(config, code=None):
             getattr(config, "model", None),
             hashlib.sha256(str(secret).encode()).digest(),
         )
-        health.record(connection, code)
+        health.record(
+            connection,
+            code,
+            safe_message(
+                f"{getattr(config, 'model', 'unknown')}: {detail or code}",
+                (str(secret),),
+            ),
+        )
 
 
 def check_model_availability():
