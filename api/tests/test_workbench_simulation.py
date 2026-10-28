@@ -327,3 +327,110 @@ async def test_real_execution_stops_before_invalid_user_and_persists_live_eviden
     writes = evaluation.db_client.wb_evaluation_result.call_args_list
     assert any(c.args[-2] == "running" and c.args[-3][0]["transcript"] for c in writes)
     assert writes[-1].args[-2] == "completed"
+
+
+async def test_repeated_model_outage_preserves_results_and_stops_remaining_cases(
+    monkeypatch,
+):
+    import asyncio
+
+    from api.services.agent_workbench.model_transport import (
+        model_transport_scope,
+        record_model_outcome,
+    )
+    from api.services.workflow import text_chat_runner
+
+    cases = [
+        SimulationCase(
+            name=f"case {i}",
+            user_messages=["hello"],
+            assertions=[{"kind": "completed", "value": True}],
+        )
+        for i in range(9)
+    ]
+    config = SimpleNamespace(llm=SimpleNamespace(model="runtime"))
+
+    async def get(org, sid, table, key):
+        return (
+            {"snapshot": {"workflow_json": {"nodes": []}}, "fingerprint": "c"}
+            if table == "candidates"
+            else {
+                "payload": {"name": "suite", "cases": [c.model_dump() for c in cases]},
+                "fingerprint": "s",
+            }
+        )
+
+    monkeypatch.setattr(evaluation.db_client, "wb_get", get)
+    for method, value in [
+        ("wb_context", {"session": {"workflow_id": 1}}),
+        ("wb_evaluation", {"id": "e"}),
+        ("wb_evaluation_result", None),
+        ("wb_create_run", 7),
+        ("wb_heartbeat", None),
+        ("wb_emit", None),
+        ("update_workflow_run", None),
+    ]:
+        monkeypatch.setattr(evaluation.db_client, method, AsyncMock(return_value=value))
+    calls = 0
+
+    async def execute(**kwargs):
+        nonlocal calls
+        calls += 1
+        record_model_outcome(config.llm, "model_connection_error")
+        raise WorkbenchError("Model connection interrupted.")
+
+    monkeypatch.setattr(text_chat_runner, "execute_text_chat_pending_turn", execute)
+    async with model_transport_scope():
+        with pytest.raises(ExceptionGroup):
+            await evaluation.evaluate(
+                1,
+                "s",
+                {"id": "j", "lease_token": "l"},
+                "c",
+                "s",
+                config,
+                case_semaphore=asyncio.Semaphore(1),
+            )
+    assert calls == 3
+    writes = evaluation.db_client.wb_evaluation_result.call_args_list
+    saved = writes[-1].args[-3]
+    assert len(saved) == 3 and all(c["status"] == "error" for c in saved)
+    assert all(c["error"] == "Model connection interrupted." for c in saved)
+
+
+async def test_runtime_provider_outage_uses_error_categories_not_customer_words():
+    from pipecat.utils.errors import ErrorCategory
+
+    from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
+    from api.services.agent_workbench.model_transport import (
+        check_model_availability,
+        model_transport_scope,
+        record_model_outcome,
+    )
+
+    config = SimpleNamespace(llm=SimpleNamespace(model="runtime"))
+    async with model_transport_scope():
+        for _ in range(4):
+            policy = EvaluationPolicy(source_case(), config)
+            policy.record_runtime_error(
+                SimpleNamespace(
+                    error="connection interrupted", category=ErrorCategory.UNKNOWN
+                )
+            )
+        check_model_availability()
+        for _ in range(2):
+            policy.record_runtime_error(
+                SimpleNamespace(
+                    error="provider down", category=ErrorCategory.CONNECTIVITY
+                )
+            )
+        check_model_availability()
+        record_model_outcome(config.llm)
+        for _ in range(3):
+            policy.record_runtime_error(
+                SimpleNamespace(
+                    error="provider down", category=ErrorCategory.CONNECTIVITY
+                )
+            )
+        with pytest.raises(WorkbenchError, match="已停止本次测试"):
+            check_model_availability()

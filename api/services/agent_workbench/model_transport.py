@@ -8,7 +8,64 @@ from contextvars import ContextVar
 
 import httpx
 
+from api.services.agent_workbench.errors import WorkbenchError
+
 _clients = ContextVar("workbench_model_clients", default=None)
+_health = ContextVar("workbench_model_health", default=None)
+
+
+class ModelHealth:
+    """Stop a task-wide outage from turning every remaining case into an error.
+
+    Count exhausted requests, not their internal retries. A successful request
+    resets only its own connection; unrelated models cannot conceal an outage.
+    Once tripped, the task must be resumed explicitly with its saved evidence.
+    """
+
+    def __init__(self):
+        self.failures = {}
+        self.unavailable = False
+
+    def record(self, connection, code=None):
+        if code is None:
+            self.failures.pop(connection, None)
+        elif code in {
+            "model_connection_error",
+            "model_timeout",
+            "rate_limited",
+            "provider_http_error",
+            "provider_client_restricted",
+        }:
+            self.failures[connection] = self.failures.get(connection, 0) + 1
+            self.unavailable |= self.failures[connection] >= 3
+
+    def check(self):
+        if self.unavailable:
+            raise WorkbenchError(
+                "同一模型连接连续三次请求失败，已停止本次测试，"
+                "避免继续消耗剩余用例。已保存实际对话和评审结果；"
+                "恢复连接后可继续原任务，不必重跑已完成的有效结果。",
+                503,
+            )
+
+
+def record_model_outcome(config, code=None):
+    if (health := _health.get()) is not None:
+        secret = getattr(config, "api_key", None) or ""
+        if hasattr(secret, "get_secret_value"):
+            secret = secret.get_secret_value()
+        connection = (
+            getattr(config, "provider", None),
+            getattr(config, "base_url", None),
+            getattr(config, "model", None),
+            hashlib.sha256(str(secret).encode()).digest(),
+        )
+        health.record(connection, code)
+
+
+def check_model_availability():
+    if (health := _health.get()) is not None:
+        health.check()
 
 
 async def finish_response(lines):
@@ -30,10 +87,12 @@ async def finish_response(lines):
 async def model_transport_scope():
     clients = {}
     token = _clients.set(clients)
+    health_token = _health.set(ModelHealth())
     try:
         yield
     finally:
         _clients.reset(token)
+        _health.reset(health_token)
         await asyncio.gather(*(client.aclose() for client in clients.values()))
 
 

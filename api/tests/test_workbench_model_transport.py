@@ -144,3 +144,88 @@ async def test_completion_does_not_wait_for_a_provider_that_never_closes_its_str
         yield ""
 
     await asyncio.wait_for(finish_response(never_ends()), timeout=1)
+
+
+async def test_outage_is_task_scoped_and_other_connections_cannot_reset_it():
+    from api.services.agent_workbench.errors import WorkbenchError
+    from api.services.agent_workbench.model_transport import (
+        check_model_availability,
+        record_model_outcome,
+    )
+
+    failing = SimpleNamespace(
+        base_url="https://one.example", api_key="first", model="m"
+    )
+    healthy = SimpleNamespace(
+        base_url="https://one.example", api_key="other", model="m"
+    )
+    async with model_transport_scope():
+        for _ in range(2):
+            record_model_outcome(failing, "model_connection_error")
+            record_model_outcome(healthy)
+            check_model_availability()
+        # Invalid structured output isn't evidence that the connection is down.
+        record_model_outcome(failing, "model_invalid_tool_arguments")
+        check_model_availability()
+        record_model_outcome(failing, "model_connection_error")
+        with pytest.raises(WorkbenchError, match="已停止本次测试"):
+            check_model_availability()
+        # The interruption is sticky until a new task; late successes do not
+        # race with cancellation to relabel an incomplete task as successful.
+        record_model_outcome(failing)
+        with pytest.raises(WorkbenchError):
+            check_model_availability()
+        async with model_transport_scope():
+            check_model_availability()
+        with pytest.raises(WorkbenchError):
+            check_model_availability()
+    check_model_availability()
+
+
+async def test_success_on_same_connection_resets_consecutive_failure_count():
+    from api.services.agent_workbench.model_transport import (
+        check_model_availability,
+        record_model_outcome,
+    )
+
+    config = SimpleNamespace(base_url="https://one.example", api_key="first", model="m")
+    async with model_transport_scope():
+        for _ in range(4):
+            record_model_outcome(config, "model_timeout")
+            record_model_outcome(config, "model_timeout")
+            check_model_availability()
+            record_model_outcome(config)
+
+
+async def test_gateway_outage_counts_exhausted_requests_not_retry_attempts(
+    aiohttp_server,
+):
+    from api.services.agent_workbench.errors import WorkbenchError
+    from api.services.agent_workbench.model_transport import check_model_availability
+
+    attempts = 0
+
+    async def unavailable(request):
+        nonlocal attempts
+        attempts += 1
+        return web.Response(status=503)
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", unavailable)
+    server = await aiohttp_server(app)
+    async with model_transport_scope(), httpx.AsyncClient(trust_env=False) as local:
+        for index in range(3):
+            async with gateway(
+                str(server.make_url("/v1")), protocol="responses", max_retries=1
+            ) as current:
+                response = await local.post(
+                    current.url + "/responses",
+                    headers={"Authorization": "Bearer " + current.token},
+                    json={},
+                )
+                assert response.status_code == 502
+            assert attempts == (index + 1) * 2
+            if index < 2:
+                check_model_availability()
+        with pytest.raises(WorkbenchError, match="连续三次"):
+            check_model_availability()

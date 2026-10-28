@@ -617,6 +617,12 @@ async def evaluate(
                 )
                 events.extend({**event, "turn": turn_index} for event in result.events)
                 usage.append(result.usage)
+                if result.usage and not policy.errors:
+                    from api.services.agent_workbench.model_transport import (
+                        record_model_outcome,
+                    )
+
+                    record_model_outcome(model_configuration.llm)
                 await publish_partial()
                 await case_event("replaying", turn=turn_index)
                 if message is not None and not result.assistant_text and not completed:
@@ -815,31 +821,39 @@ async def evaluate(
         return result
 
     async def run_and_persist(index, case):
+        from api.services.agent_workbench.model_transport import (
+            check_model_availability,
+        )
+
         async with semaphore:
+            check_model_availability()
             outcome = (
                 await finish_review(case)
                 if prior_results
                 and prior_results.get(case.name, {}).get("review_pending")
                 else await run_case(index, case)
             )
-        async with persist_lock:
-            results[index] = outcome
-            await db_client.wb_evaluation_result(
-                org,
-                session_id,
-                job["id"],
-                job["lease_token"],
-                evaluation["id"],
-                stored_results(),
-                "completed" if len(results) == len(suite.cases) else "running",
-                summary(),
-            )
-            if on_progress:
-                await on_progress(
+            async with persist_lock:
+                results[index] = outcome
+                await db_client.wb_evaluation_result(
+                    org,
+                    session_id,
+                    job["id"],
+                    job["lease_token"],
                     evaluation["id"],
+                    stored_results(),
+                    "completed" if len(results) == len(suite.cases) else "running",
                     summary(),
-                    sum(bool(r.get("runtime_responded")) for r in results.values()),
                 )
+                if on_progress:
+                    await on_progress(
+                        evaluation["id"],
+                        summary(),
+                        sum(bool(r.get("runtime_responded")) for r in results.values()),
+                    )
+            # Persist before releasing the slot to another case. Infrastructure
+            # outages must not be counted as hundreds of Agent defects.
+            check_model_availability()
 
     async with asyncio.TaskGroup() as group:
         if results:

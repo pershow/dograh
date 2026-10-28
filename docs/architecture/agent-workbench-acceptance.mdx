@@ -704,3 +704,23 @@ All 14 retain business failures; this is an interim count, not a final acceptanc
 result. Five retained dialogues were independently reviewed again without changing
 their transcripts, fixtures or criteria; five criterion verdicts changed from
 failure to passage after considering facts already established in those dialogues.
+
+At 11:29 CST the task was stopped after a separate outage on the simulation
+validator/reviewer connection. Saved transport diagnostics identify repeated TLS
+handshake failures on that connection, not a Qwen quota response. The task retains
+31 complete, valid dialogues: 26 have business failures and five need only their
+interrupted reviews; 56 other rows ended with connection errors. The remaining
+scope is retained. Both original model connections passed minimal requests at
+11:30 CST, without changing their settings.
+
+Task-scoped outage protection now stops work after three consecutive exhausted
+requests fail on one connection. Tests verify retry accounting, isolation by
+credentials and task, same-connection recovery, typed runtime-provider errors and
+preservation of completed evidence before stopping remaining cases. All 38 targeted
+transport/simulation/gateway tests pass. The same 266-case task was resumed at
+11:42 CST with the 31 complete dialogues retained. Recovery verification confirms
+the same run IDs, transcripts and compiled fixtures for all 31; the five interrupted
+reviews have now completed. The full backend suite passes 6,173 tests with 11 skipped
+(520.79 seconds), including the unchanged idle-loop timing assertion. Ruff and diff
+whitespace checks pass. The live 266-case replay and candidate comparison remain
+in progress; these code checks do not certify business acceptance.

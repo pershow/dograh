@@ -21,6 +21,7 @@ from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.model_transport import (
     finish_response,
     model_http_client,
+    record_model_outcome,
 )
 from api.services.agent_workbench.streaming import (
     ChatStream,
@@ -819,6 +820,7 @@ class ModelGateway:
                             ),
                         )
                     if exposed or not failure.retryable or attempt > self.max_retries:
+                        record_model_outcome(self.config, failure.code)
                         raise failure
                     progress.update(
                         phase="retrying", reason=failure.code, next_attempt=attempt + 1
@@ -840,6 +842,7 @@ class ModelGateway:
                     },
                 )
                 progress["phase"] = "completed"
+                record_model_outcome(self.config)
                 self.last_error = None
                 self.last_error_code = None
                 self.invalid_tool_name = None
