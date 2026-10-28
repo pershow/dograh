@@ -657,3 +657,50 @@ the changed workbench components' ESLint checks also pass.
 The final complete backend run passes 6,156 tests with 11 skipped (511.33 seconds).
 Ruff passes for the changed workbench Python files, and the staged diff has no
 whitespace errors. These checks do not replace the pending live 266-case replay.
+
+## Restored connection and bounded batch startup (2026-10-28)
+
+The same frozen Qwen connection responded successfully at 10:15 CST after the user
+restored its quota. The first full-scope attempt then failed before any case ran:
+all batches entered database setup simultaneously, and each fetched the full
+session archive before acquiring a case slot. A read-only reproduction with just
+24 concurrent archive reads took 50.17 seconds and produced 9 connection-pool
+timeouts (pool size 5, overflow 10, timeout 30 seconds).
+
+Both simulation and tuning now bound batch setup as well as case execution.
+Per-batch evaluation reads only scoped session metadata. The same 24-way metadata
+read finished in 0.25 seconds with no errors. All 86 targeted regression tests pass,
+including full-scope batch retention, shared case slots, cancellation, tenant checks
+and redacted nested error causes. The failed task and its frozen inputs are retained.
+The complete 266-case replay has been resubmitted; this entry does not claim it has
+finished, and no candidate has been applied to Agent 28 or 12.
+
+The complete backend run after the startup fix passes 6,160 tests with 11 skipped.
+Inspection of the initial eight completed conversations then found a separate
+closing defect: a spoken customer goodbye could be labeled `end` and discarded.
+Reviewers also sometimes treated a historical missing confirmation as overriding
+a valid completion report in the actual new dialogue. The runtime now rejects
+nonempty `end` proposals; spoken closings must be delivered, while grounded silent
+departures remain supported. Review instructions explicitly preserve accumulated
+actual facts without inventing consent or weakening the frozen business criteria.
+
+These changes pass 88 targeted tests. Evaluation version 8 resumes the same frozen
+266-case task, preserving five unaffected, Agent-completed actual conversations for
+fresh review and rerunning early customer departures and unfinished cases. The
+version migration never reuses the previous business verdicts. Live full-scope
+results and candidate verification remain in progress.
+
+The complete workbench suite passes 455 tests with one skipped after the closing
+and continuity fixes. The full backend run reports 6,166 passed, 11 skipped and
+one failure: the existing idle-loop timing test measured 8.34 ms against its
+unchanged 5 ms limit while live simulations were running. Its isolated module
+subsequently passes along with all 61 compilation, replay and loop-lag tests.
+That check also covers provisional comparison: a previously inapplicable branch
+may acquire passing evidence, but new failures, lost known passes and disappearance
+of known failures still reject the candidate. Unresolved criteria stay unresolved.
+
+At 11:08 CST, 14 of 266 cases have completed with valid simulation evidence.
+All 14 retain business failures; this is an interim count, not a final acceptance
+result. Five retained dialogues were independently reviewed again without changing
+their transcripts, fixtures or criteria; five criterion verdicts changed from
+failure to passage after considering facts already established in those dialogues.

@@ -26,8 +26,11 @@ def safe_message(error, secrets=()):
 
 
 def exception_details(error, secrets=()):
-    chain, seen = [], set()
-    while error is not None and id(error) not in seen and len(chain) < 6:
+    chain, seen, pending = [], set(), [error]
+    while pending and len(chain) < 6:
+        error = pending.pop(0)
+        if error is None or id(error) in seen:
+            continue
         seen.add(id(error))
         chain.append(
             {
@@ -43,7 +46,10 @@ def exception_details(error, secrets=()):
                 ],
             }
         )
-        error = error.__cause__ or (
-            None if error.__suppress_context__ else error.__context__
+        if isinstance(error, BaseExceptionGroup):
+            pending.extend(error.exceptions[:6])
+        pending.append(
+            error.__cause__
+            or (None if error.__suppress_context__ else error.__context__)
         )
     return chain

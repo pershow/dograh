@@ -73,6 +73,15 @@ applicability, severity or expected behavior. Read all unread_source_ids first.
 The rubric was compiled before execution from original business sources. Original
 requirements remain authority; candidate policy is only the implementation under test.
 Customer scenarios are explicit synthetic fixtures, not real-world identity or success.
+Separate historical unknowns and initial-state limitations from facts established
+later in THIS valid simulation. A fixture saying that an old acknowledgment did
+not establish consent or completion cannot negate a later explicit customer report
+backed by the delivered action/state ledger. Read the whole actual dialogue.
+Do not invent a requirement to reconfirm an already established unchanged fact at
+a specific turn. Require a fresh answer only where the original authority actually
+requires fresh authorization or new information after a relevant disclosure/change.
+A polite acknowledgment is not new consent, but neither does it erase an earlier
+valid confirmation. These rules never manufacture real-world backend verification.
 Evaluate the ACTUAL conversation, transitions, state and tool evidence. Wording,
 nonmandatory ordering and historical example identities are not the test objective.
 For each criterion choose:

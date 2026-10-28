@@ -261,9 +261,15 @@ class AgentWorkbenchClient(BaseDBClient):
             session.model_protocol = model_protocol
             return record(session)
 
-    async def wb_context(self, org, session_id, *, if_revision=None, compact=False):
+    async def wb_context(
+        self, org, session_id, *, if_revision=None, compact=False, session_only=False
+    ):
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
+            if session_only:
+                # Evaluation needs routing metadata, not every historical suite
+                # and transcript. Keep this read scoped without loading archives.
+                return {"session": record(session)}
             _, _, target = await self._wb_target(db, session.workflow_id, org)
             memory_revision = await self._wb_memory_revision(db, session)
             revision = fingerprint(

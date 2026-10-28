@@ -579,10 +579,9 @@ async def reusable_test_results(
                     raise WorkbenchError(
                         "原测试结果与任务或固定版本不一致，不能复用。", 409
                     )
-                if (
-                    previous.get("summary", {}).get("evaluation_version")
-                    != EVALUATION_VERSION
-                ):
+                version = previous.get("summary", {}).get("evaluation_version")
+                closing_upgrade = version == 7 and EVALUATION_VERSION == 8
+                if version != EVALUATION_VERSION and not closing_upgrade:
                     # Old alignment/context semantics cannot be relabelled as
                     # current evidence by continuing a task after an upgrade.
                     continue
@@ -593,6 +592,16 @@ async def reusable_test_results(
                 }
                 for result in previous["results"]:
                     validity = result.get("validity") or {}
+                    # Version 8 changes silent customer departures and review
+                    # continuity, not delivered valid turns. Preserve only a
+                    # completed Agent-side conversation; never reuse an early
+                    # customer end, partial run, or its old business verdict.
+                    if closing_upgrade and not (
+                        validity.get("status") == "valid"
+                        and validity.get("stop_reason") == "agent_completed"
+                        and current.get(result["name"], {}).get("compiled")
+                    ):
+                        continue
                     if (
                         result["status"] == "inconclusive"
                         and not result.get("run_id")
@@ -638,7 +647,8 @@ async def reusable_test_results(
                                 # Semantic uncertainty is a completed review. An
                                 # interrupted review resumes from its immutable
                                 # dialogue instead of paying to replay it again.
-                                "review_pending": bool(
+                                "review_pending": closing_upgrade
+                                or bool(
                                     expected[result["name"]].get("reference_dialogue")
                                     and not (result.get("reference_review") or {}).get(
                                         "checks"
@@ -710,6 +720,7 @@ async def execute_batches(
     suites = [await save_batch(payload) for payload in batches]
     suite_ids = [suite["id"] for suite in suites]
     semaphore, lock = asyncio.Semaphore(concurrency), asyncio.Lock()
+    batch_slots = asyncio.Semaphore(concurrency)
     snapshots, evaluations = {}, {}
     counts = dict(initial)
     await progress(
@@ -740,7 +751,10 @@ async def execute_batches(
                     evaluation_ids=[evaluations[i] for i in sorted(evaluations)],
                 )
 
-        result = await run_batch(suite, update, semaphore)
+        # Case slots alone do not bound the database/model setup before a case
+        # starts. Large imports must not open every batch's resources at once.
+        async with batch_slots:
+            result = await run_batch(suite, update, semaphore)
         # Replacing a snapshot also handles evaluators which publish a final
         # callback; it never adds that batch a second time.
         await update(result["id"], result["summary"], result["summary"]["executed"])

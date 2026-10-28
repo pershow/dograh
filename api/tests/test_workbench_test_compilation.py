@@ -482,6 +482,31 @@ def test_provisional_comparison_keeps_unknowns_and_rejects_lost_coverage():
     assert not provisional_progress(baseline, candidate)
 
 
+def test_provisional_comparison_allows_newly_exercised_passes_but_not_new_failures():
+    case, report, evidence = assessment()
+    review = contract_review.finalize(
+        report, report, case["compiled"]["requirements"], evidence, case["compiled"]
+    )
+    review["checks"].extend(
+        [
+            {"criterion_id": "later_branch", "status": "not_applicable"},
+            {"criterion_id": "unknown", "status": "uncovered"},
+        ]
+    )
+    baseline = {
+        "results": [{"name": "case", "suite_id": "s", "reference_review": review}]
+    }
+    proposed = deepcopy(baseline)
+    checks = proposed["results"][0]["reference_review"]["checks"]
+    checks[0]["status"] = "passed"
+    checks[1]["status"] = "passed"
+    assert provisional_progress(baseline, proposed)
+    assert checks[2]["status"] == "uncovered"
+    for status in ["failed", "uncovered", "test_error", "needs_input"]:
+        checks[1]["status"] = status
+        assert not provisional_progress(baseline, proposed)
+
+
 def test_tuning_index_counts_full_corpus_but_keeps_transcripts_in_paged_evidence():
     from api.services.agent_workbench.tuning import repair_index
 
@@ -864,3 +889,156 @@ async def test_compiled_response_binds_actual_reply_without_model_copy_and_check
     )
     assert checked["verdict"] == "misaligned"
     assert driver.state == {"enabled": "no"}
+
+
+async def test_spoken_goodbye_is_delivered_instead_of_silently_discarded():
+    from api.services.agent_workbench.errors import InvalidDecision
+
+    driver = driver_for(fixture())
+    await driver.prepare()
+    proposal = {
+        "action": "end",
+        "text": "谢谢，再见",
+        "reason": "礼貌结束",
+        "goal_ids": [],
+        "fact_ids": [],
+        "simulated_action": "",
+        "action_ids": [],
+        "goal_updates": [],
+    }
+
+    async def decide(name, rules, schema, evidence, validate=None):
+        if name == "respond_as_customer":
+            with pytest.raises(WorkbenchError, match="交给 Agent 应答") as caught:
+                validate(deepcopy(proposal))
+            raise InvalidDecision(str(caught.value))
+        if name == "repair_customer_reply":
+            assert "reply" in evidence["validation_feedback"]["reason"]
+            result = {**proposal, "action": "reply"}
+        else:
+            result = {
+                "verdict": "aligned",
+                "reason": "仅礼貌告别，无新的事实或操作",
+                "actual_quote": "费用已说明",
+                "proposed_quote": "谢谢，再见",
+                "state_claims": [],
+                "omitted_transition_ids": [],
+            }
+        if validate:
+            validate(result)
+        return result
+
+    driver.decide = decide
+    assert (
+        await driver.next([{"role": "assistant", "text": "费用已说明"}], 0)
+        == "谢谢，再见"
+    )
+    assert driver.checks[-1]["delivered"] is True
+    assert driver.stop_reason is None
+    assert driver.state == {"enabled": "no"}
+
+
+async def test_grounded_silent_disconnect_remains_supported_without_completion():
+    driver = driver_for(fixture())
+    await driver.prepare()
+
+    async def decide(name, rules, schema, evidence, validate=None):
+        result = (
+            {
+                "action": "end",
+                "text": "",
+                "reason": "明确的客户离线条件已成立",
+                "goal_ids": [],
+                "fact_ids": [],
+                "simulated_action": "",
+                "action_ids": [],
+                "goal_updates": [],
+            }
+            if name == "respond_as_customer"
+            else {
+                "verdict": "aligned",
+                "reason": "客户确实断开，未伪造业务完成",
+                "actual_quote": "您好",
+                "proposed_quote": "",
+                "state_claims": [],
+                "omitted_transition_ids": [],
+            }
+        )
+        if validate:
+            validate(result)
+        return result
+
+    driver.decide = decide
+    assert await driver.next([{"role": "assistant", "text": "您好"}], 0) is None
+    assert driver.stop_reason == "customer_ended"
+    assert driver.state == {"enabled": "no"}
+    assert driver.receipt()["pending_goals"] == ["cost"]
+
+
+@pytest.mark.parametrize(
+    "version,stop,valid,expected",
+    [
+        (7, "agent_completed", "valid", True),
+        (7, "customer_ended", "valid", False),
+        (7, "agent_completed", "invalid", False),
+        (7, "turn_limit", "valid", False),
+        (6, "agent_completed", "valid", False),
+    ],
+)
+async def test_closing_upgrade_rejudges_only_unaffected_completed_dialogue(
+    monkeypatch, version, stop, valid, expected
+):
+    from api.services.agent_workbench import test_tasks
+
+    case = fixture()
+    result = {
+        "name": case["name"],
+        "status": "failed",
+        "run_id": 51,
+        "transcript": [{"role": "assistant", "text": "再见"}],
+        "validity": {"status": valid, "stop_reason": stop},
+        "reference_review": {"checks": [{"status": "failed"}]},
+    }
+    original = deepcopy(result)
+    records = {
+        ("jobs", "prior"): {
+            "id": "prior",
+            "input": {"text": "same request"},
+            "output": {
+                "test_target_fingerprint": "candidate-hash",
+                "evaluation_model_configuration_fingerprint": "same-model",
+                "evaluation_ids": ["e"],
+            },
+        },
+        ("evaluations", "e"): {
+            "id": "e",
+            "job_id": "prior",
+            "candidate_id": "c",
+            "suite_id": "s",
+            "summary": {"evaluation_version": version},
+            "results": [result],
+        },
+        ("suites", "s"): {"payload": {"cases": [case]}},
+    }
+
+    async def get(org, sid, table, key):
+        assert (org, sid) == (1, "session")
+        return records[table, key]
+
+    monkeypatch.setattr(test_tasks.db_client, "wb_get", get)
+    reused = await test_tasks.reusable_test_results(
+        1,
+        "session",
+        "prior",
+        {"id": "c", "fingerprint": "candidate-hash"},
+        [case],
+        "same request",
+        "same-model",
+    )
+    assert bool(reused) is expected
+    if expected:
+        assert reused[case["name"]]["run_id"] == 51
+        assert reused[case["name"]]["transcript"] == result["transcript"]
+        assert reused[case["name"]]["review_pending"] is True
+        assert reused[case["name"]]["original_evaluation_id"] == "e"
+    assert result == original

@@ -982,3 +982,23 @@ async def test_result_pages_cover_whole_task_and_compact_context_keeps_evidence(
             await method(*args)
     with pytest.raises(WorkbenchError):
         await db_session.wb_test_result_page(org, sid, job["id"], offset=-1)
+
+
+async def test_evaluation_session_metadata_skips_archives_but_keeps_tenant_checks(
+    db_session, wb, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    org, _, sid = wb
+    full = await db_session.wb_context(org, sid)
+    # Even target/archive assembly must not be required by per-batch metadata reads.
+    monkeypatch.setattr(
+        db_session,
+        "_wb_target",
+        AsyncMock(side_effect=AssertionError("archive context fetched")),
+    )
+    minimal = await db_session.wb_context(org, sid, session_only=True)
+    assert minimal == {"session": full["session"]}
+    with pytest.raises(WorkbenchError) as error:
+        await db_session.wb_context(org + 999, sid, session_only=True)
+    assert error.value.status_code == 404

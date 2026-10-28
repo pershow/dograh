@@ -38,7 +38,7 @@ def resolve_node_references(case, graph):
     return references
 
 
-EVALUATION_VERSION = 7
+EVALUATION_VERSION = 8
 
 
 def tuning_evidence(evaluation):
@@ -230,7 +230,7 @@ async def evaluate(
     candidate = await db_client.wb_get(org, session_id, "candidates", candidate_id)
     suite_row = await db_client.wb_get(org, session_id, "suites", suite_id)
     suite = SimulationSuite.model_validate(suite_row["payload"])
-    context = await db_client.wb_context(org, session_id)
+    context = await db_client.wb_context(org, session_id, session_only=True)
     evaluation = await db_client.wb_evaluation(
         org, session_id, job["id"], job["lease_token"], candidate_id, suite_id
     )

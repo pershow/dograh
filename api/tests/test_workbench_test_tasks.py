@@ -773,3 +773,41 @@ async def test_fresh_rerun_pins_sources_and_models_but_never_resumes_results(
             continue_test_job_id="a",
             rerun_test_job_id="b",
         )
+
+
+async def test_batch_preflight_is_bounded_before_any_case_slot_is_taken():
+    active = peak = 0
+    completed = []
+
+    async def save(payload):
+        return {"id": str(payload)}
+
+    async def run(suite, callback, semaphore):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            # Models and database connections are acquired before run_case.
+            # A case-only semaphore cannot protect this preflight operation.
+            await asyncio.sleep(0.001)
+            assert active <= 3
+            async with semaphore:
+                completed.append(suite["id"])
+            return {"id": "e" + suite["id"], "summary": {"passed": 1, "executed": 1}}
+        finally:
+            active -= 1
+
+    initial = {
+        "total": 47,
+        "passed": 0,
+        "failed": 0,
+        "error": 0,
+        "inconclusive": 0,
+        "executed": 0,
+    }
+    suites, evaluations, counts = await tasks.execute_batches(
+        list(range(47)), save, run, AsyncMock(), initial, 3
+    )
+    assert peak == 3
+    assert len(set(completed)) == len(suites) == len(evaluations) == 47
+    assert counts == {**initial, "passed": 47, "executed": 47}

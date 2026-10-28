@@ -581,3 +581,68 @@ async def test_missing_source_rows_remain_in_rerun_and_resume_coverage(
     )
     retained[0]["reason"] = "changed"
     assert issue["reason"] == "Customer column is empty"
+
+
+async def test_full_scope_tuning_bounds_preflight_without_dropping_batches(monkeypatch):
+    active = peak = 0
+    suites = [
+        {"id": f"s{i}", "payload": {"cases": [{"name": f"case{i}"}]}} for i in range(47)
+    ]
+    monkeypatch.setenv("WORKBENCH_EVALUATION_CONCURRENCY", "3")
+
+    async def evaluate(_org, _sid, _job, _candidate, suite_id, _config, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.001)
+            assert active <= 3
+            return {
+                "id": "e" + suite_id,
+                "suite_id": suite_id,
+                "results": [{"name": "case" + suite_id[1:], "status": "passed"}],
+            }
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(tuning, "evaluate", evaluate)
+    outcome = await tuning.evaluate_scope(
+        1, "s", {}, "c", suites, SimpleNamespace(effective="runtime")
+    )
+    assert peak == 3
+    assert len(outcome["results"]) == len(outcome["evaluation_ids"]) == 47
+    assert outcome["summary"] == {
+        "passed": 47,
+        "failed": 0,
+        "error": 0,
+        "inconclusive": 0,
+        "total": 47,
+    }
+
+
+def test_parallel_failure_diagnostics_retain_nested_causes_without_credentials():
+    from api.services.agent_workbench.transport_diagnostics import exception_details
+
+    error = ExceptionGroup(
+        "batch setup failed",
+        [
+            ExceptionGroup(
+                "database", [TimeoutError("pool exhausted; token=private-value")]
+            ),
+            ValueError("Authorization: Bearer private-token"),
+        ],
+    )
+    details = exception_details(error)
+    assert any(
+        d["type"] == "TimeoutError" and "pool exhausted" in d["message"]
+        for d in details
+    )
+    assert "private-value" not in str(details) and "private-token" not in str(details)
+    assert (
+        len(
+            exception_details(
+                ExceptionGroup("many", [ValueError(str(i)) for i in range(20)])
+            )
+        )
+        <= 6
+    )

@@ -144,6 +144,7 @@ async def evaluate_scope(
     """Evaluate every frozen batch with one task-wide concurrency limit."""
     cache = decision_cache or DecisionCache()
     semaphore = asyncio.Semaphore(WorkbenchSettings.load().evaluation_concurrency)
+    batch_slots = asyncio.Semaphore(WorkbenchSettings.load().evaluation_concurrency)
     prior = {}
     if source and source.get("output", {}).get("candidate_id") == candidate_id:
         for eid in source["output"].get("evaluation_ids", []):
@@ -166,18 +167,19 @@ async def evaluate_scope(
             and [c["name"] for c in old["results"]] == names
         ):
             return old
-        return await evaluate(
-            org,
-            sid,
-            job,
-            candidate_id,
-            suite["id"],
-            runtime.effective,
-            case_semaphore=semaphore,
-            decision_cache=cache,
-            frozen_contexts=frozen_contexts,
-            frozen_scenarios=frozen_scenarios,
-        )
+        async with batch_slots:
+            return await evaluate(
+                org,
+                sid,
+                job,
+                candidate_id,
+                suite["id"],
+                runtime.effective,
+                case_semaphore=semaphore,
+                decision_cache=cache,
+                frozen_contexts=frozen_contexts,
+                frozen_scenarios=frozen_scenarios,
+            )
 
     # A lost lease or batch failure must stop siblings, not leave simulations
     # running after the parent task has already failed.
@@ -313,7 +315,12 @@ def provisional_progress(baseline, proposed):
             return False
         for key, check in prior.items():
             status, result = check["status"], later[key]["status"]
-            if status in {"passed", "not_applicable"} and result != status:
+            if status == "passed" and result != "passed":
+                return False
+            if status == "not_applicable" and result not in {
+                "not_applicable",
+                "passed",
+            }:
                 return False
             if status == "failed" and result not in {"passed", "failed"}:
                 return False

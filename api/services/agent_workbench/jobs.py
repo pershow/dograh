@@ -1464,6 +1464,9 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
     except LeaseLost:
         pass
     except Exception as error:  # noqa: BLE001 - boundary converts failures to bounded task status
+        from api.services.agent_workbench.transport_diagnostics import exception_details
+
+        details = exception_details(error)
         message = (
             str(error)[:3000]
             if isinstance(error, WorkbenchError)
@@ -1471,6 +1474,13 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
             if isinstance(error, ValidationError)
             else json.dumps(error.detail, ensure_ascii=False)[:3000]
             if isinstance(error, HTTPException)
+            else "并行任务执行失败："
+            + "；".join(
+                f"{d['type']}: {d['message']}"
+                for d in details
+                if d["type"] not in {"ExceptionGroup", "BaseExceptionGroup"}
+            )[:2400]
+            if isinstance(error, BaseExceptionGroup)
             else "Task failed; check the worker diagnostics and model connection"
         )
         import traceback
@@ -1478,11 +1488,12 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
         from loguru import logger
 
         logger.error(
-            "Workbench job {} failed: {} at {}{}",
+            "Workbench job {} failed: {} at {}{}; causes={}",
             job_id,
             type(error).__name__,
             [(f.name, f.lineno) for f in traceback.extract_tb(error.__traceback__)],
             "; " + message if isinstance(error, ValidationError) else "",
+            details,
         )
         with contextlib.suppress(LeaseLost):
             await db_client.wb_finish(
