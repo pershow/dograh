@@ -23,6 +23,7 @@ from api.services.agent_workbench.codex_client import CodexClient
 from api.services.agent_workbench.dependencies import prepare_models
 from api.services.agent_workbench.errors import (
     InvalidDecision,
+    RecoverableValidationError,
     WorkbenchError,
     validation_error_message,
 )
@@ -97,17 +98,19 @@ class StructuredDecision:
             if self.recovery and name == self.repair_tool:
                 arguments = self.recovery.repair(arguments)
             else:
-                jsonschema.validate(arguments, self.schema)
+                if not getattr(self.recovery, "validates_schema", False):
+                    jsonschema.validate(arguments, self.schema)
                 if self.validate:
                     self.validate(arguments)
         except (jsonschema.ValidationError, ValidationError, WorkbenchError) as error:
-            from api.services.agent_workbench.citations import CitationErrors
+            if self.recovery and getattr(self.recovery, "save", None):
+                await self.recovery.save()
 
             # Only a strict reduction of rejected, locked positions is progress.
             # Unrelated decisions retain the existing three-failure bound.
             self.invalid_attempts = (
                 0
-                if isinstance(error, CitationErrors) and error.progressed
+                if isinstance(error, RecoverableValidationError) and error.progressed
                 else self.invalid_attempts + 1
             )
             self.last_validation_error = (
@@ -1074,7 +1077,10 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             org, sid, job["input"]["resume_test_job_id"], cases
         )
     from api.services.agent_workbench.config import WorkbenchSettings
-    from api.services.agent_workbench.test_compilation import compile_cases
+    from api.services.agent_workbench.test_compilation import (
+        compile_cases,
+        preparation_summary,
+    )
 
     async def compile_decision(name, rules, schema, evidence, **kwargs):
         return await decision(
@@ -1089,11 +1095,12 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             **kwargs,
         )
 
-    preparation_receipts = []
+    preparation_receipts = {}
+    preparation_cases = {case["name"]: deepcopy(case) for case in cases}
 
-    async def prepared(done, total, case):
-        # Persist each accepted fixture before starting the next one. A worker
-        # interruption must not discard completed compilation work.
+    async def save_preparation(case):
+        # Each stage is an immutable checkpoint. The job receipt points at the
+        # newest checkpoint for each source row, never a duplicate row count.
         receipt = await db_client.wb_save_suite(
             org,
             sid,
@@ -1105,20 +1112,26 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             job_id=job["id"],
             token=job["lease_token"],
         )
-        preparation_receipts.append(
-            {
-                "name": case["name"],
-                "suite_id": receipt["id"],
-                "status": case["compiled"]["status"],
-            }
-        )
+        preparation_receipts[case["name"]] = {
+            "name": case["name"],
+            "suite_id": receipt["id"],
+            "status": case["compiled"]["status"],
+        }
+        preparation_cases[case["name"]] = deepcopy(case)
+        summary = preparation_summary(list(preparation_cases.values()))
         await progress(
             "preparing_tests",
-            f"已准备 {done}/{total} 条场景与业务断言。",
-            preparation_receipts=preparation_receipts,
+            f"已处理 {summary['processed']}/{summary['total']} 条：可执行 {summary['ready']} 条，"
+            f"资料待确认 {summary['needs_input']} 条，准备异常 {summary['preparation_error']} 条，"
+            f"准备中 {summary['preparing']} 条，待处理 {summary['pending']} 条。Agent 对话尚未执行。",
+            preparation_receipts=list(preparation_receipts.values()),
+            compilation=summary,
             candidate_id=candidate["id"],
             test_mode=mode,
         )
+
+    async def prepared(_done, _total, case):
+        await save_preparation(case)
 
     cases, compilation = await compile_cases(
         cases,
@@ -1127,6 +1140,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         compile_decision,
         concurrency=WorkbenchSettings.load().evaluation_concurrency,
         progress=prepared,
+        checkpoint=save_preparation,
         retry_preparation=bool(job["input"].get("prepare_only")),
     )
     batches = pack_suites(

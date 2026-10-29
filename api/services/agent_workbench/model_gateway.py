@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 from aiohttp import web
 
-from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.model_transport import (
     finish_response,
     model_http_client,
@@ -737,19 +737,28 @@ class ModelGateway:
 
         async def notify():
             if self.on_event:
-                await self.on_event(
-                    "model.progress",
-                    {
-                        **progress,
-                        "elapsed_seconds": round(time.monotonic() - started),
-                        "request": self.request_count,
-                        "request_id": result["id"],
-                    },
-                )
+                try:
+                    await self.on_event(
+                        "model.progress",
+                        {
+                            **progress,
+                            "elapsed_seconds": round(time.monotonic() - started),
+                            "request": self.request_count,
+                            "request_id": result["id"],
+                        },
+                    )
+                except LeaseLost:
+                    if request_task is not asyncio.current_task():
+                        request_task.cancel()
+                    raise asyncio.CancelledError from None
+
+        request_task = asyncio.current_task()
 
         async def heartbeat():
             while True:
                 await asyncio.sleep(self.progress_interval)
+                # Losing permission to publish cancels the request, including
+                # its upstream read. It must not become a provider failure.
                 await notify()
                 if stream:
                     async with lock:
@@ -880,6 +889,8 @@ class ModelGateway:
                 # Save the completion receipt before the client closes a finished
                 # stream, otherwise the UI can retain a stale waiting status.
                 await write({"type": "response.completed", "response": result})
+        except LeaseLost:
+            raise asyncio.CancelledError from None
         except (WorkbenchError, KeyError, ValueError, TimeoutError) as error:
             if isinstance(error, TimeoutError):
                 message = f"Model request exceeded {self.request_timeout:g}s total time budget."

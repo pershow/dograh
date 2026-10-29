@@ -13,6 +13,10 @@ class InvalidDecision(WorkbenchError):
     """A read-only model result failed validation, not a transport failure."""
 
 
+class RecoverableValidationError(WorkbenchError):
+    """A validated repair protocol supplies structured errors and progress evidence."""
+
+
 def transient_model_error(error):
     """Only transport failures may restart a pure structured decision."""
     return not isinstance(error, (InvalidDecision, LeaseLost)) and any(

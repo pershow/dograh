@@ -201,12 +201,10 @@ Provide actions for ordinary operations supported by the source, not just its la
 successful operation. Describe conditional simulated UI results explicitly as test
 assumptions, not facts about real systems. Do not give the customer hidden SOP rules
 or instructions about how the Agent must behave. Never prescribe Agent replies.
-Cover EVERY customer turn (zero-based source index) in source_coverage, once each.
-Every material concern/fact/action must map to scenario IDs; fillers can map to none.
-Use disjoint identifier prefixes: f_ for facts, g_ for goals, a_ for actions.
-For each quote copy ONE short contiguous CUSTOMER substring. Do not concatenate
-separate turns, insert ellipses, change punctuation, or quote assistant suggestions.
-The description may summarize a concern; its evidence quote must remain literal.
+Cover EVERY customer turn in source_coverage, once each, using the supplied schema.
+Every material concern/fact/action must map to scenario items; fillers can map to none.
+Source references must identify actual customer evidence, never assistant suggestions.
+The description may summarize a concern; its evidence must remain literal.
 Preserve the source's objections and conditional willingness. Do not make the customer
 more cooperative to obtain a passing test. Unresolvable input remains visible.
 """
@@ -223,47 +221,22 @@ def validate_rubric(value, records):
 
 
 def validate_plan(value, turns):
-    jsonschema.validate(value, PLAN)
-    customer = "\n".join(t["text"] for t in turns if t["role"] == "user")
-    ids = [x["id"] for k in ("facts", "goals", "actions") for x in value[k]]
-    if len(ids) != len(set(ids)) or any(not x.strip() for x in ids):
-        duplicates = sorted({x for x in ids if ids.count(x) > 1})
-        raise WorkbenchError(
-            f"场景标识重复或为空：{duplicates}。facts/goals/actions 全局唯一，分别使用 f_/g_/a_ 前缀，并更新 source_coverage 引用。"
-        )
-    for fi, fact in enumerate(value["facts"]):
-        if fact["provenance"] == "customer_quote":
-            quote = original_quote(fact["quote"], customer)
-            if not fact["quote"].strip() or quote is None:
-                raise WorkbenchError(
-                    f"facts[{fi}] ({fact['id']}).quote 未匹配客户原话；复制一个短的连续原文片段，推断必须标为测试假设。"
+    from api.services.agent_workbench.fixtures import FixtureErrors, plan_issues
+
+    errors = plan_issues(value, turns, PLAN)
+    if errors:
+        raise FixtureErrors(errors)
+    # Preserve historical whitespace recovery, but only within one customer turn
+    # and only after all checks pass. Never stitch separate utterances together.
+    originals = [t["text"] for t in turns if t["role"] == "user"]
+    for group in ("facts", "goals"):
+        for item in value[group]:
+            if group == "goals" or item["provenance"] == "customer_quote":
+                item["quote"] = next(
+                    q
+                    for text in originals
+                    if (q := original_quote(item["quote"], text)) is not None
                 )
-            fact["quote"] = quote
-        elif not fact["reason"].strip():
-            raise WorkbenchError("测试假设必须说明依据。")
-    for gi, goal in enumerate(value["goals"]):
-        quote = original_quote(goal["quote"], customer)
-        if not goal["quote"].strip() or quote is None:
-            raise WorkbenchError(
-                f"goals[{gi}] ({goal['id']}).quote 未匹配客户原话；复制一个短的连续客户原句，不要拼接多轮、加省略号或引用坐席。保留诉求，只修正引用。"
-            )
-        goal["quote"] = quote
-    expected = [i for i, t in enumerate(turns) if t["role"] == "user"]
-    if sorted(x["turn"] for x in value["source_coverage"]) != expected:
-        raise WorkbenchError("转换映射必须覆盖每条客户原话且不能重复。")
-    for row in value["source_coverage"]:
-        if not set(row["scenario_ids"]) <= set(ids):
-            raise WorkbenchError("原文映射引用了不存在的场景项目。")
-        if row["disposition"] in {"fact", "goal", "action"} and not row["scenario_ids"]:
-            raise WorkbenchError("实质客户信息不能丢失，必须映射到场景项目。")
-    keys = [s["key"] for s in value["initial_state"]]
-    if len(keys) != len(set(keys)):
-        raise WorkbenchError("模拟状态标识重复。")
-    for action in value["actions"]:
-        for part in ("preconditions", "effects"):
-            names = [s["key"] for s in action[part]]
-            if len(names) != len(set(names)) or not set(names) <= set(keys):
-                raise WorkbenchError("操作条件和结果必须引用已声明的唯一状态。")
 
 
 def verified_plan(draft, verification, turns):
@@ -316,6 +289,17 @@ def validate_compiled(case, *, records=None):
         {k: v for k, v in compiled.items() if k != "fingerprint"}
     ):
         raise WorkbenchError("冻结的测试准备结果校验失败。")
+    checkpoint = compiled.get("preparation_checkpoint")
+    if checkpoint and (
+        checkpoint.get("version") != 1
+        or checkpoint.get("stage") not in {"generation", "verification"}
+        or compiled["status"] not in {"preparing", "preparation_error"}
+        or (checkpoint["stage"] == "verification" and compiled.get("scenario") is None)
+        or (
+            checkpoint["stage"] == "generation" and compiled.get("scenario") is not None
+        )
+    ):
+        raise WorkbenchError("测试准备断点阶段无效，不能作为可执行结果。")
     if compiled.get("scenario") is not None:
         validate_plan(deepcopy(compiled["scenario"]), case["reference_turns"])
     elif compiled["status"] == "ready":
@@ -458,7 +442,15 @@ async def compile_rubric(basis, decide):
 
 
 async def compile_cases(
-    cases, candidate, basis, decide, *, concurrency, progress, retry_preparation=False
+    cases,
+    candidate,
+    basis,
+    decide,
+    *,
+    concurrency,
+    progress,
+    retry_preparation=False,
+    checkpoint=None,
 ):
     """Return all rows in original order. Failed preparation is a visible receipt."""
     cases = deepcopy(cases)
@@ -483,6 +475,7 @@ async def compile_cases(
         c
         for c in selected
         if not c.get("compiled")
+        or c["compiled"]["status"] in {"preparing", "preparation_error"}
         or (
             retry_preparation
             and (c["compiled"]["status"] != "ready" or c["compiled"]["version"] < 2)
@@ -533,8 +526,17 @@ async def compile_cases(
     done = len(selected) - len(pending)
 
     async def one(case):
+        from api.services.agent_workbench.fixtures import (
+            GUIDANCE as FIXTURE_GUIDANCE,
+        )
+        from api.services.agent_workbench.fixtures import (
+            FixtureCodec,
+            FixtureSubmission,
+        )
+
         nonlocal done
         prior = case.get("compiled") or frozen or {}
+        saved = case.get("compiled") or {}
         public = {
             **candidate["snapshot"].get("template_context_variables", {}),
             **case["initial_context"],
@@ -542,7 +544,7 @@ async def compile_cases(
         compiled = {
             "version": 2,
             "environment": environment,
-            "supersedes": (case.get("compiled") or {}).get("fingerprint"),
+            "supersedes": saved.get("fingerprint"),
             "business_sources_fingerprint": prior.get(
                 "business_sources_fingerprint", business_fingerprint
             ),
@@ -551,23 +553,85 @@ async def compile_cases(
             "sources": prior.get("sources") or sources,
             "rubric_questions": prior.get("rubric_questions", questions),
             "public_context": deepcopy(case["initial_context"]),
-            "scenario": deepcopy((case.get("compiled") or {}).get("scenario")),
-            "status": "needs_input",
+            "scenario": deepcopy(saved.get("scenario")),
+            "status": "preparing",
             "error": None,
         }
+        codec = FixtureCodec(case["reference_turns"])
+        scope = fingerprint(
+            {
+                "source": case_fingerprint(case),
+                "public": public,
+                "environment": environment["fingerprint"],
+            }
+        )
+        saved_checkpoint = deepcopy(saved.get("preparation_checkpoint") or {})
+        if saved_checkpoint and saved_checkpoint.get("scope") != scope:
+            raise WorkbenchError("场景准备上下文已变化，不能复用旧修复断点。")
+
+        async def persist(stage, recovery=None):
+            compiled["preparation_checkpoint"] = {
+                "version": 1,
+                "stage": stage,
+                "scope": scope,
+                "draft": deepcopy(recovery.draft)
+                if recovery
+                else (
+                    deepcopy(saved_checkpoint.get("draft"))
+                    if saved_checkpoint.get("stage") == stage
+                    else None
+                ),
+            }
+            compiled["fingerprint"] = fingerprint(
+                {k: v for k, v in compiled.items() if k != "fingerprint"}
+            )
+            case["compiled"] = deepcopy(compiled)
+            if checkpoint:
+                async with lock:
+                    await checkpoint(case)
+
+        async def decide_fixture(name, evidence, draft=None, original=None):
+            stage = "verification" if draft is not None else "generation"
+            recovery = FixtureSubmission(
+                codec,
+                draft=draft,
+                original=original,
+                checkpoint=saved_checkpoint.get("draft")
+                if saved_checkpoint.get("stage") == stage
+                else None,
+            )
+
+            async def save():
+                await persist(stage, recovery)
+
+            recovery.save = save
+            value = await decide(
+                name,
+                PLAN_RULES
+                + FIXTURE_GUIDANCE
+                + (
+                    "\nIndependently verify every source concern, initial fact, state transition and assumption. "
+                    "Return typed corrections only for fields that need changes; use null for unchanged fields. "
+                    "Never soften refusal, invent permission, or edit source material, business assertions or Agent."
+                    if draft is not None
+                    else ""
+                ),
+                recovery.schema,
+                {**evidence, **({"draft": draft} if draft is not None else {})},
+                validate=recovery,
+                recovery=recovery,
+            )
+            return value
+
         async with semaphore:
             try:
-
-                def validate(value):
-                    validate_plan(value, case["reference_turns"])
-
                 evidence = {
                     "preparation_scope": {
                         "unit": "one_source_conversation",
                         "case_name": case["name"],
                         "remaining_rows_owner": "orchestrator",
                     },
-                    "source_conversation": case["reference_turns"],
+                    **codec.evidence,
                     "public_test_context": public,
                     "test_environment": [
                         {k: v for k, v in c.items() if k != "citations"}
@@ -582,29 +646,23 @@ async def compile_cases(
                         "",
                     ),
                 }
-                plan = deepcopy((case.get("compiled") or {}).get("scenario"))
+                plan = deepcopy(saved.get("scenario"))
+                await persist("verification" if plan is not None else "generation")
                 if plan is None:
-                    plan = await decide(
-                        "compile_customer_fixture",
-                        PLAN_RULES,
-                        PLAN,
-                        evidence,
-                        validate=validate,
-                    )
-                verification = await decide(
-                    "verify_customer_fixture",
-                    PLAN_RULES
-                    + "\nAudit independently: each material customer concern must survive, state transitions cannot leak future outcomes, and ordinary questions must be answerable. Do not soften refusal or invent permission. If correct, return supported with no patches. Otherwise return structural replacements ONLY for fields needing correction: path is an array of keys/zero-based array indices, value replaces the existing field. To add/remove array items replace that array. Never edit source material, business assertions or Agent. Do not repeat unchanged fields. A real missing prerequisite must be recorded in missing_information.",
-                    PLAN_VERIFICATION,
-                    {**evidence, "draft": plan, "target_schema": PLAN},
-                    validate=lambda value: verified_plan(
-                        plan, value, case["reference_turns"]
-                    ),
+                    plan = await decide_fixture("compile_customer_fixture", evidence)
+                    validate_plan(plan, case["reference_turns"])
+                    compiled["scenario"] = deepcopy(plan)
+                    # Save accepted generation before the independent review starts.
+                    await persist("verification")
+                verification = await decide_fixture(
+                    "verify_customer_fixture", evidence, codec.encode(plan), plan
                 )
-                plan = verified_plan(plan, verification, case["reference_turns"])
-                validate(plan)
+                plan = verification["scenario"]
+                validate_plan(plan, case["reference_turns"])
                 compiled["scenario"] = plan
-                compiled["scenario_verification"] = verification
+                compiled["scenario_verification"] = {
+                    k: v for k, v in verification.items() if k != "scenario"
+                }
                 compiled["status"] = (
                     "ready"
                     if compiled["requirements"]
@@ -613,11 +671,14 @@ async def compile_cases(
                     )
                     else "needs_input"
                 )
+                compiled.pop("preparation_checkpoint", None)
             except LeaseLost:
                 raise
             except WorkbenchError as error:
                 compiled["status"], compiled["error"] = "preparation_error", str(error)
-        compiled["fingerprint"] = fingerprint(compiled)
+        compiled["fingerprint"] = fingerprint(
+            {k: v for k, v in compiled.items() if k != "fingerprint"}
+        )
         case["compiled"] = compiled
         async with lock:
             done += 1
@@ -626,29 +687,37 @@ async def compile_cases(
     async with asyncio.TaskGroup() as group:
         for case in pending:
             group.create_task(one(case))
+    return cases, preparation_summary(selected)
+
+
+def preparation_summary(cases):
+    selected = [c for c in cases if c["mode"] == "dynamic"]
     counts = {
-        s: sum(c["compiled"]["status"] == s for c in selected)
-        for s in ("ready", "needs_input", "preparation_error")
+        s: sum(
+            (c.get("compiled") or {}).get("status", "pending") == s for c in selected
+        )
+        for s in ("ready", "needs_input", "preparation_error", "preparing", "pending")
     }
-    return cases, {
+    return {
         "version": 1,
         "total": len(selected),
         **counts,
+        "processed": counts["ready"]
+        + counts["needs_input"]
+        + counts["preparation_error"],
         "rows": [
             {
                 "name": c["name"],
-                "source": c["source"],
-                "status": c["compiled"]["status"],
-                "fingerprint": c["compiled"]["fingerprint"],
-                "requirement_count": len(c["compiled"]["requirements"]),
-                "questions": c["compiled"]["rubric_questions"]
+                "source": c.get("source") or {},
+                "status": (z := c.get("compiled") or {}).get("status", "pending"),
+                "fingerprint": z.get("fingerprint"),
+                "requirement_count": len(z.get("requirements", [])),
+                "questions": z.get("rubric_questions", [])
                 + [
                     x["question"]
-                    for x in (c["compiled"]["scenario"] or {}).get(
-                        "missing_information", []
-                    )
+                    for x in (z.get("scenario") or {}).get("missing_information", [])
                 ],
-                "error": c["compiled"]["error"],
+                "error": z.get("error"),
             }
             for c in selected
         ],

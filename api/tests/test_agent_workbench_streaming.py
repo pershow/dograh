@@ -595,3 +595,55 @@ async def test_native_responses_rejects_unapproved_tools_and_incomplete_final_re
         assert events(response)[-1]["type"] == "response.failed"
         if not bad_tool:
             assert gw.tokens == 42
+
+
+@pytest.mark.parametrize("when", ["waiting", "heartbeat", "completed"])
+async def test_cancelled_lease_closes_upstream_without_reporting_provider_failure(
+    when, caplog
+):
+    from api.services.agent_workbench.errors import LeaseLost
+
+    observed = []
+    waiting = 0
+
+    async def progress(kind, payload):
+        nonlocal waiting
+        if kind == "model.progress" and payload["phase"] == "waiting":
+            waiting += 1
+        if kind == "model.progress" and (
+            payload["phase"] == when or (when == "heartbeat" and waiting > 1)
+        ):
+            raise LeaseLost()
+        observed.append((kind, payload))
+
+    async def chunks():
+        if when == "completed":
+            yield frame(
+                {"choices": [{"delta": {"content": "Done"}, "finish_reason": "stop"}]}
+            )
+            yield b"data: [DONE]\n\n"
+        else:
+            await asyncio.Event().wait()
+            yield b"never"
+
+    stream = Bytes(chunks)
+    async with gateway(on_event=progress, progress_interval=0.01, idle_timeout=2) as gw:
+        await mock_client(
+            gw,
+            lambda _: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=stream
+            ),
+        )
+        async with httpx.AsyncClient(timeout=2) as client:
+            with pytest.raises(httpx.RemoteProtocolError):
+                await client.post(**request(gw))
+        if when != "waiting":
+            await asyncio.wait_for(stream.closed.wait(), 1)
+        assert gw.last_error is None
+        assert not any(
+            kind == "model.error" or p.get("phase") == "failed" for kind, p in observed
+        )
+    assert not any(
+        "Error handling request" in r.message or "LeaseLost" in r.message
+        for r in caplog.records
+    )

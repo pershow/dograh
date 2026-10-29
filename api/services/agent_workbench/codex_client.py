@@ -353,9 +353,9 @@ class CodexClient:
                 )
                 else "Tool failed internally; retry once or report the failure."
             )
-            from api.services.agent_workbench.citations import CitationErrors
+            from api.services.agent_workbench.errors import RecoverableValidationError
 
-            citation_error = isinstance(error, CitationErrors)
+            citation_error = isinstance(error, RecoverableValidationError)
             await self.on_event(
                 "tool.failed",
                 {

@@ -15,7 +15,9 @@ async def restore_prepared_cases(org, session_id, source_job_id, cases):
     while source_job_id and source_job_id not in visited:
         visited.add(source_job_id)
         previous = await db_client.wb_get(org, session_id, "jobs", source_job_id)
-        for receipt in previous.get("output", {}).get("preparation_receipts", []):
+        for receipt in reversed(
+            previous.get("output", {}).get("preparation_receipts", [])
+        ):
             name = receipt["name"]
             if name not in indexed or name in restored:
                 continue

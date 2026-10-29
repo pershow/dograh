@@ -968,6 +968,7 @@ export function AgentWorkbench({
           </button>
         </div>
       )}
+      {!!active?.output.compilation && <TestPreparation receipt={active.output.compilation as PreparationReceipt} />}
       <div className={styles.body}>
         {tab !== "canvas" && (
           <main
@@ -1317,9 +1318,11 @@ export function AgentWorkbench({
                 && !state.jobs.some(j => j.input.resume_build_job_id === associatedJob?.id);
               const resumableSummary = resumableOutput?.summary as Record<string, number> | undefined;
               const resumableTest = ["task.cancelled", "task.failed", "task.completed"].includes(e.type)
-                && resumableOutput?.intent === "test" && resumableOutput?.outcome !== "review" && Array.isArray(resumableOutput.evaluation_ids)
-                && resumableOutput.evaluation_ids.length > 0
+                && resumableOutput?.intent === "test" && resumableOutput?.outcome !== "review"
+                && ((Array.isArray(resumableOutput.evaluation_ids) && resumableOutput.evaluation_ids.length > 0)
+                  || (Array.isArray(resumableOutput.preparation_receipts) && resumableOutput.preparation_receipts.length > 0))
                 && (e.type !== "task.completed" || !!(resumableSummary?.error || (resumableSummary?.review_pending ?? resumableSummary?.inconclusive)));
+              const preparation = output?.compilation || (["task.failed", "task.cancelled"].includes(e.type) ? resumableOutput?.compilation : undefined);
               const resultEvaluation = state.evaluations.find(v =>
                 v.id === (output?.evaluation_id || output?.id));
               const resultCandidateId = output?.candidate_id || resultEvaluation?.candidate_id;
@@ -1411,7 +1414,7 @@ export function AgentWorkbench({
                       {Array.isArray(output.import_issues) && output.import_issues.length > 0 && <p>有 {output.import_issues.length} 条样本未能执行：{output.import_issues.map((issue: { name?: string; error?: string }) => `${issue.name}：${issue.error}`).join("；")}</p>}
                     </section>
                   )}
-                  {!!output?.compilation && <TestPreparation receipt={output.compilation as PreparationReceipt} />}
+                  {!!preparation && <TestPreparation receipt={preparation as PreparationReceipt} />}
                   {!!output?.criterion_coverage && <CriterionCoverage receipt={output.criterion_coverage as CriterionCoverageReceipt} />}
                   {output?.outcome === "test_preparation" && Array.isArray(output.suite_ids) && <Button variant="outline" size="sm" disabled={locked} onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: "dynamic", prepared_test_job_id: String(e.payload.job_id), text: "执行已准备的完整测试集，保留冻结场景、断言及所有待处理样本，按实际证据逐项评审；不修改 Agent。", idempotency_key: crypto.randomUUID()}}));

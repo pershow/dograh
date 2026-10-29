@@ -7,7 +7,10 @@ from typing import ClassVar
 
 import jsonschema
 
-from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.errors import (
+    RecoverableValidationError,
+    WorkbenchError,
+)
 from api.services.agent_workbench.fingerprint import fingerprint
 from api.services.agent_workbench.review import ReviewSourceReader
 from api.services.agent_workbench.simulation import original_quote
@@ -26,7 +29,7 @@ to bypass an error. Fix all reported positions together when possible.
 """
 
 
-class CitationErrors(WorkbenchError):
+class CitationErrors(RecoverableValidationError):
     def __init__(self, issues, *, draft_id=None, progressed=False):
         self.issues = issues
         self.draft_id = draft_id

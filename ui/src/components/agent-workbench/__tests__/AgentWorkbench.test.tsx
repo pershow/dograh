@@ -593,3 +593,26 @@ it('loads full saved evidence and full suite before editing compact context entr
   expect((await screen.findByLabelText('测试集 JSON') as HTMLTextAreaElement).value).toBe(JSON.stringify(fullSuite.payload, null, 2));
   expect(mocks.adopt).not.toHaveBeenCalled();
 });
+
+it('retains partial preparation counts and continuation after cancellation before any replay', async () => {
+  const compilation = {total: 5, processed: 2, ready: 1, needs_input: 0, preparation_error: 1, preparing: 1, pending: 2,
+    rows: [
+      {name: 'Accepted', source: {}, status: 'ready', requirement_count: 2, questions: []},
+      {name: 'Broken mapping', source: {}, status: 'preparation_error', requirement_count: 2, questions: [], error: 'Invalid source link'},
+      {name: 'Saved draft', source: {}, status: 'preparing', requirement_count: 2, questions: []},
+      {name: 'Waiting row', source: {}, status: 'pending', requirement_count: 0, questions: []},
+    ]};
+  mocks.session.mockResolvedValue(response({...state, jobs: [{id: 'stopped', kind: 'build', status: 'cancelled', input: {}, output: {intent: 'test', preparation_receipts: [{name: 'Saved draft', suite_id: 'checkpoint'}], compilation}}], evaluations: []}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'task.cancelled', payload: {job_id: 'stopped'}, created_at: ''}]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  const region = await screen.findByRole('region', {name: '测试准备结果'});
+  expect(within(region).getByText(/共 5 条 · 可执行 1 · 资料待确认 0 · 准备异常 1 · 准备中 1 · 待处理 2/)).toBeTruthy();
+  expect(within(region).getByText(/Saved draft · 准备中/)).toBeTruthy();
+  expect(within(region).getByText('Invalid source link')).toBeTruthy();
+  expect(mocks.instruct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', {name: '继续未完成或异常测试'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledOnce());
+  expect(mocks.instruct.mock.calls[0][0].body.continue_test_job_id).toBe('stopped');
+  expect(mocks.adopt).not.toHaveBeenCalled();
+  expect(mocks.tune).not.toHaveBeenCalled();
+});

@@ -91,7 +91,8 @@ export type CaseResult = {
 };
 export type PreparationReceipt = {
   total: number; ready: number; needs_input: number; preparation_error: number;
-  rows: {name: string; source: {sheet?: string; row?: number}; status: "ready" | "needs_input" | "preparation_error"; requirement_count: number; questions: string[]; error?: string}[];
+  processed?: number; preparing?: number; pending?: number;
+  rows: {name: string; source: {sheet?: string; row?: number}; status: "ready" | "needs_input" | "preparation_error" | "preparing" | "pending"; requirement_count: number; questions: string[]; error?: string}[];
 };
 export type CriterionCoverageReceipt = {
   case_count: number; criterion_count: number; observed: number;

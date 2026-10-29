@@ -10,6 +10,7 @@ from api.services.agent_workbench import test_compilation as compiler
 from api.services.agent_workbench.errors import WorkbenchError
 from api.services.agent_workbench.evaluation import apply_reference_review
 from api.services.agent_workbench.fingerprint import fingerprint
+from api.services.agent_workbench.fixtures import FixtureCodec
 from api.services.agent_workbench.simulation import ConversationDriver
 from api.services.agent_workbench.tuning import actionable_partial, provisional_progress
 
@@ -577,9 +578,13 @@ async def test_unrelated_authority_question_does_not_block_customer_fixture():
             if "rubric" in name
             else {"capabilities": []}
             if "environment" in name
-            else {"verdict": "supported", "reason": "核对原文后支持", "patches": []}
+            else {
+                "verdict": "supported",
+                "reason": "核对原文后支持",
+                "corrections": dict.fromkeys(compiler.PLAN["properties"]),
+            }
             if name == "verify_customer_fixture"
-            else frozen["scenario"]
+            else FixtureCodec(case["reference_turns"]).encode(frozen["scenario"])
         )
         if "rubric" in name:
             # Model submissions now select server-issued source spans; the
@@ -724,12 +729,14 @@ async def test_environment_upgrade_reuses_frozen_rubric_and_customer_draft():
             value = {"capabilities": []}
         else:
             assert name == "verify_customer_fixture"
-            assert evidence["draft"] == old["scenario"]
+            assert evidence["draft"] == FixtureCodec(case["reference_turns"]).encode(
+                old["scenario"]
+            )
             assert "requirements" not in evidence
             value = {
                 "verdict": "supported",
                 "reason": "independently checked",
-                "patches": [],
+                "corrections": dict.fromkeys(compiler.PLAN["properties"]),
             }
         kwargs["validate"](value)
         return value

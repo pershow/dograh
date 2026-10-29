@@ -648,3 +648,109 @@ async def test_missing_native_storage_never_silently_starts_a_blank_thread(
     rpc.request.assert_awaited_once_with(
         "thread/resume", {"threadId": "missing", "excludeTurns": True}
     )
+
+
+async def test_source_build_repairs_bound_fixture_without_rewriting_valid_content(
+    source_binary, tmp_path, monkeypatch
+):
+    from api.services.agent_workbench.fixtures import FixtureCodec, FixtureSubmission
+    from api.services.agent_workbench.test_tasks import StructuredDecision
+    from api.tests.test_workbench_test_compilation import fixture
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    wire = codec.encode(case["compiled"]["scenario"])
+    wire["actions"][0]["effects"][0]["key"] = "undeclared"
+    recovery = FixtureSubmission(codec)
+    saved = []
+
+    async def save():
+        saved.append(json.loads(json.dumps(recovery.draft)))
+
+    recovery.save = save
+    dispatcher = StructuredDecision(
+        "compile_customer_fixture",
+        "Bind source evidence",
+        recovery.schema,
+        validate=recovery,
+        recovery=recovery,
+    )
+    events = AsyncMock()
+    client = CodexClient(dispatcher, events)
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        specs = {t["name"]: t for t in body["tools"]}
+        assert set(specs) == {"compile_customer_fixture", "repair_fixture"}
+        assert set(
+            specs["compile_customer_fixture"]["parameters"]["properties"][
+                "source_coverage"
+            ]["properties"]
+        ) == set(codec.sources)
+        if len(seen) == 1:
+            tool, args = "compile_customer_fixture", wire
+        else:
+            assert len(seen) == 2 and saved and recovery.draft_id in json.dumps(body)
+            problem = recovery._error().issues[0]
+            tool, args = (
+                "repair_fixture",
+                {
+                    "draft_id": recovery.draft_id,
+                    "patches": [
+                        {"repair_id": problem["repair_id"], "value": "enabled"}
+                    ],
+                },
+            )
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{len(seen)}",
+                        "call_id": f"call_{len(seen)}",
+                        "name": tool,
+                        "arguments": json.dumps(args),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        result = await asyncio.wait_for(
+            client.run(
+                json.dumps(codec.evidence),
+                SimpleNamespace(
+                    model="test-model",
+                    api_key="local-test-key",
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                ),
+                protocol="responses",
+            ),
+            45,
+        )
+        assert result["model_requests"] == len(seen) == 2
+        assert dispatcher.report["behavior"] == wire["behavior"]
+        assert dispatcher.report["actions"][0]["effects"] == [
+            {"key": "enabled", "value": "yes"}
+        ]
+        assert (
+            dispatcher.report["facts"][0]["quote"] == case["reference_turns"][1]["text"]
+        )
+        assert saved[0]["actions"][0]["effects"][0]["key"] == "undeclared"
+        assert client.rpc.process.returncode is not None
+        assert not list((tmp_path / "jobs").iterdir())
+    finally:
+        await runner.cleanup()

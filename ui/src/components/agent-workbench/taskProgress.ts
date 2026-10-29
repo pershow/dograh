@@ -12,6 +12,9 @@ export function toolProgressText(name: string): string {
     read_conversation: "查阅历史需求与会话", list_agent_runs: "查找 Agent 运行记录",
     read_agent_run: "读取 Agent 运行资料", read_evaluation: "读取实际测试结果", verify_analysis: "核对分析结论与原始证据", submit_review: "提交需求覆盖检查结果",
     classify_request: "识别本次任务类型", select_test_source: "确认测试数据列与角色", submit_test_suite: "准备本次测试用例",
+    compile_business_rubric: "编译业务验收标准", verify_business_rubric: "复核业务验收标准", repair_citations: "修复原文引用",
+    compile_test_environment: "准备模拟操作环境", verify_test_environment: "复核模拟操作环境",
+    compile_customer_fixture: "转换客户场景", verify_customer_fixture: "复核客户场景", repair_fixture: "修复场景校验问题",
     select_business_sources: "检索相关原始业务资料", read_task_basis: "查阅本次任务依据", read_review_source: "读取原始依据页",
   };
   return labels[name] || "执行处理步骤";
