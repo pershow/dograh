@@ -11,6 +11,14 @@ from copy import deepcopy
 import jsonschema
 
 from api.services.agent_workbench.basis import GUIDANCE, source_records
+from api.services.agent_workbench.citations import (
+    GUIDANCE as CITATION_GUIDANCE,
+)
+from api.services.agent_workbench.citations import (
+    CitationSourceReader,
+    CitationSubmission,
+    validate_literal_citations,
+)
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.fingerprint import fingerprint
 from api.services.agent_workbench.simulation import (
@@ -211,20 +219,7 @@ def case_fingerprint(case):
 
 def validate_rubric(value, records):
     jsonschema.validate(value, RUBRIC)
-    for index, item in enumerate(value["requirements"]):
-        for ci, citation in enumerate(item["citations"]):
-            source = records.get(citation["id"], {})
-            if (
-                source.get("source") != "basis"
-                or source.get("source_kind") == "reference"
-            ):
-                raise WorkbenchError("业务断言必须引用独立的原始业务资料。")
-            literal = original_quote(citation["quote"], source.get("text", ""))
-            if literal is None:
-                raise WorkbenchError(
-                    f"requirements[{index}].citations[{ci}].quote 未逐字匹配 {citation['id']}；请修正此引用，不改变或删除该业务要求。"
-                )
-            citation["quote"] = literal
+    validate_literal_citations(value, "requirements", records)
 
 
 def validate_plan(value, turns):
@@ -370,48 +365,53 @@ def validate_environment(environment):
                 raise WorkbenchError("测试环境必须引用原始业务资料中的实际操作依据。")
 
 
-async def compile_environment(basis, decide):
-    from api.services.agent_workbench.review import ReviewSourceReader
-
-    records = source_records(basis)
+async def cited_decision(decide, name, rules, schema, group, records, draft=None):
+    reader = CitationSourceReader(records)
     lookup = {r["id"]: r for r in records}
-    reader = ReviewSourceReader({"records": records})
 
     def validate(value):
-        reader.require_read()
-        jsonschema.validate(value, ENVIRONMENT)
-        for item in value["capabilities"]:
-            for citation in item["citations"]:
-                source = lookup.get(citation["id"], {})
-                quote = original_quote(citation["quote"], source.get("text", ""))
-                if (
-                    source.get("source") != "basis"
-                    or source.get("source_kind") == "reference"
-                    or not citation["quote"]
-                    or quote is None
-                ):
-                    raise WorkbenchError("模拟环境引用须逐字匹配原始业务操作依据。")
-                citation["quote"] = quote
+        jsonschema.validate(value, schema)
+        validate_literal_citations(value, group, lookup)
 
-    draft = await decide(
+    submission = CitationSubmission(schema, group, reader, validate)
+    evidence = dict(reader.packet)
+    if draft is not None:
+        evidence["draft"] = reader.encode(draft, group)
+    value = await decide(
+        name,
+        rules + CITATION_GUIDANCE,
+        submission.schema,
+        evidence,
+        validate=submission,
+        reader=reader,
+        recovery=submission,
+    )
+    reader.require_read()
+    validate(value)
+    return value
+
+
+async def compile_environment(basis, decide):
+    records = source_records(basis)
+
+    draft = await cited_decision(
+        decide,
         "compile_test_environment",
         ENVIRONMENT_RULES,
         ENVIRONMENT,
-        reader.packet,
-        validate=validate,
-        reader=reader,
+        "capabilities",
+        records,
     )
-    reader = ReviewSourceReader({"records": records})
-    value = await decide(
+    value = await cited_decision(
+        decide,
         "verify_test_environment",
         ENVIRONMENT_RULES
         + "\nIndependently verify every capability, missing intermediate operation and source quote. Remove hidden Agent-behavior rules; preserve ordinary supported mechanics. Return the complete corrected environment.",
         ENVIRONMENT,
-        {**reader.packet, "draft": draft},
-        validate=validate,
-        reader=reader,
+        "capabilities",
+        records,
+        draft,
     )
-    validate(value)
     referenced = {c["id"] for item in value["capabilities"] for c in item["citations"]}
     environment = {
         "version": 1,
@@ -424,35 +424,26 @@ async def compile_environment(basis, decide):
 
 
 async def compile_rubric(basis, decide):
-    from api.services.agent_workbench.review import ReviewSourceReader
-
     records = source_records(basis)
-    lookup = {r["id"]: r for r in records}
-    reader = ReviewSourceReader({"records": records})
 
-    def validate(value):
-        reader.require_read()
-        validate_rubric(value, lookup)
-
-    draft = await decide(
+    draft = await cited_decision(
+        decide,
         "compile_business_rubric",
         RUBRIC_RULES,
         RUBRIC,
-        reader.packet,
-        validate=validate,
-        reader=reader,
+        "requirements",
+        records,
     )
-    reader = ReviewSourceReader({"records": records})
-    rubric = await decide(
+    rubric = await cited_decision(
+        decide,
         "verify_business_rubric",
         RUBRIC_RULES
         + "\nIndependently check the complete originals for omitted requirements, invented constraints and changed conditions. Return the corrected COMPLETE rubric, preserving every source requirement.",
         RUBRIC,
-        {**reader.packet, "draft": draft},
-        validate=validate,
-        reader=reader,
+        "requirements",
+        records,
+        draft,
     )
-    validate(rubric)
     requirements = [
         {"id": "req_" + fingerprint(r)[:20], **r} for r in rubric["requirements"]
     ]

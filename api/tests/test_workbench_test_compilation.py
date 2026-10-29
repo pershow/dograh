@@ -581,6 +581,19 @@ async def test_unrelated_authority_question_does_not_block_customer_fixture():
             if name == "verify_customer_fixture"
             else frozen["scenario"]
         )
+        if "rubric" in name:
+            # Model submissions now select server-issued source spans; the
+            # frozen contract still stores literal source IDs and quotations.
+            spans = evidence["records"][0]["citation_spans"]
+            for item in value["requirements"]:
+                item["citations"] = [
+                    {
+                        "span_id": next(
+                            s["span_id"] for s in spans if c["quote"] in s["text"]
+                        )
+                    }
+                    for c in item["citations"]
+                ]
         kwargs["validate"](value)
         return value
 

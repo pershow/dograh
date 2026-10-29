@@ -373,6 +373,130 @@ async def test_source_build_completes_dynamic_tool_round_trip(
         await runner.cleanup()
 
 
+async def test_source_build_repairs_citations_and_finishes_at_repaired_receipt(
+    source_binary, tmp_path, monkeypatch
+):
+    from api.services.agent_workbench.citations import (
+        CitationSourceReader,
+        CitationSubmission,
+    )
+    from api.services.agent_workbench.test_compilation import RUBRIC, validate_rubric
+    from api.services.agent_workbench.test_tasks import StructuredDecision
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    record = {
+        "id": "basis:policy:0",
+        "source": "basis",
+        "source_kind": "material",
+        "text": "Retries must not exceed two.",
+    }
+    reader = CitationSourceReader([record])
+    recovery = CitationSubmission(
+        RUBRIC,
+        "requirements",
+        reader,
+        lambda v: validate_rubric(v, {record["id"]: record}),
+    )
+    dispatcher = StructuredDecision(
+        "compile_business_rubric",
+        "Select original evidence.",
+        recovery.schema,
+        validate=recovery,
+        reader=reader,
+        recovery=recovery,
+    )
+    events = AsyncMock()
+    client = CodexClient(dispatcher, events)
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        assert {t["name"] for t in body["tools"]} == {
+            "compile_business_rubric",
+            "repair_citations",
+            "read_review_source",
+        }
+        if len(seen) == 1:
+            tool = "compile_business_rubric"
+            arguments = {
+                "requirements": [
+                    {
+                        "description": "Retry limit",
+                        "applies_when": "An operation fails",
+                        "expected_behavior": "At most two retries",
+                        "severity": "blocking",
+                        "citations": [{"span_id": "incorrect"}],
+                    }
+                ],
+                "questions": [],
+            }
+        else:
+            assert len(seen) == 2 and dispatcher.report is None
+            assert recovery.draft_id in json.dumps(body)
+            tool = "repair_citations"
+            arguments = {
+                "draft_id": recovery.draft_id,
+                "patches": [
+                    {
+                        "item_index": 0,
+                        "citation_index": 0,
+                        "span_id": next(iter(reader.spans)),
+                    }
+                ],
+            }
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{len(seen)}",
+                        "call_id": f"call_{len(seen)}",
+                        "name": tool,
+                        "arguments": json.dumps(arguments),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        result = await asyncio.wait_for(
+            client.run(
+                json.dumps(reader.packet),
+                SimpleNamespace(
+                    model="test-model",
+                    api_key="local-test-key",
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                ),
+                protocol="responses",
+            ),
+            timeout=45,
+        )
+        assert result["model_requests"] == len(seen) == 2
+        rule = dispatcher.report["requirements"][0]
+        assert rule["expected_behavior"] == "At most two retries"
+        assert rule["severity"] == "blocking"
+        assert rule["citations"] == [{"id": record["id"], "quote": record["text"]}]
+        assert any(
+            c.args[0] == "tool.failed" and c.args[1]["validation"]["issue_count"] == 1
+            for c in events.call_args_list
+        )
+        assert client.rpc.process.returncode is not None
+        assert not list((tmp_path / "jobs").iterdir())
+    finally:
+        await runner.cleanup()
+
+
 @pytest.mark.parametrize("auto_compact", [False, True])
 async def test_native_thread_survives_process_restart_and_imports_all_legacy_requests(
     source_binary, tmp_path, monkeypatch, auto_compact

@@ -300,7 +300,11 @@ class CodexClient:
             )
             if (
                 getattr(self.dispatcher, "stop_after_report", False)
-                and params["tool"] == self.dispatcher.completion_tool
+                and params["tool"]
+                in (
+                    self.dispatcher.completion_tool,
+                    getattr(self.dispatcher, "repair_tool", None),
+                )
                 and self.dispatcher.report is not None
                 and not self.done.done()
             ):
@@ -323,8 +327,6 @@ class CodexClient:
                 ],
             )
 
-            if getattr(self.dispatcher, "fatal_error", None) and not self.done.done():
-                self.done.set_exception(self.dispatcher.fatal_error)
             # Validation failures are actionable; internal errors may contain credentials.
             error_message = (
                 (
@@ -351,17 +353,27 @@ class CodexClient:
                 )
                 else "Tool failed internally; retry once or report the failure."
             )
+            from api.services.agent_workbench.citations import CitationErrors
+
+            citation_error = isinstance(error, CitationErrors)
             await self.on_event(
                 "tool.failed",
                 {
                     **activity,
                     "error": error_message[:1000],
                     "elapsed_seconds": round(time.monotonic() - started, 2),
+                    **({"validation": error.diagnostic()} if citation_error else {}),
                 },
             )
+            # Persist the terminal tool failure before waking the turn waiter;
+            # otherwise teardown can cancel this event and erase the last error.
+            if getattr(self.dispatcher, "fatal_error", None) and not self.done.done():
+                self.done.set_exception(self.dispatcher.fatal_error)
             return {
                 "success": False,
-                "contentItems": [{"type": "inputText", "text": error_message[:4000]}],
+                "contentItems": tool_content(error.feedback())
+                if citation_error
+                else [{"type": "inputText", "text": error_message[:4000]}],
             }
 
     async def handle_notification(self, method, params):
@@ -526,7 +538,12 @@ class CodexClient:
                         getattr(self.dispatcher, "completion_tool", None)
                         and getattr(self.dispatcher, "report", None) is None
                     ):
-                        gateway.next_required_tool = self.dispatcher.completion_tool
+                        required_tool = getattr(
+                            self.dispatcher,
+                            "required_tool",
+                            self.dispatcher.completion_tool,
+                        )
+                        gateway.next_required_tool = required_tool
                         self.done = asyncio.get_running_loop().create_future()
                         await self.rpc.request(
                             "turn/start",
@@ -536,7 +553,7 @@ class CodexClient:
                                     {
                                         "type": "text",
                                         "text": "Submit the structured result now by calling "
-                                        + self.dispatcher.completion_tool
+                                        + required_tool
                                         + ". Do not merely describe the result. Report missing evidence explicitly.",
                                     }
                                 ],

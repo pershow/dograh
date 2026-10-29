@@ -38,7 +38,9 @@ class StructuredDecision:
     intent = "decision"
     stop_after_report = True
 
-    def __init__(self, name, instructions, schema, validate=None, reader=None):
+    def __init__(
+        self, name, instructions, schema, validate=None, reader=None, recovery=None
+    ):
         self.completion_tool = name
         self.instructions = (
             instructions
@@ -50,29 +52,64 @@ class StructuredDecision:
         self.last_validation_error = None
         self.fatal_error = None
         self.reader = reader
+        self.recovery = recovery
+        self.repair_tool = recovery.tool_name if recovery else None
+        if recovery:
+            self.instructions += recovery.resume_instructions()
+
+    @property
+    def required_tool(self):
+        return (
+            self.repair_tool
+            if self.recovery and self.recovery.pending
+            else self.completion_tool
+        )
 
     def specs(self):
-        return [
-            {
-                "name": self.completion_tool,
-                "description": "Submit the structured result",
-                "inputSchema": self.schema,
-            }
-        ] + (self.reader.specs() if self.reader else [])
+        return (
+            [
+                {
+                    "name": self.completion_tool,
+                    "description": "Submit the structured result",
+                    "inputSchema": self.schema,
+                }
+            ]
+            + (self.reader.specs() if self.reader else [])
+            + ([self.recovery.spec()] if self.recovery else [])
+        )
 
     async def call(self, name, arguments):
-        if self.reader and name != self.completion_tool:
+        completion_tools = (self.completion_tool,) + (
+            (self.repair_tool,) if self.repair_tool else ()
+        )
+        if self.report is not None and name in completion_tools:
+            return {
+                "recorded": True,
+                "instruction": "The result was already accepted. End this turn now.",
+            }
+        if self.reader and name not in completion_tools:
             return await self.reader.call(name, arguments)
-        if name != self.completion_tool:
+        if name not in completion_tools:
             raise WorkbenchError(
                 "This task only permits its declared read-only decision tool"
             )
         try:
-            jsonschema.validate(arguments, self.schema)
-            if self.validate:
-                self.validate(arguments)
+            if self.recovery and name == self.repair_tool:
+                arguments = self.recovery.repair(arguments)
+            else:
+                jsonschema.validate(arguments, self.schema)
+                if self.validate:
+                    self.validate(arguments)
         except (jsonschema.ValidationError, ValidationError, WorkbenchError) as error:
-            self.invalid_attempts += 1
+            from api.services.agent_workbench.citations import CitationErrors
+
+            # Only a strict reduction of rejected, locked positions is progress.
+            # Unrelated decisions retain the existing three-failure bound.
+            self.invalid_attempts = (
+                0
+                if isinstance(error, CitationErrors) and error.progressed
+                else self.invalid_attempts + 1
+            )
             self.last_validation_error = (
                 str(error)
                 if isinstance(error, WorkbenchError)
@@ -90,11 +127,6 @@ class StructuredDecision:
             if isinstance(error, ValidationError):
                 raise WorkbenchError(self.last_validation_error) from error
             raise
-        if self.report is not None:
-            return {
-                "recorded": True,
-                "instruction": "The result was already accepted. End this turn now; do not call again.",
-            }
         self.report = arguments
         return {"recorded": True, "instruction": "Result accepted. End this turn now."}
 
@@ -120,15 +152,17 @@ async def decision(
     validate=None,
     reader=None,
     reasoning_effort=None,
+    recovery=None,
 ):
     last_validation_error = None
     for attempt in range(2):
+        required_tool = recovery.tool_name if recovery and recovery.pending else name
         dispatcher = StructuredDecision(
             name,
             instructions
             + (
                 "\nThe previous attempt ended without submitting a result. You must call "
-                + name
+                + required_tool
                 + " with the required schema; plain prose is not a submission."
                 + (
                     "\nThe previous validation failed: " + last_validation_error
@@ -141,6 +175,7 @@ async def decision(
             schema,
             validate,
             reader,
+            recovery,
         )
         dispatcher.reasoning_effort = reasoning_effort
         try:
