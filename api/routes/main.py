@@ -108,18 +108,18 @@ async def health() -> HealthResponse:
         STACK_AUTH_PROJECT_ID,
         STACK_PUBLISHABLE_CLIENT_KEY,
     )
-    from api.utils.common import get_backend_endpoints, is_local_or_private_url
+    from api.utils.common import is_local_or_private_url
+    from api.utils.tunnel import tunnel_url_cache
 
-    backend_endpoint, _ = await get_backend_endpoints()
-    # tunnel_url is set only when a Cloudflare tunnel was actually resolved: the
-    # configured address isn't publicly reachable, but get_backend_endpoints found
-    # a public tunnel URL for it. This is the URL the UI shows for inbound webhooks.
-    # It stays null for a directly-reachable (public IP / domain) deployment, where
-    # backend_api_endpoint itself is the public URL.
+    # API reachability must not depend on optional external tunnel discovery.
+    # The lifespan task refreshes this metadata; cold/failed/expired discovery is
+    # represented by null while the API's version and auth config remain usable.
+    cached_tunnel_url = tunnel_url_cache.get_url()
     tunnel_url = (
-        backend_endpoint
+        cached_tunnel_url
         if is_local_or_private_url(BACKEND_API_ENDPOINT)
-        and not is_local_or_private_url(backend_endpoint)
+        and cached_tunnel_url
+        and not is_local_or_private_url(cached_tunnel_url)
         else None
     )
     is_stack = AUTH_PROVIDER == "stack"

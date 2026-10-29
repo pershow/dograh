@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from api.constants import REDIS_URL
+from api.constants import BACKEND_API_ENDPOINT, REDIS_URL
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
@@ -48,6 +48,8 @@ from api.services.worker_sync.manager import (
 )
 from api.services.worker_sync.protocol import WorkerSyncEventType
 from api.tasks.arq import get_arq_redis
+from api.utils.common import is_local_or_private_url
+from api.utils.tunnel import tunnel_url_cache
 
 API_PREFIX = "/api/v1"
 
@@ -91,9 +93,12 @@ async def lifespan(app: FastAPI):
         loop_exceptions.install()
 
         try:
+            if is_local_or_private_url(BACKEND_API_ENDPOINT):
+                tunnel_url_cache.start()
             yield  # Run app
         finally:
             logger.info("Starting graceful shutdown...")
+            await tunnel_url_cache.stop()
             from api.services.workflow.text_chat_stream import (
                 finish_streaming_text_chat_turns,
             )
@@ -106,7 +111,9 @@ async def lifespan(app: FastAPI):
                 try:
                     await close_speech_cache()
                 finally:
-                    from api.services.pipecat.jev_client_pool import close_jev_connections
+                    from api.services.pipecat.jev_client_pool import (
+                        close_jev_connections,
+                    )
 
                     try:
                         await close_jev_connections()
