@@ -705,3 +705,374 @@ async def test_restoration_chooses_latest_checkpoint_when_old_receipts_repeat_ca
     monkeypatch.setattr(db_client, "wb_get", get)
     await restore_prepared_cases(1, "s", "job", cases)
     assert cases[0]["compiled"] == latest["compiled"]
+
+
+def state_patch(recovery, *, bindings=(), declarations=(), remove=()):
+    catalog = recovery._error().feedback()["state_repair"]
+    ids = {tuple(r["path"]): r["ref_id"] for r in catalog["references"]}
+    return {
+        "draft_id": recovery.draft_id,
+        "patches": [
+            {
+                "repair_id": catalog["repair_id"],
+                "value": {
+                    "bindings": [
+                        {"ref_id": ids[path], "key": key} for path, key in bindings
+                    ],
+                    "declarations": list(declarations),
+                    "remove_duplicates": [ids[path] for path in remove],
+                },
+            }
+        ],
+    }
+
+
+async def test_missing_state_declaration_is_repaired_with_explicit_initial_assumption():
+    case, _, codec, wire, recovery, *_ = setup()
+    wire["actions"][0]["effects"].append({"key": "receipt_visible", "value": "yes"})
+    wire["actions"].append(
+        {
+            **deepcopy(wire["actions"][0]),
+            "preconditions": [{"key": "receipt_visible", "value": "yes"}],
+            "effects": [],
+        }
+    )
+    with pytest.raises(FixtureErrors) as error:
+        recovery(deepcopy(wire))
+    assert {e["code"] for e in error.value.issues} == {"undeclared_state"}
+    payload = state_patch(
+        recovery,
+        declarations=[
+            {
+                "key": "receipt_visible",
+                "value": "no",
+                "reason": "Synthetic receipt is hidden until the action completes",
+            }
+        ],
+    )
+    jsonschema.validate(payload, recovery.spec()["inputSchema"])
+    repaired = recovery.repair(payload)
+    encoded = codec.encode(repaired)
+    assert encoded["actions"] == wire["actions"]
+    assert encoded["facts"][:-1] == wire["facts"]
+    assert encoded["facts"][-1]["provenance"] == "test_assumption"
+    assert encoded["facts"][-1]["quote_turn_id"] is None
+    assert (
+        encoded["facts"][-1]["reason"]
+        == payload["patches"][0]["value"]["declarations"][0]["reason"]
+    )
+    assert encoded["initial_state"] == wire["initial_state"] + [
+        {"key": "receipt_visible", "value": "no"}
+    ]
+    for key in (
+        "goals",
+        "behavior",
+        "limitations",
+        "source_coverage",
+        "missing_information",
+    ):
+        assert encoded[key] == wire[key]
+    compiler.validate_plan(repaired, case["reference_turns"])
+
+
+async def test_aliasing_missing_state_onto_another_condition_cannot_corrupt_checkpoint():
+    _, _, _, wire, recovery, *_ = setup()
+    wire["actions"][0]["preconditions"].append(
+        {"key": "receipt_visible", "value": "yes"}
+    )
+    with pytest.raises(FixtureErrors):
+        recovery(deepcopy(wire))
+    original = deepcopy(recovery.draft)
+    path = ("actions", 0, "preconditions", 1, "key")
+    with pytest.raises(WorkbenchError):
+        recovery.repair(repair_payload(recovery, {path: "enabled"}))
+    assert recovery.draft == original
+    repaired = recovery.repair(
+        state_patch(
+            recovery,
+            declarations=[
+                {
+                    "key": "receipt_visible",
+                    "value": "no",
+                    "reason": "Initially absent; not inferred from the later outcome",
+                }
+            ],
+        )
+    )
+    assert (
+        repaired["actions"][0]["preconditions"] == wire["actions"][0]["preconditions"]
+    )
+
+
+async def test_duplicate_condition_keys_can_split_without_changing_values_or_existing_state():
+    case, _, codec, wire, recovery, *_ = setup()
+    wire["actions"][0]["preconditions"].append(
+        {"key": "enabled", "value": "receipt shown"}
+    )
+    with pytest.raises(FixtureErrors) as error:
+        recovery(deepcopy(wire))
+    assert all(e["code"] == "duplicate_state_reference" for e in error.value.issues)
+    assert all("重复引用" in e["reason"] for e in error.value.issues)
+    payload = state_patch(
+        recovery,
+        bindings=[(("actions", 0, "preconditions", 1, "key"), "receipt")],
+        declarations=[
+            {
+                "key": "receipt",
+                "value": "hidden",
+                "reason": "A separate synthetic receipt state",
+            }
+        ],
+    )
+    jsonschema.validate(payload, recovery.spec()["inputSchema"])
+    repaired = recovery.repair(payload)
+    assert repaired["actions"][0]["preconditions"] == [
+        {"key": "enabled", "value": "no"},
+        {"key": "receipt", "value": "receipt shown"},
+    ]
+    assert repaired["initial_state"][0] == wire["initial_state"][0]
+    assert (
+        codec.encode(repaired)["actions"][0]["effects"] == wire["actions"][0]["effects"]
+    )
+    compiler.validate_plan(repaired, case["reference_turns"])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "existing",
+        "unrelated",
+        "duplicate",
+        "blank_reason",
+        "incomplete",
+        "no_change",
+        "stale",
+        "out_of_scope",
+        "mixed_fields",
+    ],
+)
+async def test_invalid_state_graph_patches_are_atomic(mutation):
+    _, _, _, wire, recovery, *_ = setup()
+    wire["actions"][0]["effects"].append({"key": "receipt", "value": "shown"})
+    with pytest.raises(FixtureErrors):
+        recovery(deepcopy(wire))
+    before = deepcopy(recovery.draft)
+    payload = state_patch(
+        recovery,
+        declarations=[
+            {
+                "key": "receipt",
+                "value": "hidden",
+                "reason": "Synthetic initial condition",
+            }
+        ],
+    )
+    value = payload["patches"][0]["value"]
+    if mutation in {"existing", "unrelated"}:
+        value["declarations"][0]["key"] = (
+            "enabled" if mutation == "existing" else "unrelated"
+        )
+    elif mutation == "duplicate":
+        value["declarations"] *= 2
+    elif mutation == "blank_reason":
+        value["declarations"][0]["reason"] = " "
+    elif mutation == "incomplete":
+        value["bindings"] = [
+            {
+                "ref_id": recovery._state_repair()["references"][0]["ref_id"],
+                "key": "other",
+            }
+        ]
+    elif mutation == "no_change":
+        value["declarations"] = []
+    elif mutation == "stale":
+        payload["draft_id"] = "old-checkpoint"
+    elif mutation == "out_of_scope":
+        value["bindings"] = [{"ref_id": "ref_unrelated", "key": "receipt"}]
+    else:
+        path = ("actions", 0, "effects", 1, "key")
+        payload["patches"] += repair_payload(recovery, {path: "receipt"})["patches"]
+    with pytest.raises((WorkbenchError, jsonschema.ValidationError)):
+        recovery.repair(payload)
+    assert recovery.draft == before and recovery.report is None
+
+
+@pytest.mark.parametrize("same_value", [False, True])
+async def test_only_identical_duplicate_constraints_may_be_removed(same_value):
+    case, _, _, wire, recovery, *_ = setup()
+    original = deepcopy(wire["actions"][0]["preconditions"][0])
+    wire["actions"][0]["preconditions"].append(
+        {
+            **original,
+            "value": original["value"] if same_value else "different condition",
+        }
+    )
+    with pytest.raises(FixtureErrors):
+        recovery(deepcopy(wire))
+    before = deepcopy(recovery.draft)
+    paths = [("actions", 0, "preconditions", i, "key") for i in (0, 1)]
+    for removal in (paths, paths[:1]):
+        if removal == paths or not same_value:
+            with pytest.raises(WorkbenchError):
+                recovery.repair(state_patch(recovery, remove=removal))
+            assert recovery.draft == before
+    if same_value:
+        repaired = recovery.repair(state_patch(recovery, remove=paths[1:]))
+        assert repaired["actions"][0]["preconditions"] == [original]
+        compiler.validate_plan(repaired, case["reference_turns"])
+
+
+async def test_state_repair_resumes_verification_with_null_declarations_and_locked_source():
+    case, plan, codec, wire, *_ = setup()
+    value = corrections(codec)
+    value["verdict"] = "corrected"
+    value["corrections"]["actions"] = deepcopy(wire["actions"])
+    value["corrections"]["actions"][0]["effects"].append(
+        {"key": "receipt", "value": "shown"}
+    )
+    first = FixtureSubmission(codec, draft=wire, original=plan)
+    with pytest.raises(FixtureErrors):
+        first(value)
+    checkpoint = deepcopy(first.draft)
+    recovery = FixtureSubmission(
+        codec, draft=wire, original=plan, checkpoint=checkpoint
+    )
+    assert recovery._error().feedback() == first._error().feedback()
+    payload = state_patch(
+        recovery,
+        declarations=[
+            {
+                "key": "receipt",
+                "value": "hidden",
+                "reason": "Synthetic initial state; later visibility requires the action",
+            }
+        ],
+    )
+    jsonschema.validate(payload, recovery.spec()["inputSchema"])
+    reviewed = recovery.repair(payload)
+    assert reviewed["verdict"] == "corrected"
+    assert codec.encode(reviewed["scenario"])["facts"][0] == wire["facts"][0]
+    assert (
+        codec.encode(reviewed["scenario"])["source_coverage"] == wire["source_coverage"]
+    )
+    assert reviewed["scenario"]["initial_state"] == plan["initial_state"] + [
+        {"key": "receipt", "value": "hidden"}
+    ]
+    assert first.draft == checkpoint and recovery.base == wire
+    compiler.validate_plan(reviewed["scenario"], case["reference_turns"])
+
+
+def test_duplicate_state_declarations_make_references_ambiguous():
+    case = fixture()
+    plan = deepcopy(case["compiled"]["scenario"])
+    plan["initial_state"].append({"key": "enabled", "value": "conflicting"})
+    from api.services.agent_workbench.fixtures import state_issues
+
+    issues = state_issues(plan)
+    assert {e["code"] for e in issues} == {
+        "duplicate_state_declaration",
+        "ambiguous_state_reference",
+    }
+    with pytest.raises(WorkbenchError):
+        compiler.validate_plan(plan, case["reference_turns"])
+
+
+async def test_state_graph_recovery_resumes_saved_generation_and_is_independently_reviewed():
+    case, plan, basis = prepare_inputs()
+    requirements = deepcopy(case["compiled"]["requirements"])
+    codec = FixtureCodec(case["reference_turns"])
+    wire = codec.encode(plan)
+    wire["actions"][0]["effects"].append({"key": "receipt", "value": "visible"})
+    snapshots = []
+
+    async def checkpoint(value):
+        snapshots.append(deepcopy(value))
+
+    async def interrupted(name, rules, schema, evidence, **kwargs):
+        assert name == "compile_customer_fixture"
+        with pytest.raises(FixtureErrors):
+            kwargs["validate"](deepcopy(wire))
+        await kwargs["recovery"].save()
+        raise WorkbenchError("connection interrupted")
+
+    await compiler.compile_cases(
+        [case],
+        {"snapshot": {}},
+        basis,
+        interrupted,
+        concurrency=1,
+        progress=AsyncMock(),
+        checkpoint=checkpoint,
+    )
+    saved = snapshots[-1]
+    assert saved["compiled"]["preparation_checkpoint"]["stage"] == "generation"
+    assert saved["compiled"]["preparation_checkpoint"]["draft"] == wire
+    calls = []
+
+    async def resumed(name, rules, schema, evidence, **kwargs):
+        calls.append(name)
+        if name == "compile_customer_fixture":
+            recovery = kwargs["recovery"]
+            assert recovery.pending and recovery.draft == wire
+            return recovery.repair(
+                state_patch(
+                    recovery,
+                    declarations=[
+                        {
+                            "key": "receipt",
+                            "value": "hidden",
+                            "reason": "Receipt initially absent; not the historical completed outcome",
+                        }
+                    ],
+                )
+            )
+        assert name == "verify_customer_fixture"
+        assert evidence["draft"]["initial_state"][-1] == {
+            "key": "receipt",
+            "value": "hidden",
+        }
+        assert evidence["draft"]["facts"][-1]["provenance"] == "test_assumption"
+        assert evidence["draft"]["actions"] == wire["actions"]
+        assert snapshots[-1]["compiled"]["status"] != "ready"
+        assert "scenario_verification" not in snapshots[-1]["compiled"]
+        review = corrections(codec)
+        kwargs["validate"](review)
+        return review
+
+    result, summary = await compiler.compile_cases(
+        [saved],
+        {"snapshot": {}},
+        basis,
+        resumed,
+        concurrency=1,
+        progress=AsyncMock(),
+        checkpoint=checkpoint,
+    )
+    assert calls == ["compile_customer_fixture", "verify_customer_fixture"]
+    assert summary["ready"] == 1
+    assert result[0]["compiled"]["requirements"] == requirements
+    assert result[0]["compiled"]["scenario_verification"]["verdict"] == "supported"
+    assert "preparation_checkpoint" not in result[0]["compiled"]
+    compiler.validate_compiled(result[0])
+
+
+async def test_two_individually_valid_renames_cannot_create_a_new_duplicate():
+    _, _, _, wire, recovery, *_ = setup()
+    wire["actions"][0]["effects"] = [
+        {"key": "one", "value": "yes"},
+        {"key": "two", "value": "no"},
+    ]
+    with pytest.raises(FixtureErrors):
+        recovery(deepcopy(wire))
+    before = deepcopy(recovery.draft)
+    payload = repair_payload(
+        recovery,
+        {
+            ("actions", 0, "effects", 0, "key"): "enabled",
+            ("actions", 0, "effects", 1, "key"): "enabled",
+        },
+    )
+    jsonschema.validate(payload, recovery.spec()["inputSchema"])
+    with pytest.raises(WorkbenchError, match="新的重复"):
+        recovery.repair(payload)
+    assert recovery.draft == before

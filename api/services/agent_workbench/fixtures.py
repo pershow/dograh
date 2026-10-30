@@ -177,27 +177,61 @@ def plan_issues(value, turns, schema):
 def state_issues(value):
     errors = []
     keys = [s["key"] for s in value["initial_state"]]
+    counts = Counter(keys)
     for i, key in enumerate(keys):
-        if keys.count(key) > 1:
-            errors.append(issue(["initial_state", i, "key"], "模拟状态标识重复"))
+        if counts[key] > 1:
+            errors.append(
+                issue(
+                    ["initial_state", i, "key"],
+                    f"模拟状态重复声明：{key}",
+                    code="duplicate_state_declaration",
+                    state_key=key,
+                )
+            )
     for i, action in enumerate(value["actions"]):
         for part in ("preconditions", "effects"):
             names = [s["key"] for s in action[part]]
             for j, name in enumerate(names):
-                if names.count(name) > 1 or name not in keys:
+                code = (
+                    "duplicate_state_reference"
+                    if names.count(name) > 1
+                    else "undeclared_state"
+                    if name not in counts
+                    else "ambiguous_state_reference"
+                    if counts[name] > 1
+                    else None
+                )
+                if code:
+                    path = ["actions", i, part, j, "key"]
+                    reasons = {
+                        "undeclared_state": f"操作引用了未声明的模拟状态：{name}",
+                        "duplicate_state_reference": (
+                            f"同一操作的{'前置条件' if part == 'preconditions' else '执行结果'}重复引用状态：{name}"
+                        ),
+                        "ambiguous_state_reference": f"操作引用的状态存在多个声明：{name}",
+                    }
                     errors.append(
                         issue(
-                            ["actions", i, part, j, "key"],
-                            "操作条件和结果必须引用已声明的唯一状态",
-                            allowed=keys,
+                            path,
+                            reasons[code],
+                            code=code,
+                            state_key=name,
+                            state_path=path,
+                            allowed=[
+                                key
+                                for key in counts
+                                if counts[key] == 1
+                                and key not in names[:j] + names[j + 1 :]
+                            ],
                         )
                     )
     return errors
 
 
 class FixtureErrors(RecoverableValidationError):
-    def __init__(self, issues, *, draft_id=None, progressed=False):
+    def __init__(self, issues, *, draft_id=None, progressed=False, state_repair=None):
         self.issues, self.draft_id, self.progressed = issues, draft_id, progressed
+        self.state_repair = state_repair
         super().__init__(
             "场景校验失败："
             + "；".join(f"{x['path']}: {x['reason']}" for x in issues[:8])
@@ -210,6 +244,7 @@ class FixtureErrors(RecoverableValidationError):
             "issues": self.issues,
             "draft_id": self.draft_id,
             "repair_tool": "repair_fixture" if self.draft_id else None,
+            **({"state_repair": self.state_repair} if self.state_repair else {}),
         }
 
     def diagnostic(self):
@@ -436,6 +471,12 @@ that named field using its exact schema. Keep all unaffected content and source
 concerns. There are no JSON paths to invent and no fields outside the declared schema.
 On validation failure use repair_fixture and its returned repair_id catalog. Only
 rejected fields can change; valid content stays locked. Fix all reported issues.
+For missing/duplicate state references, the state_repair catalog permits an atomic
+repair of the affected references and new initial-state declarations. Do not alias
+different concepts just to choose an existing key. Declare a genuinely missing state
+with its initial value and a reason grounded in source evidence or an explicit test
+assumption; never copy a later action's success into initial state. These assumptions
+are saved and independently reviewed. Only identical duplicate entries may be removed.
 """
 
 
@@ -515,6 +556,55 @@ class FixtureSubmission:
     def _catalog(self):
         return {"field_" + fingerprint(e["path"])[:16]: e for e in self.errors}
 
+    def _state_repair(self):
+        references = {}
+        for error in self.errors:
+            if path := error.get("state_path"):
+                references["ref_" + fingerprint(path)[:16]] = path
+        if not references:
+            return None
+        candidate = self._candidate(self.draft)
+        return {
+            "repair_id": "state_" + fingerprint(sorted(references))[:16],
+            "references": [
+                {
+                    "ref_id": key,
+                    "path": path,
+                    "state": deepcopy(candidate["actions"][path[1]][path[2]][path[3]]),
+                }
+                for key, path in references.items()
+            ],
+            "declarations": deepcopy(candidate["initial_state"]),
+            "value_schema": obj(
+                {
+                    "bindings": {
+                        "type": "array",
+                        "items": obj(
+                            {
+                                "ref_id": {"enum": list(references)},
+                                "key": {"type": "string", "minLength": 1},
+                            }
+                        ),
+                    },
+                    "declarations": {
+                        "type": "array",
+                        "items": obj(
+                            {
+                                "key": {"type": "string", "minLength": 1},
+                                "value": {"type": "string"},
+                                "reason": {"type": "string", "minLength": 1},
+                            }
+                        ),
+                    },
+                    "remove_duplicates": {
+                        "type": "array",
+                        "uniqueItems": True,
+                        "items": {"enum": list(references)},
+                    },
+                }
+            ),
+        }
+
     def _error(self, progressed=False):
         return FixtureErrors(
             [
@@ -522,18 +612,24 @@ class FixtureSubmission:
                     **e,
                     "repair_id": "field_" + fingerprint(e["path"])[:16],
                     "value_schema": self._value_schema(e),
+                    **(
+                        {"state_repair_required": True}
+                        if e.get("state_path") and e.get("allowed") == []
+                        else {}
+                    ),
                 }
                 for e in self.errors
             ],
             draft_id=self.draft_id,
             progressed=progressed,
+            state_repair=self._state_repair(),
         )
 
     def _value_schema(self, error):
         if error.get("remove"):
             return {"type": "null"}
         schema = field_schema(self.schema, error["path"], self.draft)
-        if "allowed" in error and all(
+        if error.get("allowed") and all(
             jsonschema.Draft202012Validator(schema).is_valid(value)
             for value in error["allowed"]
         ):
@@ -541,6 +637,20 @@ class FixtureSubmission:
         return schema
 
     def spec(self):
+        choices = [
+            obj({"repair_id": {"enum": [key]}, "value": self._value_schema(error)})
+            for key, error in self._catalog().items()
+            if error.get("allowed") != [] or not error.get("state_path")
+        ]
+        if state := self._state_repair():
+            choices.append(
+                obj(
+                    {
+                        "repair_id": {"enum": [state["repair_id"]]},
+                        "value": state["value_schema"],
+                    }
+                )
+            )
         return {
             "name": self.tool_name,
             "description": "Repair only rejected fixture fields using the returned repair_id; preserve every valid field.",
@@ -550,17 +660,7 @@ class FixtureSubmission:
                     "patches": {
                         "type": "array",
                         "minItems": 1,
-                        "items": {
-                            "anyOf": [
-                                obj(
-                                    {
-                                        "repair_id": {"enum": [key]},
-                                        "value": self._value_schema(error),
-                                    }
-                                )
-                                for key, error in self._catalog().items()
-                            ]
-                        }
+                        "items": {"anyOf": choices}
                         if self.pending
                         else obj(
                             {"repair_id": {"type": "string"}, "value": {"type": "null"}}
@@ -595,6 +695,94 @@ class FixtureSubmission:
         arguments.clear()
         arguments.update(report)
 
+    def _repair_states(self, result, patch, catalog):
+        """Change only rejected references; append explicit, reviewable assumptions.
+
+        Existing declarations, action values, ordering and unrelated business fields
+        remain locked. Work on a copy so conflicts cannot corrupt the checkpoint.
+        """
+        jsonschema.validate(patch, catalog["value_schema"])
+        before = deepcopy(self._candidate(result))
+        candidate = deepcopy(before)
+        references = {r["ref_id"]: r for r in catalog["references"]}
+        seen = set()
+        for binding in patch["bindings"]:
+            ref_id = binding["ref_id"]
+            if ref_id in seen:
+                raise WorkbenchError("同一状态引用不能重复修复")
+            seen.add(ref_id)
+            path = references[ref_id]["path"]
+            candidate["actions"][path[1]][path[2]][path[3]]["key"] = binding["key"]
+
+        removals = set(patch["remove_duplicates"])
+        if removals & seen:
+            raise WorkbenchError("同一状态引用不能同时修改和删除")
+        removed_paths = {tuple(references[key]["path"][:-1]) for key in removals}
+        for key in removals:
+            path = references[key]["path"]
+            entries = candidate["actions"][path[1]][path[2]]
+            # Different values are distinct constraints, never redundant entries.
+            if not any(
+                entry == entries[path[3]]
+                and ("actions", path[1], path[2], i) not in removed_paths
+                for i, entry in enumerate(entries)
+            ):
+                raise WorkbenchError(
+                    "只能删除完全相同且保留至少一份的重复状态条件或结果"
+                )
+
+        affected_keys = {
+            candidate["actions"][r["path"][1]][r["path"][2]][r["path"][3]]["key"]
+            for key, r in references.items()
+            if key not in removals
+        }
+        keys = {s["key"] for s in candidate["initial_state"]}
+        assumptions = []
+        for declaration in patch["declarations"]:
+            key = declaration["key"]
+            if not key.strip() or not declaration["reason"].strip():
+                raise WorkbenchError("新增模拟状态必须有非空标识和初始值依据")
+            if key in keys or key not in affected_keys:
+                raise WorkbenchError(
+                    "只能补充本轮失效引用需要的缺失状态，不能覆盖已有状态"
+                )
+            keys.add(key)
+            candidate["initial_state"].append(
+                {"key": key, "value": declaration["value"]}
+            )
+            assumptions.append(
+                {
+                    "statement": f"模拟状态 {key} 的初始值为 {declaration['value']}",
+                    "provenance": "test_assumption",
+                    "quote_turn_id": None,
+                    "reason": declaration["reason"],
+                    "applies_when": "合成测试环境的初始状态；不代表真实业务操作已完成",
+                }
+            )
+        for path in sorted(removed_paths, reverse=True):
+            del candidate["actions"][path[1]][path[2]][path[3]]
+        if conflicts := state_issues(candidate):
+            raise WorkbenchError(
+                "状态联动修复仍有未声明、重复或歧义引用；整笔修复未应用。"
+                + str(FixtureErrors(conflicts))
+            )
+        if assumptions:
+            if schema_issues(
+                candidate["facts"], self.codec.schema["properties"]["facts"]
+            ):
+                raise WorkbenchError("先修复事实字段结构，再补充初始状态假设")
+            candidate["facts"].extend(assumptions)
+        if candidate == before:
+            raise WorkbenchError("状态联动修复未产生有效变化")
+        if self.base is None:
+            return candidate
+        for field in ("initial_state", "actions", "facts"):
+            if candidate[field] != before[field]:
+                result["corrections"][field] = candidate[field]
+        if result["verdict"] == "supported":
+            result["verdict"] = "corrected"
+        return result
+
     def repair(self, arguments):
         # Check the envelope separately so stale/duplicate IDs retain actionable
         # errors, and validate values before mutating even the saved draft copy.
@@ -615,12 +803,21 @@ class FixtureSubmission:
             raise WorkbenchError("场景修复版本已失效；使用最近返回的 draft_id")
         result = deepcopy(self.draft)
         catalog, seen = self._catalog(), set()
+        state = self._state_repair()
+        state_patch = None
         for patch in arguments["patches"]:
             key = patch["repair_id"]
+            if state and key == state["repair_id"]:
+                if state_patch is not None:
+                    raise WorkbenchError("同一状态联动修复不能重复提交")
+                state_patch = patch["value"]
+                continue
             if key not in catalog or key in seen:
                 raise WorkbenchError("只能修复本轮拒绝的字段，不能重复或修改有效内容")
             seen.add(key)
             error = catalog[key]
+            if error.get("state_path") and error.get("allowed") == []:
+                raise WorkbenchError("没有可直接替换的状态标识，请使用状态联动修复目录")
             jsonschema.validate(patch["value"], self._value_schema(error))
             path = error["path"]
             if not path:
@@ -635,7 +832,38 @@ class FixtureSubmission:
                 del parent[path[-1]]
             else:
                 parent[path[-1]] = deepcopy(patch["value"])
+        if state_patch is not None:
+            # Do not mix container replacement/index shifts with graph references
+            # resolved against the locked draft. Unrelated leaf fixes remain valid.
+            state_fields = {"actions", "initial_state", "facts"}
+            for key in seen:
+                path = catalog[key]["path"]
+                field_path = path[1:] if path[:1] == ["corrections"] else path
+                if not field_path or field_path[0] in state_fields:
+                    raise WorkbenchError("状态联动修复不能混用状态或事实字段替换")
+            result = self._repair_states(result, state_patch, state)
         errors = self._issues(result)
+        old_conflicts = {
+            (e.get("code"), tuple(e["path"]))
+            for e in self.errors
+            if e.get("code")
+            in {
+                "duplicate_state_reference",
+                "ambiguous_state_reference",
+                "duplicate_state_declaration",
+            }
+        }
+        if any(
+            e.get("code")
+            in {
+                "duplicate_state_reference",
+                "ambiguous_state_reference",
+                "duplicate_state_declaration",
+            }
+            and (e["code"], tuple(e["path"])) not in old_conflicts
+            for e in errors
+        ):
+            raise WorkbenchError("修复制造了新的重复或歧义状态引用；整笔修复未应用")
         if errors:
             before = {tuple(e["path"]) for e in self.errors}
             self.draft, self.errors = result, errors

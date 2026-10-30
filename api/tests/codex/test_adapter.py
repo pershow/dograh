@@ -1411,3 +1411,155 @@ async def test_real_sdk_binds_unselected_upload_with_confirmed_history_without_g
         assert len(seen) == 1
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.parametrize("verification", [False, True])
+@pytest.mark.parametrize("saved_checkpoint", [False, True])
+async def test_real_sdk_state_graph_repair_preserves_constraints_and_source(
+    source_binary, tmp_path, monkeypatch, verification, saved_checkpoint
+):
+    from copy import deepcopy
+
+    import jsonschema
+
+    from api.services.agent_workbench.fixtures import (
+        FixtureCodec,
+        FixtureErrors,
+        FixtureSubmission,
+    )
+    from api.services.agent_workbench.test_compilation import validate_plan
+    from api.services.agent_workbench.test_tasks import StructuredDecision
+    from api.tests.test_workbench_fixture_recovery import corrections, state_patch
+    from api.tests.test_workbench_test_compilation import fixture
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    case = fixture()
+    plan = deepcopy(case["compiled"]["scenario"])
+    codec = FixtureCodec(case["reference_turns"])
+    original = codec.encode(plan)
+    broken = deepcopy(original)
+    broken["actions"][0]["preconditions"].append(
+        {"key": "enabled", "value": "available"}
+    )
+    if verification:
+        submission = corrections(codec)
+        submission.update(
+            verdict="corrected", reason="Separate UI availability from enabled state"
+        )
+        submission["corrections"]["actions"] = broken["actions"]
+    else:
+        submission = broken
+    recovery = FixtureSubmission(
+        codec,
+        draft=original if verification else None,
+        original=plan if verification else None,
+    )
+    if saved_checkpoint:
+        with pytest.raises(FixtureErrors):
+            recovery(deepcopy(submission))
+        checkpoint = json.loads(json.dumps(recovery.draft))
+        recovery = FixtureSubmission(
+            codec,
+            draft=original if verification else None,
+            original=plan if verification else None,
+            checkpoint=checkpoint,
+        )
+    tool = "verify_customer_fixture" if verification else "compile_customer_fixture"
+    dispatcher = StructuredDecision(
+        tool,
+        "Preserve source and valid fields",
+        recovery.schema,
+        validate=recovery,
+        recovery=recovery,
+    )
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        specs = {t["name"]: t for t in body["tools"]}
+        seen.append(body)
+        if not saved_checkpoint and len(seen) == 1:
+            name, arguments = tool, deepcopy(submission)
+        else:
+            assert set(specs) == {"repair_fixture"}
+            assert (
+                specs["repair_fixture"]["parameters"] == recovery.spec()["inputSchema"]
+            )
+            assert recovery.draft_id in json.dumps(body)
+            name = "repair_fixture"
+            arguments = state_patch(
+                recovery,
+                bindings=[
+                    (("actions", 0, "preconditions", 1, "key"), "control_availability")
+                ],
+                declarations=[
+                    {
+                        "key": "control_availability",
+                        "value": "unavailable",
+                        "reason": "Synthetic availability is separate from enablement",
+                    }
+                ],
+            )
+            jsonschema.validate(arguments, specs[name]["parameters"])
+            bad = deepcopy(arguments)
+            bad["patches"][0]["value"]["bindings"][0]["ref_id"] = "unrelated-action"
+            assert not jsonschema.Draft202012Validator(
+                specs[name]["parameters"]
+            ).is_valid(bad)
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{len(seen)}",
+                        "call_id": f"call_{len(seen)}",
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    client = CodexClient(dispatcher, AsyncMock())
+    try:
+        result = await asyncio.wait_for(
+            client.run(
+                json.dumps(codec.evidence),
+                SimpleNamespace(
+                    model="test-model",
+                    api_key="local-test-key",
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                ),
+                protocol="responses",
+            ),
+            45,
+        )
+        assert result["model_requests"] == len(seen) == (1 if saved_checkpoint else 2)
+        accepted = dispatcher.report["scenario"] if verification else dispatcher.report
+        validate_plan(accepted, case["reference_turns"])
+        wire = codec.encode(accepted)
+        assert wire["initial_state"] == original["initial_state"] + [
+            {"key": "control_availability", "value": "unavailable"}
+        ]
+        assert wire["actions"][0]["preconditions"] == original["actions"][0][
+            "preconditions"
+        ] + [{"key": "control_availability", "value": "available"}]
+        assert wire["facts"][:-1] == original["facts"]
+        assert wire["facts"][-1]["provenance"] == "test_assumption"
+        assert wire["facts"][-1]["quote_turn_id"] is None
+        assert wire["source_coverage"] == original["source_coverage"]
+        assert wire["behavior"] == original["behavior"]
+        assert client.rpc.process.returncode is not None
+        assert not list((tmp_path / "jobs").iterdir())
+    finally:
+        await runner.cleanup()
