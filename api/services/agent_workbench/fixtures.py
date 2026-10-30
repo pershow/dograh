@@ -35,7 +35,30 @@ def issue(path, reason, **details):
 
 def schema_issues(value, schema):
     errors = []
-    for error in jsonschema.Draft202012Validator(schema).iter_errors(value):
+
+    def leaves(error):
+        # Nullable corrections must not hide a bad leaf behind a whole-field
+        # anyOf error. Descend only when the JSON type selects one branch;
+        # ambiguous unions still require repairing the union itself.
+        if error.validator in {"anyOf", "oneOf"}:
+            branches = error.validator_value
+            matching = [
+                i
+                for i, branch in enumerate(branches)
+                if matches_type(error.instance, branch)
+            ]
+            if len(matching) == 1:
+                for child in error.context:
+                    if child.schema_path[0] == matching[0]:
+                        yield from leaves(child)
+                return
+        yield error
+
+    for error in (
+        leaf
+        for parent in jsonschema.Draft202012Validator(schema).iter_errors(value)
+        for leaf in leaves(parent)
+    ):
         path = list(error.absolute_path)
         if error.validator == "required":
             for key in error.validator_value:
@@ -56,6 +79,38 @@ def schema_issues(value, schema):
             )
     # Required-property errors can repeat at the same parent object.
     return list({json.dumps(e, sort_keys=True): e for e in errors}.values())
+
+
+def matches_type(value, schema):
+    kinds = schema.get("type")
+    if kinds is None:
+        return True
+    if isinstance(kinds, str):
+        kinds = [kinds]
+    return any(
+        jsonschema.Draft202012Validator.TYPE_CHECKER.is_type(value, kind)
+        for kind in kinds
+    )
+
+
+def field_schema(schema, path, value):
+    """Resolve a schema through nullable objects without changing its constraints."""
+    if not path:
+        return deepcopy(schema)
+    for union in ("anyOf", "oneOf"):
+        if union in schema:
+            choices = [s for s in schema[union] if matches_type(value, s)]
+            if len(choices) != 1:
+                raise WorkbenchError("无法唯一确定待修复字段的结构")
+            return field_schema(choices[0], path, value)
+    key, *tail = path
+    child = schema["items"] if isinstance(key, int) else schema["properties"][key]
+    current = (
+        value[key]
+        if isinstance(value, (dict, list)) and (isinstance(key, int) or key in value)
+        else None
+    )
+    return field_schema(child, tail, current)
 
 
 def plan_issues(value, turns, schema):
@@ -221,6 +276,10 @@ class FixtureCodec:
                     }
                 ),
             }
+        )
+        self.verification_schema["description"] = (
+            "Review envelope: verdict and reason are top-level fields beside corrections. "
+            "All fixture fields belong inside corrections; null preserves the draft field."
         )
 
     @property
@@ -459,12 +518,27 @@ class FixtureSubmission:
     def _error(self, progressed=False):
         return FixtureErrors(
             [
-                {**e, "repair_id": "field_" + fingerprint(e["path"])[:16]}
+                {
+                    **e,
+                    "repair_id": "field_" + fingerprint(e["path"])[:16],
+                    "value_schema": self._value_schema(e),
+                }
                 for e in self.errors
             ],
             draft_id=self.draft_id,
             progressed=progressed,
         )
+
+    def _value_schema(self, error):
+        if error.get("remove"):
+            return {"type": "null"}
+        schema = field_schema(self.schema, error["path"], self.draft)
+        if "allowed" in error and all(
+            jsonschema.Draft202012Validator(schema).is_valid(value)
+            for value in error["allowed"]
+        ):
+            schema["enum"] = deepcopy(error["allowed"])
+        return schema
 
     def spec(self):
         return {
@@ -476,7 +550,21 @@ class FixtureSubmission:
                     "patches": {
                         "type": "array",
                         "minItems": 1,
-                        "items": obj({"repair_id": {"type": "string"}, "value": {}}),
+                        "items": {
+                            "anyOf": [
+                                obj(
+                                    {
+                                        "repair_id": {"enum": [key]},
+                                        "value": self._value_schema(error),
+                                    }
+                                )
+                                for key, error in self._catalog().items()
+                            ]
+                        }
+                        if self.pending
+                        else obj(
+                            {"repair_id": {"type": "string"}, "value": {"type": "null"}}
+                        ),
                     },
                 }
             ),
@@ -508,7 +596,21 @@ class FixtureSubmission:
         arguments.update(report)
 
     def repair(self, arguments):
-        jsonschema.validate(arguments, self.spec()["inputSchema"])
+        # Check the envelope separately so stale/duplicate IDs retain actionable
+        # errors, and validate values before mutating even the saved draft copy.
+        jsonschema.validate(
+            arguments,
+            obj(
+                {
+                    "draft_id": {"type": "string"},
+                    "patches": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": obj({"repair_id": {"type": "string"}, "value": {}}),
+                    },
+                }
+            ),
+        )
         if not self.pending or arguments["draft_id"] != self.draft_id:
             raise WorkbenchError("场景修复版本已失效；使用最近返回的 draft_id")
         result = deepcopy(self.draft)
@@ -519,6 +621,7 @@ class FixtureSubmission:
                 raise WorkbenchError("只能修复本轮拒绝的字段，不能重复或修改有效内容")
             seen.add(key)
             error = catalog[key]
+            jsonschema.validate(patch["value"], self._value_schema(error))
             path = error["path"]
             if not path:
                 result = deepcopy(patch["value"])
@@ -536,7 +639,13 @@ class FixtureSubmission:
         if errors:
             before = {tuple(e["path"]) for e in self.errors}
             self.draft, self.errors = result, errors
-            raise self._error({tuple(e["path"]) for e in errors} < before)
+            after = {tuple(e["path"]) for e in errors}
+            # Refining an invalid container into rejected leaves also locks
+            # newly valid siblings. It is real progress, not a fresh retry loop.
+            progressed = after != before and all(
+                any(path[: len(old)] == old for old in before) for path in after
+            )
+            raise self._error(progressed)
         return self._accept(result)
 
     def resume_instructions(self):

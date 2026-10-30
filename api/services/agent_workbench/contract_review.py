@@ -327,7 +327,9 @@ async def review_contract(
     ] + compiled["sources"]
     evidence["requirements"] = requirements
     evidence["frozen_scenario"] = compiled["scenario"]
-    evidence["authority_questions"] = compiled["rubric_questions"]
+    from api.services.agent_workbench.preparation_questions import remaining_questions
+
+    evidence["authority_questions"] = remaining_questions(compiled)
     records = {r["id"]: r for r in evidence["records"]}
     reader = ReviewSourceReader(evidence)
 

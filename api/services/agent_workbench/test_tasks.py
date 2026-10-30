@@ -67,6 +67,8 @@ class StructuredDecision:
         )
 
     def specs(self):
+        if self.recovery and self.recovery.pending:
+            return [self.recovery.spec()] + (self.reader.specs() if self.reader else [])
         return (
             [
                 {

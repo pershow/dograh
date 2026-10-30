@@ -280,6 +280,8 @@ def verified_plan(draft, verification, turns):
 
 
 def validate_compiled(case, *, records=None):
+    from api.services.agent_workbench.preparation_questions import validate_saved_review
+
     compiled = case.get("compiled")
     if not compiled or compiled.get("version") not in {1, 2}:
         raise WorkbenchError("缺少支持版本的测试准备结果。")
@@ -289,6 +291,7 @@ def validate_compiled(case, *, records=None):
         {k: v for k, v in compiled.items() if k != "fingerprint"}
     ):
         raise WorkbenchError("冻结的测试准备结果校验失败。")
+    validate_saved_review(compiled)
     checkpoint = compiled.get("preparation_checkpoint")
     if checkpoint and (
         checkpoint.get("version") != 1
@@ -521,6 +524,29 @@ async def compile_cases(
     )
     if pending and environment is None:
         environment = await compile_environment(basis, decide)
+    from api.services.agent_workbench.preparation_questions import reconcile_questions
+
+    question_review = await reconcile_questions(
+        [
+            q
+            for c in selected
+            for q in (c.get("compiled") or {}).get("rubric_questions", questions)
+        ],
+        basis,
+        selected,
+        decide,
+        previous=[(c.get("compiled") or {}).get("question_review") for c in selected],
+    )
+    if question_review:
+        for case in selected:
+            compiled = case.get("compiled")
+            if compiled and compiled.get("question_review") != question_review:
+                compiled["question_review"] = deepcopy(question_review)
+                compiled["fingerprint"] = fingerprint(
+                    {k: v for k, v in compiled.items() if k != "fingerprint"}
+                )
+                if checkpoint:
+                    await checkpoint(case)
     semaphore = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
     done = len(selected) - len(pending)
@@ -552,6 +578,11 @@ async def compile_cases(
             "requirements": prior.get("requirements") or requirements,
             "sources": prior.get("sources") or sources,
             "rubric_questions": prior.get("rubric_questions", questions),
+            **(
+                {"question_review": deepcopy(question_review)}
+                if question_review
+                else {}
+            ),
             "public_context": deepcopy(case["initial_context"]),
             "scenario": deepcopy(saved.get("scenario")),
             "status": "preparing",
@@ -612,12 +643,30 @@ async def compile_cases(
                 + (
                     "\nIndependently verify every source concern, initial fact, state transition and assumption. "
                     "Return typed corrections only for fields that need changes; use null for unchanged fields. "
+                    "The submission_template shows the envelope only: choose supported only when every correction is null, "
+                    "corrected when changing the fixture, or needs_input for a material unresolved conflict. "
                     "Never soften refusal, invent permission, or edit source material, business assertions or Agent."
                     if draft is not None
                     else ""
                 ),
                 recovery.schema,
-                {**evidence, **({"draft": draft} if draft is not None else {})},
+                {
+                    **evidence,
+                    **(
+                        {
+                            "draft": draft,
+                            "submission_template": {
+                                "verdict": "supported",
+                                "reason": "Explain the independent review",
+                                "corrections": dict.fromkeys(
+                                    codec.schema["properties"]
+                                ),
+                            },
+                        }
+                        if draft is not None
+                        else {}
+                    ),
+                },
                 validate=recovery,
                 recovery=recovery,
             )
@@ -691,6 +740,8 @@ async def compile_cases(
 
 
 def preparation_summary(cases):
+    from api.services.agent_workbench.preparation_questions import remaining_questions
+
     selected = cases
 
     def receipt(case):
@@ -717,7 +768,7 @@ def preparation_summary(cases):
                 "status": (z := receipt(c)).get("status", "pending"),
                 "fingerprint": z.get("fingerprint"),
                 "requirement_count": len(z.get("requirements", [])),
-                "questions": z.get("rubric_questions", [])
+                "questions": remaining_questions(z)
                 + [
                     x["question"]
                     for x in (z.get("scenario") or {}).get("missing_information", [])

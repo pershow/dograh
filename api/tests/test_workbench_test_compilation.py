@@ -617,6 +617,19 @@ async def test_unrelated_authority_question_does_not_block_customer_fixture():
 
     async def decide(name, rules, schema, evidence, **kwargs):
         calls.append((name, evidence))
+        if name == "reconcile_preparation_questions":
+            value = {
+                "resolutions": [
+                    {
+                        "question_id": evidence["questions"][0]["question_id"],
+                        "status": "unresolved",
+                        "reason": "原始资料没有给出重试上限",
+                        "citations": [],
+                    }
+                ]
+            }
+            kwargs["validate"](value)
+            return value
         value = deepcopy(
             rubric
             if "rubric" in name

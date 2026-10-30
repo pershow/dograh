@@ -412,11 +412,11 @@ async def test_source_build_repairs_citations_and_finishes_at_repaired_receipt(
     async def upstream(request):
         body = await request.json()
         seen.append(body)
-        assert {t["name"] for t in body["tools"]} == {
-            "compile_business_rubric",
-            "repair_citations",
-            "read_review_source",
-        }
+        assert {t["name"] for t in body["tools"]} == (
+            {"compile_business_rubric", "repair_citations", "read_review_source"}
+            if len(seen) == 1
+            else {"repair_citations", "read_review_source"}
+        )
         if len(seen) == 1:
             tool = "compile_business_rubric"
             arguments = {
@@ -834,16 +834,20 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
         body = await request.json()
         seen.append(body)
         specs = {t["name"]: t for t in body["tools"]}
-        assert set(specs) == {"compile_customer_fixture", "repair_fixture"}
-        assert specs["compile_customer_fixture"]["parameters"] == recovery.schema
-        assert set(
-            specs["compile_customer_fixture"]["parameters"]["properties"][
-                "source_coverage"
-            ]["properties"]
-        ) == set(codec.sources)
         if len(seen) == 1:
+            assert set(specs) == {"compile_customer_fixture", "repair_fixture"}
+            assert specs["compile_customer_fixture"]["parameters"] == recovery.schema
+            assert set(
+                specs["compile_customer_fixture"]["parameters"]["properties"][
+                    "source_coverage"
+                ]["properties"]
+            ) == set(codec.sources)
             tool, args = "compile_customer_fixture", wire
         else:
+            assert set(specs) == {"repair_fixture"}
+            assert (
+                specs["repair_fixture"]["parameters"] == recovery.spec()["inputSchema"]
+            )
             assert len(seen) == 2 and saved and recovery.draft_id in json.dumps(body)
             problem = recovery._error().issues[0]
             tool, args = (
@@ -903,6 +907,125 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
         assert saved[0]["actions"][0]["effects"][0]["key"] == "undeclared"
         assert client.rpc.process.returncode is not None
         assert not list((tmp_path / "jobs").iterdir())
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.parametrize("saved_checkpoint", [False, True])
+@pytest.mark.parametrize("malformation", ["nested_field", "review_envelope"])
+async def test_real_sdk_verification_repair_keeps_typed_fields_and_saved_plan(
+    source_binary, tmp_path, monkeypatch, saved_checkpoint, malformation
+):
+    from copy import deepcopy
+
+    import jsonschema
+
+    from api.services.agent_workbench.fixtures import FixtureCodec, FixtureSubmission
+    from api.services.agent_workbench.test_tasks import StructuredDecision
+    from api.tests.test_workbench_fixture_recovery import corrections, repair_payload
+    from api.tests.test_workbench_test_compilation import fixture
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    case = fixture()
+    plan = deepcopy(case["compiled"]["scenario"])
+    codec = FixtureCodec(case["reference_turns"])
+    wire = codec.encode(plan)
+    value = corrections(codec)
+    value["verdict"] = "corrected"
+    if malformation == "nested_field":
+        value["corrections"]["goals"] = deepcopy(wire["goals"])
+        value["corrections"]["goals"][0]["quote_turn_id"] = "unknown-source"
+        replacements = {
+            ("corrections", "goals", 0, "quote_turn_id"): next(iter(codec.sources))
+        }
+    else:
+        value = {
+            **deepcopy(wire),
+            "verdict": "corrected",
+            "reason": "Independent review",
+        }
+        replacements = {(key,): None for key in wire}
+        replacements[("corrections",)] = deepcopy(wire)
+    recovery = FixtureSubmission(
+        codec, draft=wire, original=plan, checkpoint=value if saved_checkpoint else None
+    )
+    dispatcher = StructuredDecision(
+        "verify_customer_fixture",
+        "Verify source evidence",
+        recovery.schema,
+        validate=recovery,
+        recovery=recovery,
+    )
+    client = CodexClient(dispatcher, AsyncMock())
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        specs = {t["name"]: t for t in body["tools"]}
+        if not recovery.pending:
+            assert set(specs) == {"verify_customer_fixture", "repair_fixture"}
+            assert (
+                specs["verify_customer_fixture"]["parameters"]
+                == codec.verification_schema
+            )
+            tool, arguments = "verify_customer_fixture", deepcopy(value)
+        else:
+            assert set(specs) == {"repair_fixture"}
+            schema = specs["repair_fixture"]["parameters"]
+            assert schema == recovery.spec()["inputSchema"]
+            assert {tuple(e["path"]) for e in recovery.errors} == set(replacements)
+            arguments = repair_payload(recovery, replacements)
+            jsonschema.validate(arguments, schema)
+            bad = deepcopy(arguments)
+            bad["patches"][0]["value"] = 123
+            with pytest.raises(jsonschema.ValidationError):
+                jsonschema.validate(bad, schema)
+            assert recovery.base == wire
+            tool = "repair_fixture"
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{len(seen)}",
+                        "call_id": f"call_{len(seen)}",
+                        "name": tool,
+                        "arguments": json.dumps(arguments),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        result = await asyncio.wait_for(
+            client.run(
+                json.dumps(codec.evidence),
+                SimpleNamespace(
+                    model="test-model",
+                    api_key="local-test-key",
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                ),
+                protocol="responses",
+            ),
+            45,
+        )
+        assert result["model_requests"] == len(seen) == (1 if saved_checkpoint else 2)
+        assert dispatcher.report["scenario"] == plan
+        assert dispatcher.report["verdict"] == "corrected"
+        assert recovery.base == wire
+        assert not recovery.pending
+        assert client.rpc.process.returncode is not None
     finally:
         await runner.cleanup()
 

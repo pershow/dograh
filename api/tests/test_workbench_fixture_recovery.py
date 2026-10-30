@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from unittest.mock import AsyncMock
 
+import jsonschema
 import pytest
 
 from api.services.agent_workbench import test_compilation as compiler
@@ -19,6 +20,121 @@ from api.services.agent_workbench.fixtures import (
 )
 from api.services.agent_workbench.test_tasks import StructuredDecision
 from api.tests.test_workbench_test_compilation import fixture
+
+
+def test_nullable_verification_reports_leaf_and_transports_exact_repair_type():
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    plan = deepcopy(case["compiled"]["scenario"])
+    wire = codec.encode(plan)
+    value = corrections(codec)
+    value["verdict"] = "corrected"
+    value["corrections"]["goals"] = deepcopy(wire["goals"])
+    value["corrections"]["goals"][0]["quote_turn_id"] = "unrecognized-turn"
+    recovery = FixtureSubmission(codec, draft=wire, original=plan)
+    with pytest.raises(FixtureErrors) as caught:
+        recovery(value)
+    assert [e["path"] for e in caught.value.issues] == [
+        ["corrections", "goals", 0, "quote_turn_id"]
+    ]
+    saved = deepcopy(recovery.draft)
+    patch = repair_payload(
+        recovery,
+        {("corrections", "goals", 0, "quote_turn_id"): next(iter(codec.sources))},
+    )
+    jsonschema.validate(patch, recovery.spec()["inputSchema"])
+    for bad_value in (None, 1, {}, "unrecognized-turn"):
+        bad = deepcopy(patch)
+        bad["patches"][0]["value"] = bad_value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, recovery.spec()["inputSchema"])
+        with pytest.raises(jsonschema.ValidationError):
+            recovery.repair(bad)
+        assert recovery.draft == saved
+    accepted = recovery.repair(patch)
+    assert accepted["scenario"] == plan
+    assert accepted["verdict"] == "corrected"
+
+
+def test_reloaded_verification_envelope_can_be_repaired_without_regeneration():
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    plan = case["compiled"]["scenario"]
+    wire = codec.encode(plan)
+    # A legacy model submitted fixture fields at the review envelope's root.
+    checkpoint = {**deepcopy(wire), "verdict": "corrected", "reason": "Review"}
+    recovery = FixtureSubmission(
+        codec, draft=wire, original=plan, checkpoint=checkpoint
+    )
+    dispatcher = StructuredDecision(
+        "verify_customer_fixture",
+        "Review",
+        recovery.schema,
+        validate=recovery,
+        recovery=recovery,
+    )
+    assert [t["name"] for t in dispatcher.specs()] == ["repair_fixture"]
+    replacements = {(key,): None for key in wire}
+    replacements[("corrections",)] = wire
+    payload = repair_payload(recovery, replacements)
+    jsonschema.validate(payload, recovery.spec()["inputSchema"])
+    bad = deepcopy(payload)
+    bad["patches"][0]["value"] = "cannot delete by overwriting"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, recovery.spec()["inputSchema"])
+    assert recovery.repair(payload)["scenario"] == plan
+
+
+def test_nested_nullable_object_repair_locks_valid_siblings():
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    wire = codec.encode(case["compiled"]["scenario"])
+    value = corrections(codec)
+    value["verdict"] = "corrected"
+    value["corrections"]["source_coverage"] = deepcopy(wire["source_coverage"])
+    turn = next(iter(codec.sources))
+    value["corrections"]["source_coverage"][turn]["items"][0] = "wrong-type"
+    recovery = FixtureSubmission(codec, draft=wire)
+    with pytest.raises(FixtureErrors) as caught:
+        recovery(value)
+    path = ("corrections", "source_coverage", turn, "items", 0)
+    assert [tuple(e["path"]) for e in caught.value.issues] == [path]
+    assert caught.value.issues[0]["value_schema"]["type"] == "object"
+    with pytest.raises(KeyError):
+        repair_payload(recovery, {("corrections", "source_coverage"): {}})
+    accepted = recovery.repair(
+        repair_payload(recovery, {path: {"group": "facts", "index": 0}})
+    )
+    assert (
+        accepted["scenario"]["goals"][0]["description"]
+        == wire["goals"][0]["description"]
+    )
+    assert (
+        accepted["scenario"]["source_coverage"][0]["reason"]
+        == wire["source_coverage"][turn]["reason"]
+    )
+
+
+def test_repairing_missing_container_can_refine_to_semantic_leaf_without_unlocking_siblings():
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    plan = case["compiled"]["scenario"]
+    wire = codec.encode(plan)
+    recovery = FixtureSubmission(codec, draft=wire, original=plan)
+    with pytest.raises(FixtureErrors):
+        recovery({"verdict": "corrected", "reason": "Verify"})
+    fields = deepcopy(wire)
+    fields["actions"][0]["effects"][0]["key"] = "undeclared-state"
+    with pytest.raises(FixtureErrors) as caught:
+        recovery.repair(repair_payload(recovery, {("corrections",): fields}))
+    assert caught.value.progressed
+    path = ("corrections", "actions", 0, "effects", 0, "key")
+    assert [tuple(e["path"]) for e in caught.value.issues] == [path]
+    with pytest.raises(KeyError):
+        repair_payload(recovery, {("corrections",): wire})
+    assert (
+        recovery.repair(repair_payload(recovery, {path: "enabled"}))["scenario"] == plan
+    )
 
 
 def setup():
