@@ -91,6 +91,25 @@
   margin: 0;
   padding: 8px 16px;
 }
+.preparation {
+  /* Expanded receipts must scroll inside their own viewport. They also appear
+     above the conversation, where an intrinsic-height flex item hides controls. */
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: min(280px, 30dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  overflow-wrap: anywhere;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.preparation h3 { font-weight: 600; }
+.preparation p { margin: 4px 0; }
+.preparation summary { cursor: pointer; }
 .body {
   display: flex;
   flex-direction: column;

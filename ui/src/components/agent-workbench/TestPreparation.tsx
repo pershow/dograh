@@ -1,8 +1,9 @@
 import type { PreparationReceipt } from "./types";
+import styles from "./workbench.module.css";
 
 export function TestPreparation({receipt}: {receipt?: PreparationReceipt}) {
   if (!receipt) return null;
-  return <section aria-label="测试准备结果">
+  return <section aria-label="测试准备结果" className={styles.preparation} tabIndex={0}>
     <h3>场景与验收标准</h3>
     <p>共 {receipt.total} 条 · 可执行 {receipt.ready} · 资料待确认 {receipt.needs_input} · 准备异常 {receipt.preparation_error} · 准备中 {receipt.preparing || 0} · 待处理 {receipt.pending || 0}</p>
     <p>原始用例保留，已完成的阶段单独保存。准备完成不代表 Agent 测试通过。</p>
