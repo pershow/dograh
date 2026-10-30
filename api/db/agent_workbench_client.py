@@ -376,10 +376,36 @@ class AgentWorkbenchClient(BaseDBClient):
             if job.output.get("test_source_job_id") == source_job_id:
                 return record(job)
             if job.output.get("test_source_job_id"):
+                if source_job_id in job.output.get("test_chain_job_ids", []):
+                    return record(job)
                 raise WorkbenchError("测试恢复来源已固定，不能切换。", 409)
+            # The model or an old clarification button may reference an ancestor.
+            # Resolve its latest scoped state under the session lock; retain all
+            # compatible checkpoints, including legacy sibling continuations.
+            from api.services.agent_workbench.test_lineage import test_chain
+
+            rows = (
+                await db.scalars(
+                    select(WorkbenchJobModel)
+                    .where(
+                        WorkbenchJobModel.session_id == session_id,
+                        WorkbenchJobModel.created_at < job.created_at,
+                        WorkbenchJobModel.kind == "build",
+                    )
+                    .order_by(
+                        WorkbenchJobModel.created_at.desc(), WorkbenchJobModel.id.desc()
+                    )
+                )
+            ).all()
+            chain = test_chain([record(row) for row in rows], source_job_id)
+            if chain:
+                prior = next(row for row in rows if row.id == chain[0]["id"])
+                source_job_id = prior.id
             restored = continued_test_input(
                 record(prior), job.input, classified_test=classified_test
             )
+            if any(r["output"].get("preparation_receipts") for r in chain):
+                restored["resume_test_job_id"] = source_job_id
             target = prior.output.get("_requested_target")
             if target is None:
                 raise WorkbenchError("原测试缺少冻结版本，不能安全恢复。", 409)
@@ -390,6 +416,7 @@ class AgentWorkbenchClient(BaseDBClient):
                 "intent": "test",
                 "_submitted_input": submitted,
                 "test_source_job_id": source_job_id,
+                "test_chain_job_ids": [r["id"] for r in chain],
                 "_requested_target": copy.deepcopy(target),
                 "requested_target_fingerprint": fingerprint(target),
                 "test_target_fingerprint": fingerprint(target),

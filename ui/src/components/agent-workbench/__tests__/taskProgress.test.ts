@@ -147,3 +147,15 @@ describe("workbench progress", () => {
     expect(historical).not.toContain("缩小");
   });
 });
+
+it('explains SDK stream failures and shows the actual bounded retry count', () => {
+  for (const message of [
+    'Model stream interrupted before completion; incomplete output was not accepted.',
+    "Codex turn failed: {'message': 'stream disconnected before completion: Transport error: network error: error decoding response body', 'codexErrorInfo': 'other'}",
+  ]) {
+    expect(workbenchErrorText(message)).toContain('模型响应流中断');
+    expect(workbenchErrorText(message)).toContain('准备断点仍保留');
+    expect(workbenchErrorText(message)).not.toContain('构建服务异常');
+  }
+  expect(modelProgressText({phase: 'retrying', next_attempt: 2, max_attempts: 2})).toContain('2/2');
+});

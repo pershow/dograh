@@ -1053,3 +1053,139 @@ async def test_operation_receipt_is_scoped_fenced_immutable_and_idempotent(
     await db_session.wb_cancel(org, sid, job["id"])
     with pytest.raises(LeaseLost):
         await db_session.wb_set_test_operation(*args, "prepare", "cancelled")
+
+
+async def test_test_chain_restores_latest_confirmation_and_all_matching_checkpoints(
+    db_session, wb, monkeypatch
+):
+    from api.db import db_client
+    from api.services.agent_workbench.recovery import restore_prepared_cases
+    from api.services.agent_workbench.test_tasks import reusable_source_mapping
+    from api.tests.test_workbench_test_compilation import fixture
+
+    org, _user, sid = wb
+    before = await db_session.wb_context(org, sid)
+    original = {
+        "text": "Prepare the supplied dialogue cases",
+        "mode": "test",
+        "prepare_only": True,
+        "test_mode": "dynamic",
+        "asset_ids": [],
+    }
+
+    async def create(payload, output=None, status="failed"):
+        queued = await db_session.wb_enqueue(
+            org, sid, "build", payload, str(uuid.uuid4())
+        )
+        claimed = await db_session.wb_claim(org, sid, queued["id"])
+        if output is not None:
+            await db_session.wb_finish(
+                org, sid, claimed["id"], claimed["lease_token"], status, output=output
+            )
+        return claimed
+
+    root = await create(
+        original,
+        {
+            "intent": "test",
+            "outcome": "needs_input",
+            "task_mode": "test",
+            "pending_request": original,
+            "question": "Which column?",
+        },
+        "awaiting_input",
+    )
+    answer = (
+        "Use revised_dialogue only as reference; customer replies define the scenario."
+    )
+    confirmed = await create({"text": answer, "mode": "test"})
+    restored = await db_session.wb_resume_test_request(
+        org, sid, confirmed["id"], confirmed["lease_token"], root["id"]
+    )
+    ready = fixture()
+    partial = fixture()
+    partial["name"] = "interrupted fixture"
+    partial["compiled"]["status"] = "preparing"
+    partial["compiled"]["recovery"] = {
+        "stage": "verify",
+        "accepted": {"facts": ["preserved"]},
+    }
+    receipts = []
+    for case in [ready, partial]:
+        suite = await db_session.wb_save_suite(
+            org, sid, {"name": case["name"], "cases": [case]}
+        )
+        receipts.append(
+            {
+                "name": case["name"],
+                "suite_id": suite["id"],
+                "status": case["compiled"]["status"],
+            }
+        )
+    mapping = {
+        "asset_id": "file",
+        "sheet": "Cases",
+        "dialogue_column": "revised_dialogue",
+        "id_column": "ID",
+        "user_labels": ["Customer"],
+        "assistant_labels": ["Operator"],
+    }
+    manifest = [{**mapping, "sha256": "bytes", "rows": 2}]
+    await db_session.wb_finish(
+        org,
+        sid,
+        confirmed["id"],
+        confirmed["lease_token"],
+        "failed",
+        output={"preparation_receipts": receipts, "source_manifest": manifest},
+    )
+    # Legacy stale siblings have no own checkpoints. They still belong to this
+    # task, and must not cut off accepted facts or older preparation receipts.
+    latest = await create(
+        {
+            **restored["input"],
+            "continue_test_job_id": root["id"],
+            "test_source_job_id": root["id"],
+        },
+        {"intent": "test", "source_manifest": manifest},
+    )
+    expected_text = restored["input"]["text"]
+    monkeypatch.setattr(db_client, "wb_get", db_session.wb_get)
+    for index in range(3):
+        submitted = {"mode": "auto", "text": "Please continue", "asset_ids": []}
+        current = await create(submitted)
+        args = (org, sid, current["id"], current["lease_token"], root["id"])
+        continued = await db_session.wb_resume_test_request(*args)
+        assert continued["output"]["test_source_job_id"] == latest["id"]
+        assert confirmed["id"] in continued["output"]["test_chain_job_ids"]
+        assert continued["input"]["text"] == expected_text
+        assert answer in continued["input"]["text"]
+        assert continued["input"]["prepare_only"] is True
+        assert await db_session.wb_resume_test_request(*args) == continued
+        assert (
+            await db_session.wb_requested_target(org, sid, current["id"])
+            == before["target"]
+        )
+        cases = [copy.deepcopy(ready), copy.deepcopy(partial)]
+        for case in cases:
+            case["compiled"] = None
+        names = await restore_prepared_cases(
+            org,
+            sid,
+            continued["input"]["resume_test_job_id"],
+            cases,
+            related_job_ids=continued["output"]["test_chain_job_ids"],
+        )
+        assert names == {ready["name"], partial["name"]}
+        assert cases == [ready, partial]
+        assert await reusable_source_mapping(
+            org,
+            sid,
+            continued["input"],
+            [{"asset_id": "file", "sheet": "Cases", "sha256": "bytes"}],
+        ) == {"needs_input": "", "tables": [mapping]}
+        await db_session.wb_finish(
+            org, sid, current["id"], current["lease_token"], "failed"
+        )
+        latest = current
+    assert (await db_session.wb_context(org, sid))["target"] == before["target"]

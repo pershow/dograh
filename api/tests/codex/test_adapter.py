@@ -905,3 +905,267 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
         assert not list((tmp_path / "jobs").iterdir())
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.parametrize("failure_mode", ["once", "always", "non_decision"])
+async def test_real_sdk_broken_response_stream_has_bounded_safe_recovery(
+    source_binary, tmp_path, monkeypatch, failure_mode
+):
+    """Abort actual loopback HTTP chunks consumed by the pinned Rust SDK."""
+    from api.services.agent_workbench import codex_client, test_tasks
+    from api.services.agent_workbench.errors import ModelTransportError
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    original = codex_client.ModelGateway.handle
+    attempts, upstream_calls, notices = [], [], []
+    validator = Mock()
+
+    async def handle(gateway, request):
+        attempts.append(gateway)
+        if failure_mode != "once" or len(attempts) == 1:
+            body = await request.json()
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            item = {
+                "id": "fc_partial",
+                "type": "function_call",
+                "call_id": "partial",
+                "name": body["tools"][0]["name"],
+                "arguments": "",
+                "status": "in_progress",
+            }
+            frames = [
+                {
+                    "type": "response.created",
+                    "response": {
+                        "id": "resp_partial",
+                        "status": "in_progress",
+                        "output": [],
+                    },
+                },
+                {"type": "response.output_item.added", "output_index": 0, "item": item},
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 0,
+                    "item_id": item["id"],
+                    "delta": '{"answer":"unfinished',
+                },
+            ]
+            for frame in frames:
+                await response.write(("data: " + json.dumps(frame) + "\n\n").encode())
+            request.transport.abort()  # No final HTTP chunk or response.completed.
+            return response
+        return await original(gateway, request)
+
+    monkeypatch.setattr(codex_client.ModelGateway, "handle", handle)
+
+    async def upstream(request):
+        body = await request.json()
+        upstream_calls.append(body)
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_valid",
+                        "call_id": "valid",
+                        "name": "submit_record",
+                        "arguments": '{"answer":"complete"}',
+                        "status": "completed",
+                    }
+                ],
+            }
+        )
+
+    async def event(kind, payload):
+        notices.append((kind, payload))
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    llm = SimpleNamespace(
+        model="test-model",
+        api_key="local-only",
+        base_url=f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1",
+    )
+    schema = test_tasks.object_schema({"answer": {"type": "string"}})
+    try:
+        if failure_mode == "non_decision":
+            dispatcher = test_tasks.StructuredDecision(
+                "submit_record", "rules", schema, validator
+            )
+            with pytest.raises(ModelTransportError):
+                await asyncio.wait_for(
+                    CodexClient(dispatcher, event).run(
+                        "request", llm, protocol="responses"
+                    ),
+                    30,
+                )
+            assert len(attempts) == 1
+        else:
+            operation = test_tasks.decision(
+                "submit_record",
+                "rules",
+                schema,
+                {},
+                llm,
+                event,
+                protocol="responses",
+                validate=validator,
+            )
+            if failure_mode == "always":
+                with pytest.raises(ModelTransportError):
+                    await asyncio.wait_for(operation, 30)
+            else:
+                assert await asyncio.wait_for(operation, 30) == {"answer": "complete"}
+            assert len(attempts) == 2
+            retries = [
+                p
+                for k, p in notices
+                if k == "model.progress" and p.get("phase") == "retrying"
+            ]
+            assert len(retries) == 1
+            assert retries[0]["next_attempt"] == retries[0]["max_attempts"] == 2
+        if failure_mode == "once":
+            validator.assert_called_once_with({"answer": "complete"})
+            assert len(upstream_calls) == 1
+        else:
+            validator.assert_not_called()
+            assert not upstream_calls
+        failures = [p for k, p in notices if k == "model.error"]
+        assert failures and all(
+            p["code"] == "model_stream_interrupted" for p in failures
+        )
+    finally:
+        await runner.cleanup()
+
+
+async def test_real_sdk_continuation_receives_latest_confirmed_facts_and_checkpoint(
+    source_binary, tmp_path, monkeypatch
+):
+    from api.services.agent_workbench import test_tasks
+    from api.services.agent_workbench.recovery import continued_test_input
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    confirmed_text = "Prepare cases using revision_b as reference only; derive customer facts from customer replies."
+    root = {
+        "id": "question",
+        "status": "awaiting_input",
+        "input": {"text": "Prepare cases", "mode": "test"},
+        "output": {
+            "outcome": "needs_input",
+            "task_mode": "test",
+            "question": "Which column?",
+        },
+    }
+    latest = {
+        "id": "latest",
+        "status": "failed",
+        "input": {
+            "text": confirmed_text,
+            "mode": "test",
+            "prepare_only": True,
+            "continue_test_job_id": "question",
+            "asset_ids": ["source"],
+        },
+        "output": {
+            "test_operation": "prepare",
+            "preparation_receipts": [{"name": "retained", "suite_id": "checkpoint"}],
+        },
+    }
+    current = {
+        "id": "current",
+        "lease_token": "lease",
+        "input": {"text": "接着完成", "mode": "auto"},
+        "output": {},
+    }
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        tool = next(t for t in body["tools"] if t["name"] == "classify_request")
+        assert tool["parameters"]["properties"]["source_job_id"]["enum"] == [
+            None,
+            "latest",
+        ]
+        user = next(
+            item for item in reversed(body["input"]) if item.get("role") == "user"
+        )
+        evidence = json.loads(user["content"][0]["text"])
+        assert evidence["current_request"] == "接着完成"
+        assert evidence["recent_requests"][0]["request"] == confirmed_text
+        assert evidence["recent_requests"][0]["pending_question"] is None
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_route",
+                        "call_id": "route",
+                        "status": "completed",
+                        "name": "classify_request",
+                        "arguments": json.dumps(
+                            {
+                                "intent": "test",
+                                "source_job_id": "latest",
+                                "reason": "resume confirmed preparation",
+                            }
+                        ),
+                    }
+                ],
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    llm = SimpleNamespace(
+        model="test-model",
+        api_key="local-only",
+        base_url=f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1",
+    )
+    monkeypatch.setattr(test_tasks.db_client, "wb_get", AsyncMock(return_value=latest))
+
+    async def restore(org, sid, jid, token, source, **kwargs):
+        assert (org, sid, jid, token, source) == (
+            7,
+            "session",
+            "current",
+            "lease",
+            "latest",
+        )
+        return {
+            "input": continued_test_input(latest, current["input"]),
+            "output": {"test_source_job_id": source},
+        }
+
+    monkeypatch.setattr(test_tasks.db_client, "wb_resume_test_request", restore)
+    try:
+        assert await asyncio.wait_for(
+            test_tasks.route_test_request(
+                7,
+                "session",
+                current,
+                {"jobs": [current, latest, root]},
+                llm,
+                AsyncMock(),
+                "responses",
+            ),
+            30,
+        )
+        assert len(seen) == 1
+        assert current["input"]["text"] == confirmed_text
+        assert current["input"]["prepare_only"] is True
+        assert current["input"]["resume_test_job_id"] == "latest"
+        assert current["input"]["asset_ids"] == ["source"]
+    finally:
+        await runner.cleanup()

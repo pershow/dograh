@@ -337,3 +337,148 @@ async def test_import_mapping_survives_failure_before_first_evaluation(monkeypat
     tables[0]["sha256"] = "changed"
     with pytest.raises(WorkbenchError, match="内容已变化"):
         await tasks.reusable_source_mapping(7, "s", payload, tables)
+
+
+def test_chain_routing_exposes_latest_confirmed_request_not_ancestor_question():
+    from api.services.agent_workbench.test_lineage import chain_heads, test_chain
+
+    root = failed_request(
+        id="question",
+        status="awaiting_input",
+        output={"outcome": "needs_input", "task_mode": "test"},
+    )
+    confirmed = failed_request(
+        id="confirmed",
+        input={
+            "mode": "test",
+            "text": "Use revised records, customer turns are authoritative",
+            "continue_test_job_id": "question",
+        },
+        output={"preparation_receipts": [{"suite_id": "ready"}]},
+    )
+    latest = failed_request(
+        id="latest", input={**confirmed["input"], "continue_test_job_id": "confirmed"}
+    )
+    unrelated = failed_request(
+        id="other", input={"mode": "test", "text": "another request"}
+    )
+    records = [latest, unrelated, confirmed, root]
+    assert [j["id"] for j in chain_heads(records)] == ["latest", "other"]
+    assert [j["id"] for j in test_chain(records, "question")] == [
+        "latest",
+        "confirmed",
+        "question",
+    ]
+    # Paging out the common parent must not revive stale sibling confirmations.
+    sibling = failed_request(id="sibling", input={**confirmed["input"]})
+    assert [j["id"] for j in chain_heads([latest, sibling, confirmed])] == ["latest"]
+
+
+@pytest.mark.parametrize(
+    "difference",
+    [
+        {"candidate_id": "different"},
+        {"asset_ids": ["other-file"]},
+        {"test_suite_ids": ["other-suite"]},
+        {"test_mode": "single_step"},
+        {"rerun_test_job_id": "parent"},
+    ],
+)
+def test_chain_does_not_merge_changed_scope_or_fresh_replay(difference):
+    from api.services.agent_workbench.test_lineage import chain_heads
+
+    parent = failed_request(
+        id="parent",
+        input={
+            "mode": "test",
+            "candidate_id": "same",
+            "asset_ids": ["file"],
+            "test_suite_ids": ["suite"],
+            "test_mode": "dynamic",
+        },
+    )
+    child = failed_request(
+        id="child",
+        input={**parent["input"], "continue_test_job_id": "parent", **difference},
+    )
+    assert len(chain_heads([child, parent])) == 2
+
+
+async def test_confirmed_import_is_saved_before_compilation_and_not_asked_again(
+    monkeypatch,
+):
+    from api.services.agent_workbench import basis
+    from api.services.agent_workbench.errors import ModelTransportError
+
+    choice = {
+        "asset_id": "file",
+        "sheet": "Cases",
+        "dialogue_column": "revision_b",
+        "id_column": "ID",
+        "user_labels": ["Customer"],
+        "assistant_labels": ["Operator"],
+    }
+    table = {
+        "asset_id": "file",
+        "sheet": "Cases",
+        "name": "examples.xlsx",
+        "sha256": "bytes",
+        "rows": [
+            ["ID", "original", "revision_b"],
+            ["one", "Customer: old", "Operator: welcome\nCustomer: A known fact"],
+        ],
+    }
+    monkeypatch.setattr(tasks, "load_sources", AsyncMock(return_value=([table], [])))
+    monkeypatch.setattr(
+        tasks.db_client,
+        "wb_test_target",
+        AsyncMock(return_value={"id": "candidate", "snapshot": {}}),
+    )
+    monkeypatch.setattr(
+        tasks, "prepare_models", AsyncMock(return_value=SimpleNamespace(snapshot={}))
+    )
+    monkeypatch.setattr(tasks.db_client, "wb_pin_models", AsyncMock(return_value={}))
+    saved = {}
+
+    async def progress(org, sid, jid, token, output, _progress):
+        saved.update(copy.deepcopy(output))
+
+    monkeypatch.setattr(tasks.db_client, "wb_job_progress", progress)
+    fail = AsyncMock(
+        side_effect=ModelTransportError("interrupted during rubric generation")
+    )
+    monkeypatch.setattr(basis, "ensure_basis", fail)
+    decide = AsyncMock(return_value={"needs_input": "", "tables": [choice]})
+    monkeypatch.setattr(tasks, "decision", decide)
+    execute = AsyncMock(
+        side_effect=AssertionError("Paused simulation must never execute")
+    )
+    monkeypatch.setattr(tasks, "evaluate", execute)
+    payload = {
+        "text": "Use revision_b as reference; customer turns define facts",
+        "test_mode": "dynamic",
+        "prepare_only": True,
+        "asset_ids": ["file"],
+    }
+    for attempt in range(3):
+        job = {
+            "id": f"attempt-{attempt}",
+            "lease_token": "lease",
+            "input": copy.deepcopy(payload),
+            "output": {},
+        }
+        if attempt:
+            prior = {"input": copy.deepcopy(payload), "output": copy.deepcopy(saved)}
+            monkeypatch.setattr(
+                tasks.db_client, "wb_get", AsyncMock(return_value=prior)
+            )
+            job["input"]["test_source_job_id"] = "previous"
+        with pytest.raises(ModelTransportError):
+            await tasks.run_test_task(
+                7, "session", job, SimpleNamespace(llm=None), "responses", AsyncMock()
+            )
+        assert saved["source_manifest"][0]["dialogue_column"] == "revision_b"
+        assert saved["source_manifest"][0]["sha256"] == "bytes"
+    assert decide.await_count == 1
+    assert decide.call_args.args[0] == "select_test_source"
+    execute.assert_not_awaited()

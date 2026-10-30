@@ -17,9 +17,58 @@ class RecoverableValidationError(WorkbenchError):
     """A validated repair protocol supplies structured errors and progress evidence."""
 
 
+class SDKTurnError(WorkbenchError):
+    """An SDK failure already classified at the protocol boundary."""
+
+
+class ModelTransportError(SDKTurnError):
+    """A transport failure, eligible for bounded replay of pure decisions only."""
+
+    code = "model_stream_interrupted"
+
+
+def sdk_turn_error(turn):
+    """Classify the SDK envelope at its boundary, not arbitrary tool error text."""
+    error = turn.get("error") or {}
+    info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+    message = error.get("message", "") if isinstance(error, dict) else str(error)
+    kind = next(iter(info), None) if isinstance(info, dict) else info
+    detail = info.get(kind) or {} if isinstance(info, dict) else {}
+    status = detail.get("httpStatusCode", detail.get("http_status_code"))
+    transport = kind in {
+        "responseStreamDisconnected",
+        "response_stream_disconnected",
+        "responseStreamConnectionFailed",
+        "response_stream_connection_failed",
+        "httpConnectionFailed",
+        "http_connection_failed",
+    } and (status is None or status == 429 or status >= 500)
+    # The pinned SDK reports body-read errors as Other rather than a typed
+    # stream error. Match only its transport envelope, never model/tool prose.
+    transport |= kind in {None, "other"} and message.startswith(
+        (
+            "stream disconnected before completion: Transport error: network error:",
+            "stream disconnected before completion: stream closed before response.completed",
+            "stream disconnected before completion: idle timeout waiting for SSE",
+        )
+    )
+    if turn.get("status") == "failed" and transport:
+        return ModelTransportError(
+            "Model stream interrupted before completion; incomplete output was not accepted.",
+            503,
+        )
+    return SDKTurnError(
+        "Codex turn " + str(turn.get("status")) + ": " + str(error)[:1200]
+    )
+
+
 def transient_model_error(error):
     """Only transport failures may restart a pure structured decision."""
-    return not isinstance(error, (InvalidDecision, LeaseLost)) and any(
+    if isinstance(error, ModelTransportError):
+        return True
+    return not isinstance(
+        error, (SDKTurnError, InvalidDecision, LeaseLost, RecoverableValidationError)
+    ) and any(
         text in str(error)
         for text in (
             "Responses request did not complete",

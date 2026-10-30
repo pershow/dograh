@@ -203,8 +203,9 @@ async def decision(
                 {
                     "phase": "retrying",
                     "stage": name,
-                    "reason": "model_connection_error",
+                    "reason": getattr(error, "code", "model_connection_error"),
                     "next_attempt": attempt + 2,
+                    "max_attempts": 2,
                 },
             )
             await asyncio.sleep(1)
@@ -257,13 +258,17 @@ async def route_test_request(org, sid, job, context, llm, event, protocol="chat"
     if job.get("output", {}).get("test_source_job_id"):
         return True  # Durable restoration already committed before a worker retry.
     if not source_id:
-        previous = [
-            p
-            for p in context.get("jobs", [])
-            if p.get("id")
-            and p["id"] != job["id"]
-            and p.get("status") not in {"queued", "running"}
-        ][:8]
+        from api.services.agent_workbench.test_lineage import chain_heads
+
+        previous = chain_heads(
+            [
+                p
+                for p in context.get("jobs", [])
+                if p.get("id")
+                and p["id"] != job["id"]
+                and p.get("status") not in {"queued", "running"}
+            ]
+        )[:8]
         if not previous:
             return await test_intent(payload, llm, event, protocol)
         ids = [p["id"] for p in previous]
@@ -1075,6 +1080,8 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             "本次为输入与断言检查，没有原始对话可提取客户场景，按声明用例执行。",
             test_mode=mode,
         )
+    # Confirmed import choices survive failures during basis/rubric compilation.
+    await progress("imported", "测试来源已确认并保存。", source_manifest=manifest)
     from api.services.agent_workbench.basis import ensure_basis
 
     basis = await ensure_basis(
@@ -1091,7 +1098,11 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         from api.services.agent_workbench.recovery import restore_prepared_cases
 
         await restore_prepared_cases(
-            org, sid, job["input"]["resume_test_job_id"], cases
+            org,
+            sid,
+            job["input"]["resume_test_job_id"],
+            cases,
+            related_job_ids=job.get("output", {}).get("test_chain_job_ids", []),
         )
     from api.services.agent_workbench.config import WorkbenchSettings
     from api.services.agent_workbench.test_compilation import (

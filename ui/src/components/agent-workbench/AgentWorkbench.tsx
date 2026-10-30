@@ -64,7 +64,7 @@ import { CriterionCoverage, criterionStatusText, ReviewCounts, ReviewFindings } 
 import { SimulationEvidence } from "./SimulationEvidence";
 import { TaskActivity } from "./TaskActivity";
 import { type BasisSummary,RequirementCoverage, TaskBasis } from "./TaskBasis";
-import { modelProgressText, taskCompletionText, taskProgress, workbenchErrorText } from "./taskProgress";
+import { modelProgressText, taskCompletionText, taskProgress, testTaskSuperseded, workbenchErrorText } from "./taskProgress";
 import { TestPreparation } from "./TestPreparation";
 import type { CriterionCoverageReceipt, PreparationReceipt } from "./types";
 import type {
@@ -1311,6 +1311,7 @@ export function AgentWorkbench({
                 ? e.payload.output as Record<string, unknown> | undefined
                 : undefined;
               const associatedJob = state.jobs.find(j => j.id === e.payload.job_id);
+              const supersededTest = testTaskSuperseded(String(e.payload.job_id), state.jobs, events);
               const resumableOutput = associatedJob?.output;
               const resumableBuild = ["task.failed", "task.cancelled"].includes(e.type)
                 && associatedJob?.kind === "build" && resumableOutput?.outcome === "build"
@@ -1319,9 +1320,8 @@ export function AgentWorkbench({
               const resumableSummary = resumableOutput?.summary as Record<string, number> | undefined;
               const resumableTest = ["task.cancelled", "task.failed", "task.completed"].includes(e.type)
                 && resumableOutput?.intent === "test" && resumableOutput?.outcome !== "review"
-                && ((Array.isArray(resumableOutput.evaluation_ids) && resumableOutput.evaluation_ids.length > 0)
-                  || (Array.isArray(resumableOutput.preparation_receipts) && resumableOutput.preparation_receipts.length > 0))
                 && (e.type !== "task.completed" || !!(resumableSummary?.error || (resumableSummary?.review_pending ?? resumableSummary?.inconclusive)));
+              const preparingTest = resumableOutput?.test_operation === "prepare" || associatedJob?.input.prepare_only === true;
               const preparation = output?.compilation || (["task.failed", "task.cancelled"].includes(e.type) ? resumableOutput?.compilation : undefined);
               const resultEvaluation = state.evaluations.find(v =>
                 v.id === (output?.evaluation_id || output?.id));
@@ -1382,10 +1382,10 @@ export function AgentWorkbench({
                   {associatedJob?.output.outcome === "review" && ["task.cancelled", "task.failed"].includes(e.type) && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", text: "继续未完成的评审，保留已有结果，不重跑或修改 Agent。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
                   })}>继续未完成评审</Button>}
-                  {resumableTest && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
-                    result(await instruct({path: {session_id: session}, body: {mode: "test", text: "继续原测试，只重试未完成或异常的用例，保留已完成结果。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
-                  })}>继续未完成或异常测试</Button>}
-                  {output?.outcome === "needs_input" && output.task_mode === "test" && (
+                  {resumableTest && !supersededTest && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
+                    result(await instruct({path: {session_id: session}, body: {mode: "test", text: preparingTest ? "继续准备未完成的测试集，保留已确认信息和准备断点，不执行 Agent 对话。" : "继续原测试，只重试未完成或异常的用例，保留已完成结果。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
+                  })}>{preparingTest ? "继续准备测试集" : "继续未完成或异常测试"}</Button>}
+                  {output?.outcome === "needs_input" && output.task_mode === "test" && !supersededTest && (
                     <section className={styles.candidateResult} aria-label="补充测试信息">
                       <input aria-label="补充回答" value={testClarification} onChange={event => setTestClarification(event.target.value)} placeholder="填写补充信息，继续本次测试" />
                       <Button disabled={locked || !testClarification.trim()} onClick={() => void action(async () => {

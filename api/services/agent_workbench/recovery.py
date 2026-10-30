@@ -5,16 +5,28 @@ import copy
 from api.services.agent_workbench.errors import WorkbenchError
 
 
-async def restore_prepared_cases(org, session_id, source_job_id, cases):
+async def restore_prepared_cases(
+    org, session_id, source_job_id, cases, *, related_job_ids=()
+):
     """Restore matching checkpoints across retries without changing source rows."""
     from api.db import db_client
     from api.services.agent_workbench.test_compilation import case_fingerprint
 
     indexed = {c["name"]: c for c in cases}
     visited, restored = set(), set()
-    while source_job_id and source_job_id not in visited:
+    pending = [source_job_id, *related_job_ids]
+    anchor = None
+    while pending:
+        source_job_id = pending.pop(0)
+        if not source_job_id or source_job_id in visited:
+            continue
         visited.add(source_job_id)
         previous = await db_client.wb_get(org, session_id, "jobs", source_job_id)
+        from api.services.agent_workbench.test_lineage import parent_ids, same_scope
+
+        anchor = anchor or previous
+        if not same_scope(anchor, previous):
+            continue
         for receipt in reversed(
             previous.get("output", {}).get("preparation_receipts", [])
         ):
@@ -27,12 +39,14 @@ async def restore_prepared_cases(org, session_id, source_job_id, cases):
             source_case = next(
                 (c for c in saved["payload"]["cases"] if c["name"] == name), None
             )
-            if source_case and case_fingerprint(source_case) == case_fingerprint(
-                indexed[name]
+            if (
+                source_case
+                and source_case.get("compiled")
+                and case_fingerprint(source_case) == case_fingerprint(indexed[name])
             ):
                 indexed[name]["compiled"] = copy.deepcopy(source_case.get("compiled"))
                 restored.add(name)
-        source_job_id = previous["input"].get("resume_test_job_id")
+        pending.extend(sorted(parent_ids(previous)))
     return restored
 
 

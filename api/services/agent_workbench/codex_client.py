@@ -19,7 +19,11 @@ from api.services.agent_workbench.authoring import (
 )
 from api.services.agent_workbench.config import WorkbenchSettings
 from api.services.agent_workbench.conversation import DurableConversation
-from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.errors import (
+    ModelTransportError,
+    WorkbenchError,
+    sdk_turn_error,
+)
 from api.services.agent_workbench.model_gateway import ModelGateway
 from api.services.codex.configuration import prepare_home
 from api.services.codex.connection import CodexConnection
@@ -429,14 +433,25 @@ class CodexClient:
         elif method == "turn/completed" and not self.done.done():
             turn = params.get("turn", {})
             if turn.get("status") != "completed":
-                self.done.set_exception(
-                    WorkbenchError(
-                        "Codex turn "
-                        + str(turn.get("status"))
-                        + ": "
-                        + str(turn.get("error") or "")[:1200]
+                error = sdk_turn_error(turn)
+                if isinstance(error, ModelTransportError):
+                    from api.services.agent_workbench.transport_diagnostics import (
+                        safe_message,
                     )
-                )
+
+                    await self.on_event(
+                        "model.error",
+                        {
+                            "phase": "sdk_stream",
+                            "code": error.code,
+                            "retryable": True,
+                            "message": str(error),
+                            "diagnostic": safe_message(
+                                (turn.get("error") or {}).get("message", "")
+                            ),
+                        },
+                    )
+                self.done.set_exception(error)
             else:
                 self.done.set_result(turn)
 
