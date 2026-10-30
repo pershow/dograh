@@ -159,3 +159,13 @@ it('explains SDK stream failures and shows the actual bounded retry count', () =
   }
   expect(modelProgressText({phase: 'retrying', next_attempt: 2, max_attempts: 2})).toContain('2/2');
 });
+
+it('reports preparation coverage, unfinished rows and missing receipts honestly', () => {
+  const message = taskCompletionText({outcome: 'test_preparation', compilation: {
+    total: 7, ready: 2, needs_input: 1, preparation_error: 1, preparing: 1, pending: 2,
+  }});
+  for (const text of ['7 条', '可执行 2 条', '资料待确认 1 条', '准备异常 1 条', '准备中 1 条', '待处理 2 条', 'Agent 对话尚未执行'])
+    expect(message).toContain(text);
+  expect(message).not.toContain('任务已完成');
+  expect(taskCompletionText({outcome: 'test_preparation'})).toContain('尚不能确认准备完成');
+});

@@ -79,6 +79,7 @@ import type {
   WorkbenchState,
 } from "./types";
 import { useWorkbenchVoice } from "./useWorkbenchVoice";
+import { useAttachmentSelection } from "./useAttachmentSelection";
 import styles from "./workbench.module.css";
 import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 
@@ -164,7 +165,7 @@ export function AgentWorkbench({
   const [candidateId, setCandidateId] = useState("");
   const [candidate, setCandidate] = useState<Candidate>();
   const [suiteId, setSuiteId] = useState("");
-  const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [selectedAssets, setSelectedAssets] = useAttachmentSelection(session);
   const [instructionMode, setInstructionMode] = useState<"auto" | "analyze" | "build" | "test">("auto");
   const [testClarification, setTestClarification] = useState("");
   const [testMode, setTestMode] = useState<"dynamic" | "single_step" | "scripted">("dynamic");

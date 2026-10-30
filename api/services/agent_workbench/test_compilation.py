@@ -313,7 +313,21 @@ def validate_compiled(case, *, records=None):
         ],
         "questions": compiled.get("rubric_questions", []),
     }
-    validate_rubric(rubric, records or {r["id"]: r for r in compiled["sources"]})
+    # A continued task may retrieve fewer historical sources. Its search result
+    # cannot invalidate an immutable contract, nor substitute new text under an
+    # old citation ID. Always validate the saved evidence first, then conflicts.
+    frozen_records = {r["id"]: r for r in compiled["sources"]}
+    validate_rubric(rubric, frozen_records)
+    for source_id, source in frozen_records.items():
+        current = (records or {}).get(source_id)
+        if current is not None and (
+            current.get("text") != source.get("text")
+            or current.get("source") != source.get("source")
+            or current.get("source_kind") == "reference"
+        ):
+            raise WorkbenchError(
+                "冻结业务引用的原始资料发生冲突，不能替换旧断言或沿用变更后的原文。"
+            )
     if compiled["status"] == "ready" and (
         not rubric["requirements"]
         or any(
@@ -739,7 +753,7 @@ async def compile_cases(
     return cases, preparation_summary(selected)
 
 
-def preparation_summary(cases):
+def preparation_summary(cases, import_issues=()):
     from api.services.agent_workbench.preparation_questions import remaining_questions
 
     selected = cases
@@ -754,9 +768,11 @@ def preparation_summary(cases):
         s: sum(receipt(c).get("status", "pending") == s for c in selected)
         for s in ("ready", "needs_input", "preparation_error", "preparing", "pending")
     }
+    counts["preparation_error"] += len(import_issues)
     return {
         "version": 1,
-        "total": len(selected),
+        "total": len(selected) + len(import_issues),
+        "import_error": len(import_issues),
         **counts,
         "processed": counts["ready"]
         + counts["needs_input"]
@@ -776,5 +792,17 @@ def preparation_summary(cases):
                 "error": z.get("error"),
             }
             for c in selected
+        ]
+        + [
+            {
+                "name": issue["name"],
+                "source": issue.get("source", {}),
+                "status": "preparation_error",
+                "fingerprint": fingerprint(issue),
+                "requirement_count": 0,
+                "questions": [],
+                "error": issue["error"],
+            }
+            for issue in import_issues
         ],
     }

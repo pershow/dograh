@@ -188,6 +188,19 @@ def test_single_step_case_cannot_disappear_during_preparation():
 async def test_generated_suite_is_validated_before_any_save_or_execution(
     monkeypatch, repair
 ):
+    from api.services.agent_workbench import test_sources
+
+    monkeypatch.setattr(
+        test_sources,
+        "resolve_sources",
+        AsyncMock(
+            return_value={
+                "kind": "inline",
+                "inline_quotes": ["private customer input"],
+                "assets": [],
+            }
+        ),
+    )
     candidate = {"id": "frozen", "fingerprint": "original-fp", "snapshot": {}}
     monkeypatch.setattr(
         tasks.db_client, "wb_test_target", AsyncMock(return_value=candidate)
@@ -212,6 +225,18 @@ async def test_generated_suite_is_validated_before_any_save_or_execution(
     class Client(CodexClient):
         async def run(self, *_args, **_kwargs):
             tool = self.dispatcher.completion_tool
+            if tool == "verify_test_suite_sources":
+                await self.handle_request(
+                    "item/tool/call",
+                    {
+                        "tool": tool,
+                        "arguments": {
+                            "supported": True,
+                            "reason": "All declared source inputs and checks preserved",
+                        },
+                    },
+                )
+                return
             if tool == "select_test_method":
                 await self.handle_request(
                     "item/tool/call",

@@ -40,6 +40,7 @@ const state: WorkbenchState = {
   suites: [], evaluations: [],
 };
 beforeEach(() => {
+  sessionStorage.clear();
   vi.clearAllMocks();
   mocks.auth.loading = false;
   mocks.capabilities.mockResolvedValue(response({ enabled: true }));

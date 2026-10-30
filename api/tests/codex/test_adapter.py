@@ -1292,3 +1292,114 @@ async def test_real_sdk_continuation_receives_latest_confirmed_facts_and_checkpo
         assert current["input"]["asset_ids"] == ["source"]
     finally:
         await runner.cleanup()
+
+
+async def test_real_sdk_binds_unselected_upload_with_confirmed_history_without_generating_fake_cases(
+    source_binary, tmp_path, monkeypatch
+):
+    from copy import deepcopy
+
+    from api.services.agent_workbench import test_sources
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    asset = {
+        "id": "uploaded",
+        "name": "examples.csv",
+        "sha256": "immutable",
+        "status": "ready",
+    }
+    history = [
+        {
+            "job_id": "previous",
+            "request": "Use revised; customer replies are evidence, operator replies only reference.",
+            "source_manifest": [{"sha256": "immutable", "dialogue_column": "revised"}],
+        }
+    ]
+    monkeypatch.setattr(
+        test_sources.db_client,
+        "wb_test_source_context",
+        AsyncMock(return_value={"assets": [asset], "source_history": history}),
+    )
+    monkeypatch.setattr(
+        test_sources.db_client, "wb_memory", AsyncMock(return_value={"entries": []})
+    )
+    monkeypatch.setattr(test_sources.db_client, "wb_get", AsyncMock(return_value=asset))
+    job = {
+        "id": "new",
+        "lease_token": "lease",
+        "input": {"text": "Prepare the supplied examples", "asset_ids": []},
+        "output": {},
+    }
+
+    async def save(org, sid, jid, token, selection):
+        return {
+            "input": {
+                **job["input"],
+                "asset_ids": [a["id"] for a in selection["assets"]],
+            },
+            "output": {"test_source_selection": deepcopy(selection)},
+        }
+
+    monkeypatch.setattr(test_sources.db_client, "wb_set_test_sources", save)
+    seen = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        user = next(i for i in reversed(body["input"]) if i.get("role") == "user")
+        evidence = json.loads(user["content"][0]["text"])
+        assert evidence["source_history"] == history
+        assert evidence["assets"] == [asset] and evidence["selected_asset_ids"] == []
+        tool = next(t for t in body["tools"] if t["name"] == "resolve_test_sources")
+        assert tool["parameters"]["properties"]["asset_ids"]["items"]["enum"] == [
+            "uploaded"
+        ]
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_bind",
+                        "call_id": "bind",
+                        "status": "completed",
+                        "name": "resolve_test_sources",
+                        "arguments": json.dumps(
+                            {
+                                "kind": "attachments",
+                                "asset_ids": ["uploaded"],
+                                "inline_quotes": [],
+                                "question": "",
+                            }
+                        ),
+                    }
+                ],
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    llm = SimpleNamespace(
+        model="local-test",
+        api_key="local-only",
+        base_url=f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1",
+    )
+    try:
+        selection = await asyncio.wait_for(
+            test_sources.resolve_sources(7, "s", job, llm, AsyncMock(), "responses"), 45
+        )
+        assert job["input"]["asset_ids"] == ["uploaded"]
+        assert selection["source_history"] == history
+        assert (
+            await test_sources.resolve_sources(
+                7, "s", job, llm, AsyncMock(), "responses"
+            )
+            == selection
+        )
+        assert len(seen) == 1
+    finally:
+        await runner.cleanup()

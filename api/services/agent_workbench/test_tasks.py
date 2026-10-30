@@ -890,7 +890,8 @@ async def prepared_test_input(org, sid, kind, payload):
         raise WorkbenchError("测试准备回执缺少完整且唯一的批次。", 409)
     suites = [await db_client.wb_get(org, sid, "suites", i) for i in ids]
     cases = [c for s in suites for c in s["payload"]["cases"]]
-    if len(cases) != output.get("compilation", {}).get("total"):
+    issues = output.get("import_issues", [])
+    if len(cases) + len(issues) != output.get("compilation", {}).get("total"):
         raise WorkbenchError("测试准备回执与完整样本数量不一致。", 409)
     from api.services.agent_workbench.test_compilation import validate_compiled
 
@@ -904,18 +905,21 @@ async def prepared_test_input(org, sid, kind, payload):
         if case.get("mode") == "dynamic":
             validate_compiled(case)
     actual = sorted(
-        (
-            c["name"],
-            c["compiled"]["fingerprint"]
-            if c.get("mode") == "dynamic"
-            else fingerprint(c),
-        )
-        for c in cases
+        [
+            (
+                c["name"],
+                c["compiled"]["fingerprint"]
+                if c.get("mode") == "dynamic"
+                else fingerprint(c),
+            )
+            for c in cases
+        ]
+        + [(issue["name"], fingerprint(issue)) for issue in issues]
     )
     expected = sorted(
         (r["name"], r["fingerprint"]) for r in output["compilation"].get("rows", [])
     )
-    if len({c["name"] for c in cases}) != len(cases) or actual != expected:
+    if len({name for name, _ in actual}) != len(actual) or actual != expected:
         raise WorkbenchError("测试准备回执与冻结场景标识不一致。", 409)
     return {
         **payload,
@@ -965,17 +969,35 @@ async def run_test_task(org, sid, job, builder, protocol, event):
     automatic_method = not job["input"].get("test_mode") and not job["input"].get(
         "test_suite_ids"
     )
+    from api.services.agent_workbench.test_sources import (
+        resolve_sources,
+        validate_generated_sources,
+        verify_generated_suite,
+    )
+
+    selection = None
+    if not job["input"].get("test_suite_ids"):
+        selection = await resolve_sources(org, sid, job, builder.llm, event, protocol)
+        if selection["kind"] == "missing":
+            return {
+                "outcome": "needs_input",
+                "task_mode": "test",
+                "question": selection["question"],
+                "pending_request": job["input"],
+                "candidate_id": candidate["id"],
+                "agent_modified": False,
+            }
     if automatic_method:
         choice = await decision(
             "select_test_method",
-            "Choose the test execution method ONLY from the current request. Use single_step for an isolated reply with authentic prior context, scripted for explicitly requested verbatim fixed-customer replay or declarative input/assertion checks without a source conversation, otherwise dynamic for complete conversations that respond to actual Agent questions. Do not infer tasks from old history. Return a concise Chinese reason.",
+            "Choose the test method from the current request and its resolved sources, retaining applicable source-bound human choices. History resolves meaning, never authorizes old work. Use single_step for an isolated reply with authentic prior context, scripted ONLY for explicitly requested verbatim fixed-customer replay or declarative input/assertion checks without a source conversation, otherwise dynamic for complete conversations responding to actual Agent questions. Using customer replies as the core evidence or assistant replies only as reference does NOT itself request verbatim replay. Return a concise Chinese reason.",
             object_schema(
                 {
                     "mode": {"enum": ["single_step", "dynamic", "scripted"]},
                     "reason": {"type": "string"},
                 }
             ),
-            {"current_request": job["input"]["text"]},
+            {"current_request": job["input"]["text"], "source_selection": selection},
             builder.llm,
             event,
             protocol,
@@ -1009,7 +1031,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             raise WorkbenchError("选择的测试集包含重名样本，请先去除重复选择。")
     elif tables:
         preview = [
-            {k: t[k] for k in ("asset_id", "name", "sheet")}
+            {k: t[k] for k in ("asset_id", "name", "sheet", "sha256")}
             | {
                 "headers": t["rows"][0] if t["rows"] else [],
                 "data_rows": max(0, len(t["rows"]) - 1),
@@ -1020,12 +1042,16 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         mapping = await reusable_source_mapping(org, sid, job["input"], tables)
         mapping = mapping or await decision(
             "select_test_source",
-            "Map the current request to spreadsheet dialogue cases. Choose the requested dialogue column and identify customer/assistant speaker labels exactly. For test_mode=single_step choose the original unedited conversation column when available; never call an edited example authentic history. Otherwise if both original and revised dialogue columns exist and the current request does not choose between them, return needs_input rather than guess. Select every relevant test sheet, exclude metadata. Do not turn prior audit issues or prior results into new test outcomes. This mapping imports ALL nonblank rows; never select a sample. Empty needs_input means ready.",
+            "Map the current request to spreadsheet dialogue cases. Choose the requested dialogue column and identify customer/assistant speaker labels exactly. Consult source_history and confirmed_requirements for existing human choices; match the file sha256 even if uploaded asset IDs or filenames changed. A current explicit replacement takes precedence; otherwise retain the latest applicable confirmed choice without asking again. History only resolves inputs, never authorizes old work. For test_mode=single_step choose the original unedited conversation column when available; never call an edited example authentic history. Otherwise if original and revised columns exist and neither the current request nor applicable human history chooses between them, return needs_input. Select every relevant test sheet, exclude metadata. Do not turn prior audit issues or results into new outcomes. Import ALL nonblank rows; never sample. Empty needs_input means ready.",
             MAPPING_SCHEMA,
             {
                 "current_request": job["input"]["text"],
                 "test_mode": job["input"].get("test_mode"),
                 "tables": preview,
+                "source_history": (selection or {}).get("source_history", []),
+                "confirmed_requirements": (selection or {}).get(
+                    "confirmed_requirements", []
+                ),
             },
             builder.llm,
             event,
@@ -1047,12 +1073,13 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             # JSON Schema cannot represent the model validators for assertions,
             # turn bounds, fixtures or cross-field mode requirements.
             SimulationSuite.model_validate(value)
-            prepare_test_cases(
+            _, prepared = prepare_test_cases(
                 value["cases"],
                 requested_mode,
                 automatic_method=automatic_method,
                 selected_turns=selected_turns,
             )
+            validate_generated_sources({**value, "cases": prepared}, selection, texts)
 
         suite = await decision(
             "submit_test_suite",
@@ -1063,13 +1090,37 @@ async def run_test_task(org, sid, job, builder, protocol, event):
                 "selected_sources": texts,
                 "test_mode": requested_mode,
                 "single_step_turns": selected_turns,
+                "source_selection": selection,
             },
             builder.llm,
             event,
             protocol,
             validate=validate_suite,
         )
-        cases, issues, manifest = suite["cases"], [], []
+        _, verified_cases = prepare_test_cases(
+            suite["cases"],
+            requested_mode,
+            automatic_method=automatic_method,
+            selected_turns=selected_turns,
+        )
+        await verify_generated_suite(
+            {**suite, "cases": verified_cases},
+            selection,
+            texts,
+            job["input"]["text"],
+            builder.llm,
+            event,
+            protocol,
+        )
+        cases, issues = suite["cases"], []
+        manifest = [
+            {
+                "kind": selection["kind"],
+                "rows": len(cases),
+                "assets": selection["assets"],
+                "input_fingerprint": fingerprint(selection),
+            }
+        ]
     mode, cases = prepare_test_cases(
         cases,
         requested_mode,
@@ -1148,7 +1199,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             "status": case["compiled"]["status"],
         }
         preparation_cases[case["name"]] = deepcopy(case)
-        summary = preparation_summary(list(preparation_cases.values()))
+        summary = preparation_summary(list(preparation_cases.values()), issues)
         await progress(
             "preparing_tests",
             f"已处理 {summary['processed']}/{summary['total']} 条：可执行 {summary['ready']} 条，"
@@ -1184,7 +1235,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         job["input"]["text"],
     )
     if job["input"].get("prepare_only"):
-        compilation = preparation_summary(cases)
+        compilation = preparation_summary(cases, issues)
         suites = [
             await db_client.wb_save_suite(
                 org, sid, payload, job_id=job["id"], token=job["lease_token"]

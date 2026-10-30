@@ -21,7 +21,7 @@ export function toolProgressText(name: string): string {
     list_attachments: "查看附件目录", read_attachment: "读取附件内容",
     read_conversation: "查阅历史需求与会话", list_agent_runs: "查找 Agent 运行记录",
     read_agent_run: "读取 Agent 运行资料", read_evaluation: "读取实际测试结果", verify_analysis: "核对分析结论与原始证据", submit_review: "提交需求覆盖检查结果",
-    classify_request: "识别本次任务类型", select_test_source: "确认测试数据列与角色", submit_test_suite: "准备本次测试用例",
+    classify_request: "识别本次任务类型", resolve_test_sources: "绑定原始测试资料", verify_test_input: "核对测试输入与任务指令", verify_test_suite_sources: "校验用例来源与完整覆盖", select_test_method: "确认测试方式", select_test_source: "确认测试数据列与角色", submit_test_suite: "准备本次测试用例",
     compile_business_rubric: "编译业务验收标准", verify_business_rubric: "复核业务验收标准", repair_citations: "修复原文引用",
     compile_test_environment: "准备模拟操作环境", verify_test_environment: "复核模拟操作环境",
     compile_customer_fixture: "转换客户场景", verify_customer_fixture: "复核客户场景", repair_fixture: "修复场景校验问题",
@@ -160,8 +160,9 @@ export function taskCompletionText(output: Record<string, unknown> = {}): string
     return `调优未完成，已保留候选。需要补充：${output.pending_questions.map((q: {question: string}) => q.question).join("；")}`;
   if (output.outcome === "needs_input") return `需要补充信息：${String(output.question || "请明确测试资料与要求。")} 测试尚未执行。`;
   if (output.outcome === "test_preparation") {
-    const c = output.compilation as {total?: number; ready?: number; needs_input?: number; preparation_error?: number} | undefined;
-    return `测试准备已保存：${c?.total || 0} 条，可执行 ${c?.ready || 0} 条，资料待确认 ${c?.needs_input || 0} 条，准备异常 ${c?.preparation_error || 0} 条。Agent 对话尚未执行。`;
+    const c = output.compilation as {total?: number; ready?: number; needs_input?: number; preparation_error?: number; preparing?: number; pending?: number} | undefined;
+    if (!c || typeof c.total !== "number") return "测试准备回执缺少覆盖数量，尚不能确认准备完成。Agent 对话尚未执行。";
+    return `测试准备已保存：${c.total} 条，可执行 ${c.ready || 0} 条，资料待确认 ${c.needs_input || 0} 条，准备异常 ${c.preparation_error || 0} 条，准备中 ${c.preparing || 0} 条，待处理 ${c.pending || 0} 条。Agent 对话尚未执行。`;
   }
   if (output.outcome === "review") {
     const s = output.summary as Record<string, number> | undefined;

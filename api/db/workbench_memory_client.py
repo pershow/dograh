@@ -26,6 +26,65 @@ def memory_hash(text):
 
 
 class WorkbenchMemoryClient(BaseDBClient):
+    async def wb_test_source_context(self, org, session_id, job_id):
+        """Human input and attachment inventory, never generated test conclusions."""
+        async with self.async_session() as db:
+            session = await self._wb_session(db, org, session_id)
+            current = await self._wb_item(db, "jobs", session_id, job_id)
+            assets = list(
+                await db.scalars(
+                    select(WorkbenchAssetModel).where(
+                        WorkbenchAssetModel.session_id == session_id,
+                        WorkbenchAssetModel.created_at <= current.created_at,
+                    )
+                )
+            )
+            rows = await db.execute(
+                select(
+                    WorkbenchJobModel.id,
+                    WorkbenchJobModel.input,
+                    WorkbenchJobModel.output["source_manifest"].label("manifest"),
+                    WorkbenchJobModel.created_at,
+                )
+                .join(
+                    WorkbenchSessionModel,
+                    WorkbenchJobModel.session_id == WorkbenchSessionModel.id,
+                )
+                .where(
+                    WorkbenchSessionModel.organization_id == org,
+                    WorkbenchSessionModel.workflow_id == session.workflow_id,
+                    WorkbenchJobModel.created_at <= current.created_at,
+                    WorkbenchJobModel.id != job_id,
+                )
+                .order_by(WorkbenchJobModel.created_at.desc())
+            )
+            hashes = {a.sha256 for a in assets}
+            history, seen = [], set()
+            for row in rows:
+                manifests = row.manifest or []
+                # Only source-bound human choices apply across conversations.
+                # An unrelated earlier test must not silently become this task.
+                if not any(m.get("sha256") in hashes for m in manifests):
+                    continue
+                identity = fingerprint([row.input.get("text", ""), manifests])
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                history.append(
+                    {
+                        "job_id": row.id,
+                        "request": row.input.get("text", ""),
+                        "source_manifest": manifests,
+                    }
+                )
+            return {
+                "assets": [
+                    {"id": a.id, "name": a.name, "sha256": a.sha256, "status": a.status}
+                    for a in assets
+                ],
+                "source_history": history,
+            }
+
     async def wb_basis_origins(self, org, session_id, job_id, target_fingerprint):
         """Recover human inputs along the tested version's ancestry, not chat recency.
 

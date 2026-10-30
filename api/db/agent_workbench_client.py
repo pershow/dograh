@@ -425,6 +425,7 @@ class AgentWorkbenchClient(BaseDBClient):
                     for key in (
                         "evaluation_model_configuration_snapshot",
                         "evaluation_model_configuration_fingerprint",
+                        "test_source_selection",
                     )
                     if key in prior.output
                 },
@@ -478,6 +479,47 @@ class AgentWorkbenchClient(BaseDBClient):
                     "text": "本次仅准备并保存测试集，不执行 Agent 对话。"
                     if operation == "prepare"
                     else "已确认本次执行测试；先完成场景准备，再运行 Agent 对话。",
+                },
+            )
+            return record(job)
+
+    async def wb_set_test_sources(self, org, session_id, job_id, token, selection):
+        """Persist source binding before compilation; retries cannot change it."""
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            existing = job.output.get("test_source_selection")
+            if existing:
+                if existing != selection:
+                    raise WorkbenchError(
+                        "本任务测试来源已固定，不能在恢复时更换。", 409
+                    )
+                return record(job)
+            for source in selection["assets"]:
+                asset = await self._wb_item(db, "assets", session_id, source["id"])
+                if asset.status != "ready" or asset.sha256 != source["sha256"]:
+                    raise WorkbenchError(
+                        "测试附件已变化或尚未就绪，未开始生成用例。", 409
+                    )
+            submitted = copy.deepcopy(job.output.get("_submitted_input", job.input))
+            job.input = {
+                **job.input,
+                "asset_ids": [a["id"] for a in selection["assets"]],
+            }
+            job.output = {
+                **job.output,
+                "_submitted_input": submitted,
+                "test_source_selection": copy.deepcopy(selection),
+            }
+            await self._wb_event(
+                db,
+                session,
+                "test.progress",
+                {
+                    "job_id": job_id,
+                    "phase": "source_binding",
+                    "text": "已绑定原始测试资料，接续任务将保留相同来源。",
+                    "source_selection": selection,
                 },
             )
             return record(job)

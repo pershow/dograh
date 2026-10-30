@@ -407,9 +407,21 @@ def test_chain_does_not_merge_changed_scope_or_fresh_replay(difference):
 async def test_confirmed_import_is_saved_before_compilation_and_not_asked_again(
     monkeypatch,
 ):
-    from api.services.agent_workbench import basis
+    from api.services.agent_workbench import basis, test_sources
     from api.services.agent_workbench.errors import ModelTransportError
 
+    monkeypatch.setattr(
+        test_sources,
+        "resolve_sources",
+        AsyncMock(
+            return_value={
+                "kind": "attachments",
+                "assets": [{"id": "file", "sha256": "bytes"}],
+                "inline_quotes": [],
+                "source_history": [],
+            }
+        ),
+    )
     choice = {
         "asset_id": "file",
         "sheet": "Cases",
