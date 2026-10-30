@@ -808,9 +808,12 @@ async def test_large_fixture_schema_survives_real_sdk_without_losing_constraints
         await runner.cleanup()
 
 
+@pytest.mark.parametrize("malformation", ["state_key", "source_reference"])
 async def test_source_build_repairs_bound_fixture_without_rewriting_valid_content(
-    source_binary, tmp_path, monkeypatch
+    source_binary, tmp_path, monkeypatch, malformation
 ):
+    from copy import deepcopy
+
     from api.services.agent_workbench.fixtures import FixtureCodec, FixtureSubmission
     from api.services.agent_workbench.test_tasks import StructuredDecision
     from api.tests.test_workbench_test_compilation import fixture
@@ -819,7 +822,12 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
     case = fixture()
     codec = FixtureCodec(case["reference_turns"])
     wire = codec.encode(case["compiled"]["scenario"])
-    wire["actions"][0]["effects"][0]["key"] = "undeclared"
+    turn = next(iter(codec.sources))
+    reference = deepcopy(wire["source_coverage"][turn]["items"][0])
+    if malformation == "state_key":
+        wire["actions"][0]["effects"][0]["key"] = "undeclared"
+    else:
+        wire["source_coverage"][turn]["items"][0]["index"] = 999
     recovery = FixtureSubmission(codec)
     saved = []
 
@@ -840,6 +848,19 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
 
     async def upstream(request):
         body = await request.json()
+
+        def check_provider_enums(value):
+            if isinstance(value, dict):
+                assert not any(
+                    isinstance(item, (dict, list)) for item in value.get("enum", [])
+                ), "Provider rejects object or array enum constants"
+                for child in value.values():
+                    check_provider_enums(child)
+            elif isinstance(value, list):
+                for child in value:
+                    check_provider_enums(child)
+
+        check_provider_enums(body["tools"])
         seen.append(body)
         specs = {t["name"]: t for t in body["tools"]}
         if len(seen) == 1:
@@ -863,7 +884,12 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
                 {
                     "draft_id": recovery.draft_id,
                     "patches": [
-                        {"repair_id": problem["repair_id"], "value": "enabled"}
+                        {
+                            "repair_id": problem["repair_id"],
+                            "value": "enabled"
+                            if malformation == "state_key"
+                            else reference,
+                        }
                     ],
                 },
             )
@@ -912,7 +938,14 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
         assert (
             dispatcher.report["facts"][0]["quote"] == case["reference_turns"][1]["text"]
         )
-        assert saved[0]["actions"][0]["effects"][0]["key"] == "undeclared"
+        if malformation == "state_key":
+            assert saved[0]["actions"][0]["effects"][0]["key"] == "undeclared"
+        else:
+            assert saved[0]["source_coverage"][turn]["items"][0]["index"] == 999
+            assert dispatcher.report["source_coverage"][0]["scenario_ids"] == [
+                "f_0",
+                "g_0",
+            ]
         assert client.rpc.process.returncode is not None
         assert not list((tmp_path / "jobs").iterdir())
     finally:

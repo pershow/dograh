@@ -29,6 +29,29 @@ def obj(properties):
     }
 
 
+def restrict_values(schema, values):
+    """Express exact object choices without provider-unsupported object enums.
+
+    Keep each complete object as its own branch: independent property enums
+    would admit combinations that were never declared as valid references.
+    """
+    schema = deepcopy(schema)
+    if all(isinstance(value, dict) for value in values):
+        choices = []
+        for value in values:
+            branch = deepcopy(schema)
+            branch["properties"] = {
+                key: restrict_values(schema["properties"][key], [item])
+                for key, item in value.items()
+            }
+            branch["required"] = list(value)
+            branch["additionalProperties"] = False
+            choices.append(branch)
+        return {"anyOf": choices}
+    schema["enum"] = deepcopy(values)
+    return schema
+
+
 def issue(path, reason, **details):
     return {"path": list(path), "reason": reason, **details}
 
@@ -633,7 +656,7 @@ class FixtureSubmission:
             jsonschema.Draft202012Validator(schema).is_valid(value)
             for value in error["allowed"]
         ):
-            schema["enum"] = deepcopy(error["allowed"])
+            schema = restrict_values(schema, error["allowed"])
         return schema
 
     def spec(self):

@@ -17,9 +17,79 @@ from api.services.agent_workbench.fixtures import (
     FixtureCodec,
     FixtureErrors,
     FixtureSubmission,
+    restrict_values,
 )
 from api.services.agent_workbench.test_tasks import StructuredDecision
 from api.tests.test_workbench_test_compilation import fixture
+
+
+def test_object_choices_keep_exact_pairs_without_object_enums():
+    original = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "group": {"enum": ["facts", "goals"]},
+            "index": {"type": "integer", "minimum": 0},
+        },
+        "required": ["group", "index"],
+    }
+    allowed = [{"group": "facts", "index": 0}, {"group": "goals", "index": 1}]
+    schema = restrict_values(original, allowed)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    for group in ("facts", "goals", "actions"):
+        for index in (-1, 0, 1, 2):
+            value = {"group": group, "index": index}
+            assert jsonschema.Draft202012Validator(schema).is_valid(value) == (
+                value in allowed
+            )
+    for value in ({"group": "facts"}, {**allowed[0], "extra": 1}, None, "facts"):
+        assert not jsonschema.Draft202012Validator(schema).is_valid(value)
+    assert "enum" not in original
+    assert all("enum" not in branch for branch in schema["anyOf"])
+
+
+@pytest.mark.parametrize("verification", [False, True])
+def test_saved_reference_repair_uses_provider_compatible_exact_choices(verification):
+    case = fixture()
+    codec = FixtureCodec(case["reference_turns"])
+    plan = case["compiled"]["scenario"]
+    wire = codec.encode(plan)
+    broken = deepcopy(wire)
+    turn = next(iter(codec.sources))
+    broken["source_coverage"][turn]["items"][0]["index"] = 999
+    checkpoint = broken
+    if verification:
+        checkpoint = corrections(codec)
+        checkpoint.update(verdict="corrected", reason="Repair source reference")
+        checkpoint["corrections"]["source_coverage"] = broken["source_coverage"]
+    recovery = FixtureSubmission(
+        codec,
+        draft=wire if verification else None,
+        original=plan if verification else None,
+        checkpoint=checkpoint,
+    )
+    path = (
+        *(("corrections",) if verification else ()),
+        "source_coverage",
+        turn,
+        "items",
+        0,
+    )
+    payload = repair_payload(
+        recovery, {path: wire["source_coverage"][turn]["items"][0]}
+    )
+    schema = recovery.spec()["inputSchema"]
+    jsonschema.validate(payload, schema)
+    invalid = deepcopy(payload)
+    invalid["patches"][0]["value"]["index"] = 999
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invalid, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        recovery.repair(invalid)
+    assert recovery.draft == checkpoint
+    result = recovery.repair(payload)
+    accepted = result["scenario"] if verification else result
+    assert accepted == (plan if verification else codec.decode(wire))
 
 
 def test_nullable_verification_reports_leaf_and_transports_exact_repair_type():
