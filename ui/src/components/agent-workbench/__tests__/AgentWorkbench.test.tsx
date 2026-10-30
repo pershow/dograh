@@ -544,3 +544,36 @@ it('resumes a cancelled test using its original task instead of starting a build
   await waitFor(() => expect(mocks.instruct).toHaveBeenCalledWith(expect.objectContaining({body: expect.objectContaining({mode: 'test', continue_test_job_id: 'paused-test'})})));
   expect(mocks.adopt).not.toHaveBeenCalled();
 });
+
+it('retains the historical question but hides its already-answered continuation form', async () => {
+  mocks.session.mockResolvedValue(response({...state, jobs: [
+    {id: 'latest', kind: 'build', status: 'failed', input: {continue_test_job_id: 'pending'}, output: {intent: 'test'}},
+  ]}));
+  mocks.events.mockResolvedValue(response({events: [
+    {sequence: 1, type: 'task.completed', payload: {job_id: 'pending', output: {outcome: 'needs_input', task_mode: 'test', question: '选择资料列？'}}, created_at: ''},
+    {sequence: 2, type: 'task.failed', payload: {job_id: 'latest', error: 'Model stream interrupted before completion; incomplete output was not accepted.'}, created_at: ''},
+  ]}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  expect(await screen.findByText(/选择资料列/)).toBeTruthy();
+  expect(screen.queryByRole('textbox', {name: '补充回答'})).toBeNull();
+  expect(screen.queryByRole('button', {name: '补充并继续'})).toBeNull();
+  expect(await screen.findByText(/模型响应流中断/)).toBeTruthy();
+  expect(screen.queryByText(/构建服务异常/)).toBeNull();
+});
+
+it('can resume preparation interrupted before its first case without authorizing execution', async () => {
+  mocks.session.mockResolvedValue(response({...state, jobs: [
+    {id: 'preparing', kind: 'build', status: 'failed', input: {prepare_only: true}, output: {intent: 'test', test_operation: 'prepare'}},
+  ]}));
+  mocks.events.mockResolvedValue(response({events: [
+    {sequence: 1, type: 'task.failed', payload: {job_id: 'preparing', error: 'Model stream interrupted before completion'}, created_at: ''},
+  ]}));
+  mocks.instruct.mockResolvedValue(response({id: 'resumed', status: 'queued'}));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '继续准备测试集'}));
+  await waitFor(() => expect(mocks.instruct).toHaveBeenCalledWith(expect.objectContaining({body: expect.objectContaining({
+    mode: 'test', continue_test_job_id: 'preparing', text: expect.stringContaining('不执行 Agent 对话'),
+  })})));
+  expect(mocks.tune).not.toHaveBeenCalled();
+  expect(mocks.adopt).not.toHaveBeenCalled();
+});

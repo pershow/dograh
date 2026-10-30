@@ -1,5 +1,15 @@
 import type { Job, WorkbenchEvent } from "./types";
 
+export function testTaskSuperseded(id: string, jobs: Job[], events: WorkbenchEvent[]): boolean {
+  const references = (input: Record<string, unknown>, output: Record<string, unknown>) =>
+    !input.rerun_test_job_id && [input.continue_test_job_id, input.resume_test_job_id,
+      input.test_source_job_id, output.test_source_job_id,
+      ...(Array.isArray(output.test_chain_job_ids) ? output.test_chain_job_ids : [])].includes(id);
+  return jobs.some(j => j.id !== id && references(j.input, j.output)) ||
+    events.some(e => e.type === "task.queued" && e.payload.job_id !== id &&
+      references((e.payload.input || {}) as Record<string, unknown>, {}));
+}
+
 export function toolProgressText(name: string): string {
   const labels: Record<string, string> = {
     get_context: "读取 Agent 配置", list_node_types: "读取节点类型",
@@ -52,6 +62,9 @@ export function modelProgressText(payload: Record<string, unknown>): string {
 }
 
 export function workbenchErrorText(message: string): string {
+  if (message.includes("Model stream interrupted before completion") ||
+      /stream disconnected before completion: (Transport error: network error:|stream closed before response.completed|idle timeout waiting for SSE)/.test(message))
+    return "模型响应流中断，本次输出未完整接收。已保存的结果和准备断点仍保留，可接续未完成的任务。";
   if (message.includes("This account only allows Codex official clients"))
     return "模型服务拒绝了工作台客户端（HTTP 403）。请检查连接协议与服务接入权限，或在工作台设置中选择允许接入的构建模型连接。";
   if (/HTTP (401|403); verify provider credentials and access policy/.test(message))
