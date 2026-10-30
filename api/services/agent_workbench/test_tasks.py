@@ -227,7 +227,7 @@ async def test_intent(payload, llm, event, protocol="chat"):
         return mode == "test"
     result = await decision(
         "classify_request",
-        "Classify ONLY the CURRENT user request. test means an instruction to execute/replay/evaluate tests or attachment cases on the existing Agent without changing it. Asking why a test failed or explaining tests is other. Requests to change/build/tune/repair the Agent (even followed by tests) are other. Explicit 'do not modify the Agent' plus a request to run tests is test. Do not infer work from older requests. If ambiguous choose other, not permission to modify.",
+        "Classify ONLY the CURRENT user request. test includes preparing/generating/converting reusable test cases WITHOUT execution, as well as executing/replaying/evaluating tests on the existing Agent without changing it. This routes to test handling, NOT permission to execute; preparation versus execution is resolved separately. Asking why a test failed or explaining tests is other. Requests to change/build/tune/repair the Agent (even followed by tests) are other. Explicit 'do not modify the Agent' plus a request to run tests is test. Do not infer work from older requests. If ambiguous choose other, not permission to modify.",
         object_schema(
             {
                 "intent": {"type": "string", "enum": ["test", "other"]},
@@ -269,7 +269,7 @@ async def route_test_request(org, sid, job, context, llm, event, protocol="chat"
         ids = [p["id"] for p in previous]
         result = await decision(
             "classify_request",
-            "Classify the CURRENT user request. test means execute tests on an existing Agent without editing it; questions, diagnosis and requests to edit/build/tune are other. Recent requests are reference targets ONLY: do not revive an old task for a new standalone request. If the current request asks to continue/retry an earlier unfinished test (including a short context-dependent continuation), or answers that test's pending clarification question, return that original job's source_job_id and intent=test. A failed task with no execution receipt can still be continued. Intervening analysis or diagnostic replies do not replace the underlying unfinished request unless the user changes the task. Never resume a build/edit request as a test. New tests, changed test scope or attachments, fresh reruns, explanations, cancellations or ambiguous references must have source_job_id=null. A completed test is not unfinished merely because some assertions failed. Do not copy assistant claims into the request or infer new work from old history.",
+            "Classify the CURRENT user request. test includes preparing/generating/converting reusable test cases WITHOUT execution and executing tests on an existing Agent without editing it. This routes to test handling, NOT permission to execute; preparation versus execution is resolved separately. Questions, diagnosis and requests to edit/build/tune are other. Recent requests are reference targets ONLY: do not revive an old task for a new standalone request. If the current request asks to continue/retry an earlier unfinished test (including a short context-dependent continuation), or answers that test's pending clarification question, return that original job's source_job_id and intent=test. A failed task with no execution receipt can still be continued. A completed preparation (outcome=test_preparation) can also be selected when the current request explicitly asks to execute those prepared tests; preserve its scope and version. Intervening analysis or diagnostic replies do not replace the underlying unfinished request unless the user changes the task. Never resume a build/edit request as a test. New tests, changed test scope or attachments, fresh reruns, explanations, cancellations or ambiguous references must have source_job_id=null. A completed execution is not unfinished merely because some assertions failed. Do not copy assistant claims into the request or infer new work from old history.",
             object_schema(
                 {
                     "intent": {
@@ -295,6 +295,8 @@ async def route_test_request(org, sid, job, context, llm, event, protocol="chat"
                         "outcome": p.get("output", {}).get("outcome"),
                         "task_mode": p.get("output", {}).get("task_mode"),
                         "intent": p.get("output", {}).get("intent"),
+                        "test_operation": p.get("output", {}).get("test_operation"),
+                        "prepare_only": p["input"].get("prepare_only", False),
                         "pending_question": (
                             p.get("output", {}).get("question")
                             if p.get("output", {}).get("outcome") == "needs_input"
@@ -886,8 +888,23 @@ async def prepared_test_input(org, sid, kind, payload):
     from api.services.agent_workbench.test_compilation import validate_compiled
 
     for case in cases:
-        validate_compiled(case)
-    actual = sorted((c["name"], c["compiled"]["fingerprint"]) for c in cases)
+        try:
+            SimulationCase.model_validate(case)
+        except ValidationError as error:
+            raise WorkbenchError(
+                "已准备的测试用例校验失败：" + validation_error_message(error), 409
+            ) from error
+        if case.get("mode") == "dynamic":
+            validate_compiled(case)
+    actual = sorted(
+        (
+            c["name"],
+            c["compiled"]["fingerprint"]
+            if c.get("mode") == "dynamic"
+            else fingerprint(c),
+        )
+        for c in cases
+    )
     expected = sorted(
         (r["name"], r["fingerprint"]) for r in output["compilation"].get("rows", [])
     )
@@ -895,7 +912,7 @@ async def prepared_test_input(org, sid, kind, payload):
         raise WorkbenchError("测试准备回执与冻结场景标识不一致。", 409)
     return {
         **payload,
-        "test_mode": "dynamic",
+        "test_mode": output.get("test_mode", "dynamic"),
         "test_suite_ids": ids,
         "candidate_id": output["candidate_id"],
     }
@@ -1154,6 +1171,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         job["input"]["text"],
     )
     if job["input"].get("prepare_only"):
+        compilation = preparation_summary(cases)
         suites = [
             await db_client.wb_save_suite(
                 org, sid, payload, job_id=job["id"], token=job["lease_token"]

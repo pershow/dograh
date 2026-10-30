@@ -91,6 +91,50 @@ def fixture():
     return case
 
 
+async def test_prepared_receipt_preserves_mixed_modes_and_validates_every_case(
+    monkeypatch,
+):
+    from api.services.agent_workbench import test_tasks as tasks
+
+    scripted = SimulationCase(
+        name="fixed script",
+        user_messages=["Hello"],
+        assertions=[{"kind": "contains", "value": "hello"}],
+    ).model_dump(mode="json")
+    dynamic = fixture()
+    cases = [dynamic, scripted]
+    summary = compiler.preparation_summary(cases)
+    assert summary["total"] == summary["ready"] == summary["processed"] == 2
+    assert summary["rows"][1]["fingerprint"] == fingerprint(scripted)
+    prior = {
+        "status": "completed",
+        "output": {
+            "outcome": "test_preparation",
+            "test_mode": "mixed",
+            "suite_ids": ["saved"],
+            "candidate_id": "fixed",
+            "compilation": summary,
+        },
+    }
+
+    async def get(org, sid, table, key):
+        assert (org, sid) == (7, "session")
+        return prior if table == "jobs" else {"payload": {"cases": cases}}
+
+    monkeypatch.setattr(tasks.db_client, "wb_get", get)
+    payload = {
+        "mode": "test",
+        "text": "Execute prepared tests",
+        "prepared_test_job_id": "prior",
+    }
+    result = await tasks.prepared_test_input(7, "session", "build", payload)
+    assert result["test_mode"] == "mixed"
+    assert result["test_suite_ids"] == ["saved"] and result["candidate_id"] == "fixed"
+    scripted["user_messages"] = ["Different intent"]
+    with pytest.raises(WorkbenchError, match="冻结场景标识不一致"):
+        await tasks.prepared_test_input(7, "session", "build", payload)
+
+
 @pytest.mark.asyncio
 async def test_preparation_checkpoints_survive_retry_chains_without_replacing_changed_sources(
     monkeypatch,

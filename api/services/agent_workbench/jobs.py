@@ -1222,6 +1222,29 @@ async def _perform(org, session_id, job):
             event,
             context["session"]["model_protocol"],
         ):
+            from api.services.agent_workbench.test_operations import (
+                QUESTION,
+                resolve_test_operation,
+            )
+
+            operation = await resolve_test_operation(
+                org,
+                session_id,
+                job,
+                context,
+                config.llm,
+                event,
+                context["session"]["model_protocol"],
+            )
+            if operation is None:
+                return {
+                    "outcome": "needs_input",
+                    "task_mode": "test",
+                    "intent": "test",
+                    "question": QUESTION,
+                    "pending_request": job["input"],
+                    "agent_modified": False,
+                }
             return await run_test_task(
                 org,
                 session_id,

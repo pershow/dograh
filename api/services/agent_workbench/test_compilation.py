@@ -691,11 +691,16 @@ async def compile_cases(
 
 
 def preparation_summary(cases):
-    selected = [c for c in cases if c["mode"] == "dynamic"]
+    selected = cases
+
+    def receipt(case):
+        if case["mode"] == "dynamic":
+            return case.get("compiled") or {}
+        # Scripted/single-step cases have already passed SimulationCase validation.
+        return {"status": "ready", "fingerprint": fingerprint(case)}
+
     counts = {
-        s: sum(
-            (c.get("compiled") or {}).get("status", "pending") == s for c in selected
-        )
+        s: sum(receipt(c).get("status", "pending") == s for c in selected)
         for s in ("ready", "needs_input", "preparation_error", "preparing", "pending")
     }
     return {
@@ -709,7 +714,7 @@ def preparation_summary(cases):
             {
                 "name": c["name"],
                 "source": c.get("source") or {},
-                "status": (z := c.get("compiled") or {}).get("status", "pending"),
+                "status": (z := receipt(c)).get("status", "pending"),
                 "fingerprint": z.get("fingerprint"),
                 "requirement_count": len(z.get("requirements", [])),
                 "questions": z.get("rubric_questions", [])

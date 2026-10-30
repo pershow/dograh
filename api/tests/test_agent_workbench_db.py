@@ -1002,3 +1002,54 @@ async def test_evaluation_session_metadata_skips_archives_but_keeps_tenant_check
     with pytest.raises(WorkbenchError) as error:
         await db_session.wb_context(org + 999, sid, session_only=True)
     assert error.value.status_code == 404
+
+
+async def test_operation_receipt_is_scoped_fenced_immutable_and_idempotent(
+    db_session, wb
+):
+    org, user, sid = wb
+    before = await db_session.wb_context(org, sid)
+    payload = {
+        "text": "Create reusable test cases",
+        "mode": "auto",
+        "prepare_only": False,
+    }
+    job = await db_session.wb_enqueue(org, sid, "build", payload, "operation")
+    job = await db_session.wb_claim(org, sid, job["id"])
+    args = (org, sid, job["id"], job["lease_token"])
+    with pytest.raises(LeaseLost):
+        await db_session.wb_set_test_operation(
+            *args[:3], "expired", "prepare", "reason"
+        )
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_set_test_operation(
+            org + 999, *args[1:], "prepare", "reason"
+        )
+    other = await db_session.wb_create_session(org, user, name="Other")
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_set_test_operation(
+            org, other["id"], *args[2:], "prepare", "reason"
+        )
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_set_test_operation(*args, "unknown", "reason")
+    saved = await db_session.wb_set_test_operation(*args, "prepare", "generation only")
+    assert saved["input"]["prepare_only"] is True
+    assert saved["output"]["test_operation"] == "prepare"
+    assert (
+        await db_session.wb_set_test_operation(*args, "prepare", "new reason") == saved
+    )
+    with pytest.raises(WorkbenchError, match="已固定"):
+        await db_session.wb_set_test_operation(*args, "execute", "upgrade on retry")
+    assert (await db_session.wb_enqueue(org, sid, "build", payload, "operation"))[
+        "id"
+    ] == job["id"]
+    with pytest.raises(WorkbenchError, match="different input"):
+        await db_session.wb_enqueue(
+            org, sid, "build", {**payload, "text": "run now"}, "operation"
+        )
+    assert (await db_session.wb_context(org, sid))["target_fingerprint"] == before[
+        "target_fingerprint"
+    ]
+    await db_session.wb_cancel(org, sid, job["id"])
+    with pytest.raises(LeaseLost):
+        await db_session.wb_set_test_operation(*args, "prepare", "cancelled")

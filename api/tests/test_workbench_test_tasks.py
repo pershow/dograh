@@ -681,7 +681,11 @@ async def test_structured_decision_duplicate_submit_is_idempotent():
 async def test_test_route_never_enters_builder_or_repair_loop(monkeypatch):
     from types import SimpleNamespace
 
-    from api.services.agent_workbench import jobs
+    from api.services.agent_workbench import jobs, test_operations
+
+    monkeypatch.setattr(
+        test_operations, "resolve_test_operation", AsyncMock(return_value="execute")
+    )
 
     context = {
         "session": {"model_protocol": "chat"},

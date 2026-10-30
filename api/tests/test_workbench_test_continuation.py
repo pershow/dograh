@@ -253,6 +253,11 @@ async def test_explicit_early_continuation_is_queued_for_worker_validation(monke
 
 
 async def test_auto_continuation_enters_executor_and_never_builder(monkeypatch):
+    from api.services.agent_workbench import test_operations
+
+    monkeypatch.setattr(
+        test_operations, "resolve_test_operation", AsyncMock(return_value="execute")
+    )
     prior = failed_request(output={"intent": "test"})
     context = {
         "session": {"model_protocol": "responses"},

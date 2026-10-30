@@ -462,7 +462,9 @@ class CodexClient:
             trust_env=settings.model_trust_env,
             proxy=settings.model_proxy,
             on_event=self.on_event,
-            tool_specs=self.dispatcher.specs if durable else None,
+            # The SDK compacts large schemas even for ephemeral dynamic tools.
+            # Always restore our authoritative contract at the provider boundary.
+            tool_specs=self.dispatcher.specs,
         ) as gateway:
             directory_context = (
                 contextlib.nullcontext(str(durable.root))

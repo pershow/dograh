@@ -415,6 +415,46 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             return record(job)
 
+    async def wb_set_test_operation(
+        self, org, session_id, job_id, token, operation, reason
+    ):
+        """Freeze preparation/execution before importing or running test cases."""
+        from api.services.agent_workbench.test_operations import operation_input
+
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            if job.kind != "build" or job.input.get("mode") in {"analyze", "build"}:
+                raise WorkbenchError("该任务不是测试准备或执行任务。", 409)
+            existing = job.output.get("test_operation")
+            if existing and existing != operation:
+                raise WorkbenchError("本次测试操作范围已固定，不能在恢复时切换。", 409)
+            if existing:
+                return record(job)
+            submitted = copy.deepcopy(job.output.get("_submitted_input", job.input))
+            job.input = operation_input(job.input, operation)
+            job.output = {
+                **job.output,
+                "_submitted_input": submitted,
+                "intent": "test",
+                "test_operation": operation,
+                "test_operation_reason": reason,
+            }
+            await self._wb_event(
+                db,
+                session,
+                "test.progress",
+                {
+                    "job_id": job_id,
+                    "phase": "test_operation",
+                    "operation": operation,
+                    "text": "本次仅准备并保存测试集，不执行 Agent 对话。"
+                    if operation == "prepare"
+                    else "已确认本次执行测试；先完成场景准备，再运行 Agent 对话。",
+                },
+            )
+            return record(job)
+
     async def wb_events(self, org, session_id, after=0):
         async with self.async_session() as db:
             await self._wb_session(db, org, session_id)
@@ -1107,6 +1147,8 @@ class AgentWorkbenchClient(BaseDBClient):
                     "phase": "target",
                     "text": "已固定原测试版本，只复核已有对话，不修改 Agent。"
                     if job.input.get("review_evaluation_ids")
+                    else "已固定测试版本，仅准备测试集，不执行 Agent 对话。"
+                    if job.input.get("prepare_only")
                     else "已固定测试版本，只执行测试，不修改 Agent。",
                     "candidate_id": candidate.id,
                 },

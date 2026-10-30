@@ -433,8 +433,10 @@ def test_legacy_ids_remain_unique_when_verifier_replaces_another_group():
     compiler.validate_plan(changed, case["reference_turns"])
 
 
+@pytest.mark.parametrize("natural_request", [False, True])
 async def test_preparation_persists_newest_stage_per_case_and_reports_real_counts(
     monkeypatch,
+    natural_request,
 ):
     from types import SimpleNamespace
 
@@ -510,6 +512,35 @@ async def test_preparation_persists_newest_stage_per_case_and_reports_real_count
             "prepare_only": True,
         },
     }
+    if natural_request:
+        from api.services.agent_workbench.test_operations import (
+            operation_input,
+            resolve_test_operation,
+        )
+
+        job["input"]["prepare_only"] = False
+        monkeypatch.setattr(
+            tasks,
+            "decision",
+            AsyncMock(
+                return_value={
+                    "operation": "prepare",
+                    "reason": "Only prepare the source cases",
+                }
+            ),
+        )
+
+        async def record(org, sid, jid, token, operation, reason):
+            return {
+                "input": operation_input(job["input"], operation),
+                "output": {"test_operation": operation},
+            }
+
+        monkeypatch.setattr(db_client, "wb_set_test_operation", record)
+        assert (
+            await resolve_test_operation(1, "s", job, {}, None, AsyncMock())
+            == "prepare"
+        )
     result = await tasks.run_test_task(
         1, "s", job, SimpleNamespace(llm=None), "responses", AsyncMock()
     )

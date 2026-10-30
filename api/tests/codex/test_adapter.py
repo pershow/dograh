@@ -650,6 +650,156 @@ async def test_missing_native_storage_never_silently_starts_a_blank_thread(
     )
 
 
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+@pytest.mark.parametrize("verification", [False, True])
+async def test_large_fixture_schema_survives_real_sdk_without_losing_constraints(
+    source_binary, tmp_path, monkeypatch, protocol, verification
+):
+    from copy import deepcopy
+
+    from api.services.agent_workbench.fixtures import FixtureCodec, FixtureSubmission
+    from api.services.agent_workbench.test_tasks import StructuredDecision
+    from api.tests.test_workbench_test_compilation import fixture
+
+    monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path / "jobs"))
+    case = fixture()
+    plan = case["compiled"]["scenario"]
+    for index in range(64):
+        turn = len(case["reference_turns"])
+        case["reference_turns"].append(
+            {"role": "user", "text": f"收到，第 {index} 项。"}
+        )
+        plan["source_coverage"].append(
+            {
+                "turn": turn,
+                "disposition": "filler",
+                "scenario_ids": [],
+                "reason": "独立的传输测试样本",
+            }
+        )
+    codec = FixtureCodec(case["reference_turns"])
+    wire = codec.encode(plan)
+    recovery = FixtureSubmission(
+        codec,
+        draft=wire if verification else None,
+        original=plan if verification else None,
+    )
+    name = "verify_customer_fixture" if verification else "compile_customer_fixture"
+    dispatcher = StructuredDecision(
+        name,
+        "Return the fixture",
+        recovery.schema,
+        validate=recovery,
+        recovery=recovery,
+    )
+    specs = {s["name"]: deepcopy(s) for s in dispatcher.specs()}
+    assert len(json.dumps(specs[name]["inputSchema"]).encode()) > 5000
+    args = (
+        {
+            "verdict": "supported",
+            "reason": "Checked",
+            "corrections": {key: None for key in wire},
+        }
+        if verification
+        else wire
+    )
+    seen = []
+    failures = []
+
+    async def upstream(request):
+        body = await request.json()
+        seen.append(body)
+        supplied = (
+            body["tools"]
+            if protocol == "responses"
+            else [t["function"] for t in body["tools"]]
+        )
+        try:
+            assert {t["name"] for t in supplied} == set(specs)
+            for tool in supplied:
+                # Exact equality covers nested arrays, enum catalogs, nullable
+                # corrections, required fields and scalar validation keywords.
+                assert tool["parameters"] == specs[tool["name"]]["inputSchema"]
+                assert tool["description"] == specs[tool["name"]]["description"]
+        except AssertionError as error:
+            failures.append(error)
+        if protocol == "chat":
+            return web.json_response(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "call_fixture",
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": json.dumps(args),
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ],
+                    "usage": {"total_tokens": 10},
+                }
+            )
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_fixture",
+                        "call_id": "call_fixture",
+                        "name": name,
+                        "arguments": json.dumps(args),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {"total_tokens": 10},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    app.router.add_post("/v1/chat/completions", upstream)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    client = CodexClient(dispatcher, AsyncMock())
+    try:
+        result = await asyncio.wait_for(
+            client.run(
+                "Submit the fixture",
+                SimpleNamespace(
+                    model="local-mock",
+                    api_key="local-test-key",
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                ),
+                protocol=protocol,
+            ),
+            45,
+        )
+        assert len(seen) == result["model_requests"] == 1
+        assert not failures, "Provider received a lossy SDK schema"
+        accepted = dispatcher.report["scenario"] if verification else dispatcher.report
+        assert (
+            accepted["actions"][0]["preconditions"]
+            == plan["actions"][0]["preconditions"]
+        )
+        assert accepted["actions"][0]["effects"] == plan["actions"][0]["effects"]
+        assert len(accepted["source_coverage"]) == 65
+        assert client.rpc.process.returncode is not None
+        assert not list((tmp_path / "jobs").iterdir())
+    finally:
+        await runner.cleanup()
+
+
 async def test_source_build_repairs_bound_fixture_without_rewriting_valid_content(
     source_binary, tmp_path, monkeypatch
 ):
@@ -685,6 +835,7 @@ async def test_source_build_repairs_bound_fixture_without_rewriting_valid_conten
         seen.append(body)
         specs = {t["name"]: t for t in body["tools"]}
         assert set(specs) == {"compile_customer_fixture", "repair_fixture"}
+        assert specs["compile_customer_fixture"]["parameters"] == recovery.schema
         assert set(
             specs["compile_customer_fixture"]["parameters"]["properties"][
                 "source_coverage"
