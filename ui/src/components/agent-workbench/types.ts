@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import type { RuntimeProfileData } from "./RuntimeProfile";
 
 export type WorkbenchSession = {
   id: string;
@@ -64,6 +65,9 @@ type ReviewVerification = {
   check: {reason: string} | null;
 };
 export type CaseResult = {
+  audio_evidence?: import("./AudioEvidence").AudioReplayEvidence | null;
+  runtime_profile?: RuntimeProfileData;
+  business_state?: Record<string, unknown>;
   mode?: "scripted" | "single_step" | "dynamic";
   history?: {role: string; text: string}[];
   validity?: {
@@ -86,7 +90,7 @@ export type CaseResult = {
   status: string;
   error?: string;
   transcript: { role: string; text: string }[];
-  assertions: { kind: string; value: unknown; passed: boolean; criterion_id?: string; criterion_status?: string; turn?: number | null; actual?: number; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
+  assertions: { kind: string; value: unknown; passed: boolean; criterion_id?: string; criterion_status?: string; turn?: number | null; actual?: unknown; reason?: string; reference_quote?: string; actual_quote?: string; category?: string; informational?: boolean }[];
   tool_calls: unknown[];
 };
 export type PreparationReceipt = {
@@ -110,6 +114,7 @@ export type Evaluation = {
 };
 export type Suite = { id: string; summary_only?: boolean; payload: { name: string; cases: unknown[] } };
 export type WorkbenchState = {
+  target_fingerprint?: string;
   memory_revision?: string;
   revision?: string;
   session: WorkbenchSession;

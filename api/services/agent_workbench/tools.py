@@ -157,6 +157,10 @@ class WorkbenchTools:
         self.base_mapping = source_mapping(self.base.get("workflow_json", {}))
 
     def specs(self, *, for_thread=False):
+        from api.schemas.agent_behavior import AgentBehavior
+
+        behavior_schema = AgentBehavior.model_json_schema()
+        behavior_definitions = behavior_schema.pop("$defs", {})
         source_mapping = {
             "type": "object",
             "description": "Map unique physical node names to SOP source IDs. By default, assign business phases to the main Agent as internal stages, with opening/closing/shared rules on the appropriate nodes. Include every source ID; shared rules may be reused. Do not duplicate an ID within one node. The server inserts original text. Explicit user structure takes precedence.",
@@ -229,6 +233,7 @@ class WorkbenchTools:
                         "description": "For resuming verification of the selected immutable candidate without further edits. Do not resave an identical workflow. Cannot be combined with edits or runtime changes, and cannot satisfy an automatic behavior repair.",
                     },
                     "template_context_variables": VARIABLE_UPDATES_SCHEMA,
+                    "agent_behavior": behavior_schema,
                     "runtime_llm": {
                         "type": "object",
                         "description": "Only when the user explicitly specifies the Agent conversation model: select an existing scoped provider connection and its model settings. This changes only the saved candidate LLM, never the build model or organization defaults.",
@@ -685,6 +690,9 @@ class WorkbenchTools:
                     for name, spec in actions.items()
                 )
             )
+        candidate_spec = next((s for s in specs if s["name"] == "save_candidate"), None)
+        if candidate_spec is not None:
+            candidate_spec["inputSchema"]["$defs"] = behavior_definitions
         return [s for s in specs if s["name"] not in actions]
 
     def thread_specs(self):
@@ -857,6 +865,10 @@ class WorkbenchTools:
             ),
             "workflow_id": self.context["session"]["workflow_id"],
             "model_dependencies": self.context.get("model_dependencies"),
+            "agent_behavior": self.base.get("workflow_configurations", {}).get(
+                "agent_behavior", {}
+            ),
+            "capability_guidance": "Use save_candidate.agent_behavior for typed goals, facts, stages, knowledge applicability and HTTP action policies. Policies only reference this Agent's attached resources. required_actions gates terminal stages on recorded business success. Unknown tool outcomes are never successful or automatically retried. Preserve unrelated behavior fields.",
             "runtime_model_dependencies": await dependency_report(
                 self.org, self.base, "evaluate"
             ),
@@ -1307,6 +1319,12 @@ class WorkbenchTools:
         row = await db_client.wb_get(
             self.org, self.session_id, "evaluations", evaluation_id
         )
+        if self.tuning or self.automatic_repair:
+            suite = await db_client.wb_get(
+                self.org, self.session_id, "suites", row["suite_id"]
+            )
+            if suite["payload"].get("usage") == "acceptance":
+                raise WorkbenchError("仅验收的测试结果不能用于自动调优。", 409)
         metadata = {
             key: row.get(key)
             for key in ("job_id", "candidate_id", "suite_id", "status", "summary")
@@ -1628,6 +1646,7 @@ class WorkbenchTools:
         edge_updates=None,
         repair_plan=None,
         runtime_llm=None,
+        agent_behavior=None,
         use_current_candidate=False,
         expected_revision=None,
     ):
@@ -1658,6 +1677,7 @@ class WorkbenchTools:
                         template_context_variables,
                         source_sections,
                         runtime_llm,
+                        agent_behavior,
                     )
                 )
             ):
@@ -1700,6 +1720,7 @@ class WorkbenchTools:
                         or field_updates
                         or template_context_variables is not None
                         or runtime_llm is not None
+                        or agent_behavior is not None
                     )
                     or not self.base_code
                     or not (self.saved_snapshot or self.base)
@@ -1800,6 +1821,12 @@ class WorkbenchTools:
             # Resolve the runtime, not the builder override, before saving.
             # Catalog ownership and permitted settings are checked by the resolver.
             await prepare_models(self.org, snapshot, "evaluate")
+        if agent_behavior is not None:
+            from api.schemas.agent_behavior import AgentBehavior
+
+            snapshot.setdefault("workflow_configurations", {})["agent_behavior"] = (
+                AgentBehavior.model_validate(agent_behavior).model_dump(mode="json")
+            )
         try:
             preserve_graph(
                 self.base.get("workflow_json", {}), snapshot["workflow_json"], removals
@@ -1912,6 +1939,8 @@ class WorkbenchTools:
         receipts = []
         for sid in ids:
             suite = await db_client.wb_get(self.org, self.session_id, "suites", sid)
+            if suite["payload"].get("usage") == "acceptance":
+                raise WorkbenchError("仅验收的测试集不能加入自动修复循环。", 409)
             receipts.append(
                 {
                     "suite_id": sid,

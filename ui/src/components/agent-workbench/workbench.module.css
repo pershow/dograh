@@ -11,26 +11,46 @@
 .header {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
 }
-.header > strong {
-  font-size: 15px;
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
-.header > svg {
+.headerTitle > strong {
+  font-size: 15px;
+  white-space: nowrap;
+}
+.headerTitle > svg {
   color: var(--primary);
 }
 .headerActions {
   display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
   align-items: center;
   margin-left: auto;
-  gap: 2px;
+  max-width: 100%;
+  gap: 4px;
 }
-.headerActions button {
+.headerActions > button {
   position: relative;
-  width: 30px;
   height: 30px;
+}
+.headerActions > .headerIconButton {
+  width: 30px;
+  padding: 0;
+}
+.capabilityPopover {
+  width: min(480px, calc(100vw - 24px));
+  max-height: min(75vh, var(--radix-popover-content-available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .warningDot {
   position: absolute;
@@ -303,6 +323,52 @@ div.protocol {
 .candidateResult > p {
   font-size: 13px;
   line-height: 1.6;
+}
+.capabilityForm {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  font-size: 13px;
+}
+.capabilityForm label {
+  display: grid;
+  gap: 6px;
+}
+.capabilityForm label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.capabilityForm input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: var(--primary);
+}
+.capabilityForm textarea,
+.capabilityForm select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+}
+.capabilityForm textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+.capabilityForm details p {
+  margin: 8px 0;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+}
+.capabilityForm details textarea {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+.capabilityForm :is(textarea, select):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 .candidateResultActions {
   display: flex;

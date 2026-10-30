@@ -110,8 +110,8 @@ from pipecat.turns.user_mute import (
 )
 from pipecat.turns.user_start import (
     ExternalUserTurnStartStrategy,
-    MinWordsUserTurnStartStrategy,
 )
+from api.services.pipecat.speech_units import SpeechUnitsUserTurnStartStrategy as MinWordsUserTurnStartStrategy
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
@@ -186,10 +186,12 @@ def _create_opening_input_gate(start_node, audio_buffer):
 
 
 def _create_user_mute_strategies(engine, answer_supervisor):
+    behavior = getattr(engine, "runtime_config", {}).get("agent_behavior") or {}
     strategies = [
-        FunctionCallUserMuteStrategy(),
-        CallbackUserMuteStrategy(should_mute_callback=engine.should_mute_user),
+        CallbackUserMuteStrategy(should_mute_callback=engine.should_mute_user)
     ]
+    if not (behavior.get("enabled") and behavior.get("listen_during_tools")):
+        strategies.insert(0, FunctionCallUserMuteStrategy())
     return strategies
 
 
@@ -634,6 +636,8 @@ async def _run_pipeline_impl(
     resolved_user_config=None,
     organization_id: int | None = None,
     provider_call_id: str | None = None,
+    evaluation_policy=None,
+    evaluation_replay=None,
 ) -> None:
     """
     Run the pipeline with the given transport and configuration
@@ -653,12 +657,31 @@ async def _run_pipeline_impl(
         else {"user_id": user_id}
     )
 
-    if workflow_run is None:
+    if evaluation_policy is not None:
+        workflow_run, _ = await db_client.get_workflow_run_with_context(workflow_run_id)
+        if (
+            not workflow_run
+            or organization_id is None
+            or workflow_run.workflow.organization_id != organization_id
+        ):
+            raise HTTPException(status_code=404, detail="Evaluation run not found")
+    elif workflow_run is None:
         workflow_run = await db_client.get_workflow_run(
             workflow_run_id, **workflow_scope
         )
     if not workflow_run:
         raise HTTPException(status_code=404, detail="Workflow run not found")
+    if (getattr(workflow_run, "purpose", "normal") == "evaluation") != (
+        evaluation_policy is not None
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Evaluation runs require an isolated execution policy",
+        )
+    if evaluation_policy is not None and evaluation_replay is None:
+        raise HTTPException(
+            status_code=422, detail="Audio evaluation requires a bounded replay"
+        )
     if workflow_run.workflow_id != workflow_id:
         raise HTTPException(
             status_code=400,
@@ -694,6 +717,10 @@ async def _run_pipeline_impl(
     run_definition = workflow_run.definition
     run_workflow_json = run_definition.workflow_json
     run_configs = run_definition.workflow_configurations or {}
+    if evaluation_policy is not None:
+        evaluation_policy.validate(run_workflow_json)
+        resolved_user_config = evaluation_policy.model_configuration
+        merged_call_context_vars.update(evaluation_policy.case.pre_call_context or {})
 
     # Extract configurations from the version's workflow_configurations
     max_call_duration_seconds = DEFAULT_MAX_CALL_DURATION_SECONDS
@@ -754,7 +781,8 @@ async def _run_pipeline_impl(
         call_direction = call_direction.value
     call_direction = call_direction or merged_call_context_vars.get("direction")
     if (
-        start_node
+        evaluation_policy is None
+        and start_node
         and start_node.should_run_pre_call_fetch(call_direction)
         and start_node.pre_call_fetch_url
     ):
@@ -789,6 +817,24 @@ async def _run_pipeline_impl(
 
     # Detect realtime mode (speech-to-speech services like OpenAI Realtime, Gemini Live)
     is_realtime = user_config.is_realtime and user_config.realtime is not None
+    from api.services.workflow.runtime_profile import (
+        runtime_profile,
+        require_runtime_capabilities,
+    )
+
+    run_channel = (
+        "browser" if getattr(workflow_run, "mode", "") == "smallwebrtc" else "phone"
+    )
+    if evaluation_replay is not None:
+        run_channel = evaluation_replay.spec.channel
+    profile = runtime_profile(
+        run_configs,
+        user_config,
+        channel=run_channel,
+        definition=run_workflow_json,
+        observed=True,
+    )
+    require_runtime_capabilities(profile)
 
     # Only call-scoped services are built here. A cascade call's first agent
     # (its LLM and TTS) is a visit-scoped stage, built once the pre-call fetch
@@ -902,11 +948,12 @@ async def _run_pipeline_impl(
 
     # Check organization-level recording availability. Node preparation enables
     # recording instructions and routing only for prompts that reference them.
-    has_recordings = await db_client.has_active_recordings(workflow.organization_id)
-
-    context_compaction_enabled = (workflow.workflow_configurations or {}).get(
-        "context_compaction_enabled", False
+    has_recordings = (
+        evaluation_policy is None
+        and await db_client.has_active_recordings(workflow.organization_id)
     )
+
+    context_compaction_enabled = run_configs.get("context_compaction_enabled", False)
     # Context compaction doesn't apply in realtime mode: the speech-to-speech
     # service manages its own conversation state server-side.
     if is_realtime and context_compaction_enabled:
@@ -914,6 +961,8 @@ async def _run_pipeline_impl(
         context_compaction_enabled = False
 
     engine = PipecatEngine(
+        runtime_config=run_configs,
+        evaluation_policy=evaluation_policy,
         llm=llm,
         inference_llm=inference_llm,
         variable_extraction_llm=variable_extraction_llm,
@@ -939,15 +988,19 @@ async def _run_pipeline_impl(
     # Create pipeline components
     audio_buffer, context = create_pipeline_components(audio_config)
 
-    integration_runtime_sessions = create_runtime_sessions(
-        IntegrationRuntimeContext(
-            workflow_run_id=workflow_run_id,
-            workflow_run=workflow_run,
-            workflow_graph=workflow_graph,
-            run_definition=run_definition,
-            user_config=user_config,
-            is_realtime=is_realtime,
-            context_messages_provider=lambda: context.messages,
+    integration_runtime_sessions = (
+        []
+        if evaluation_policy is not None
+        else create_runtime_sessions(
+            IntegrationRuntimeContext(
+                workflow_run_id=workflow_run_id,
+                workflow_run=workflow_run,
+                workflow_graph=workflow_graph,
+                run_definition=run_definition,
+                user_config=user_config,
+                is_realtime=is_realtime,
+                context_messages_provider=lambda: context.messages,
+            )
         )
     )
 
@@ -1176,6 +1229,7 @@ async def _run_pipeline_impl(
 
     call_events_session = await create_session(
         organization_id=workflow.organization_id,
+        local_only=evaluation_policy is not None,
         run_id=workflow_run_id,
         workflow_id=workflow_id,
         engine=engine,
@@ -1237,6 +1291,7 @@ async def _run_pipeline_impl(
             run_definition=run_definition,
             run_model_configuration=user_config,
             stt=stt,
+            channel=run_channel,
         )
         engine.set_agent_factory(agent_factory)
         # The agent this call starts on. Its services are populated by the
@@ -1262,10 +1317,20 @@ async def _run_pipeline_impl(
     engine.active_agent.model_configuration_snapshot = dict(
         workflow_run.model_configuration_snapshot or {}
     )
+    engine.record_context({"runtime_profile": profile})
+    engine.active_agent.runtime_configuration["runtime_profile"] = profile
 
     # Initialize the engine to set the initial context with
     # System Prompt and Tools
     await engine.initialize()
+
+    @assistant_context_aggregator.event_handler("on_assistant_turn_stopped")
+    async def compact_after_turn(_aggregator, _message):
+        if engine.task_state.contract.enabled and not _message.interrupted:
+            from api.services.workflow.action_guard import acknowledge_proposals
+
+            await acknowledge_proposals(engine, _message.content or "")
+        await engine.compact_context_if_needed()
 
     # Register latency observer to log user-to-bot response latency
     if task.user_bot_latency_observer:
@@ -1301,6 +1366,39 @@ async def _run_pipeline_impl(
         user_context_aggregator,
         assistant_context_aggregator,
     )
+
+    @user_context_aggregator.event_handler("on_user_turn_message_added")
+    async def record_business_user_turn(_aggregator, message):
+        engine.observe_user_turn(message.content or "")
+
+    @user_context_aggregator.event_handler("on_user_turn_started")
+    async def record_business_user_activity(_aggregator, _message):
+        engine.observe_user_activity()
+
+    if evaluation_replay is not None:
+        try:
+            result = await evaluation_replay.run(
+                engine=engine,
+                task=task,
+                runner=worker_runner,
+                user_config=user_config,
+                user_aggregator=user_context_aggregator,
+                assistant_aggregator=assistant_context_aggregator,
+                metrics=pipeline_metrics_aggregator,
+                call_events=call_events_session,
+                termination_funnel=termination_funnel,
+            )
+            await transcript_log_coordinator.flush()
+            result["events"] = in_memory_logs_buffer.get_events()
+            return result
+        finally:
+            if call_events_session is not None:
+                await call_events_session.finish()
+            await engine.close_mcp_sessions()
+            await engine.cleanup()
+            await feedback_observer.cleanup()
+            if speaker_tracking is not None:
+                await speaker_tracking.finish()
 
     # Register event handlers — resolve provider_id for PostHog tracking
     if not user_provider_id:

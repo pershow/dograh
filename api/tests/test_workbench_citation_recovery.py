@@ -436,3 +436,75 @@ async def test_repair_capability_is_not_available_on_unrelated_decisions(name):
     with pytest.raises(WorkbenchError, match="only permits"):
         await dispatcher.call(name, {})
     assert dispatcher.report is None
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {},
+        {"id": "old-source", "quote": "old format"},
+        {"span_id": None},
+        {"span_id": []},
+        "plain quote",
+    ],
+)
+async def test_malformed_citation_slots_use_locked_repair_not_full_resubmission(
+    malformed,
+):
+    reader, recovery, dispatcher, client, _events = setup_decision()
+    spans = list(reader.spans)
+    initial = {
+        "requirements": [requirement([{"span_id": spans[0]}, malformed])],
+        "questions": ["Keep genuine uncertainty"],
+    }
+    result = await submit(client, deepcopy(initial))
+    assert not result["success"]
+    detail = feedback(result)
+    assert detail["repair_tool"] == dispatcher.required_tool == "repair_citations"
+    assert detail["issues"][0]["citation_index"] == 1
+    assert recovery.draft == initial
+    assert "compile_business_rubric" not in [s["name"] for s in dispatcher.specs()]
+    changed = deepcopy(initial)
+    changed["requirements"][0]["expected_behavior"] = "easier rule"
+    assert not (await submit(client, changed))["success"]
+    assert recovery.draft == initial
+    assert not (await submit(client, patch(recovery, 0, spans[1]), "repair_citations"))[
+        "success"
+    ]
+    # Use a fresh dispatcher for the final repair after deliberately exhausting
+    # the invalid-attempt budget; the same locked recovery state is retained.
+    resumed = test_tasks.StructuredDecision(
+        "compile_business_rubric",
+        "Continue",
+        recovery.schema,
+        validate=recovery,
+        reader=reader,
+        recovery=recovery,
+    )
+    fixed = await submit(
+        CodexClient(resumed, AsyncMock()),
+        patch(recovery, 1, spans[1]),
+        "repair_citations",
+    )
+    assert fixed["success"]
+    accepted = resumed.report
+    assert (
+        accepted["requirements"][0]["expected_behavior"]
+        == initial["requirements"][0]["expected_behavior"]
+    )
+    assert accepted["requirements"][0]["citations"] == [
+        reader.spans[spans[0]],
+        reader.spans[spans[1]],
+    ]
+    assert accepted["questions"] == initial["questions"]
+
+
+async def test_malformed_citation_recovery_still_rejects_missing_business_fields():
+    import jsonschema
+
+    _reader, recovery, *_ = setup_decision()
+    item = requirement([{}])
+    del item["expected_behavior"]
+    with pytest.raises(jsonschema.ValidationError):
+        recovery({"requirements": [item], "questions": []})
+    assert recovery.draft is None

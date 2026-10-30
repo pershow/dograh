@@ -373,8 +373,16 @@ async def test_source_build_completes_dynamic_tool_round_trip(
         await runner.cleanup()
 
 
+@pytest.mark.parametrize(
+    "citation",
+    [
+        {"span_id": "incorrect"},
+        {},
+        {"id": "legacy", "quote": "Retries must not exceed two."},
+    ],
+)
 async def test_source_build_repairs_citations_and_finishes_at_repaired_receipt(
-    source_binary, tmp_path, monkeypatch
+    source_binary, tmp_path, monkeypatch, citation
 ):
     from api.services.agent_workbench.citations import (
         CitationSourceReader,
@@ -426,7 +434,7 @@ async def test_source_build_repairs_citations_and_finishes_at_repaired_receipt(
                         "applies_when": "An operation fails",
                         "expected_behavior": "At most two retries",
                         "severity": "blocking",
-                        "citations": [{"span_id": "incorrect"}],
+                        "citations": [citation],
                     }
                 ],
                 "questions": [],

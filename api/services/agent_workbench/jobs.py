@@ -509,6 +509,8 @@ async def _verify_build(org, session_id, job, context, builder_config, built):
     suites = [
         await db_client.wb_get(org, session_id, "suites", sid) for sid in suite_ids
     ]
+    if any(s["payload"].get("usage") == "acceptance" for s in suites):
+        raise WorkbenchError("仅验收的测试集不能用于自动构建修复。", 409)
     suite = {"payload": {"cases": [c for s in suites for c in s["payload"]["cases"]]}}
     saved = job.get("output", {}).get("build_verification_checkpoint") or {
         "candidate_id": built["candidate_id"],

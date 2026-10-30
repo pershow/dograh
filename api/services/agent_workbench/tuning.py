@@ -103,6 +103,10 @@ async def resolve_scope(org, sid, payload):
         raise WorkbenchError("调优范围必须包含不重复的测试集。", 422)
     suites = [await db_client.wb_get(org, sid, "suites", i) for i in ids]
     for suite in suites:
+        if suite["payload"].get("usage") == "acceptance":
+            raise WorkbenchError(
+                "验收测试集只能用于评估，不能用于自动调优。请选择开发测试集。", 409
+            )
         names = [c["name"] for c in suite["payload"]["cases"]]
         if len(names) != len(set(names)):
             raise WorkbenchError(
@@ -165,6 +169,9 @@ async def evaluate_scope(
             old
             and old["summary"].get("suite_fingerprint") == suite["fingerprint"]
             and [c["name"] for c in old["results"]] == names
+            and not any(
+                c.get("fixtures") or c.get("audio") for c in suite["payload"]["cases"]
+            )
         ):
             return old
         async with batch_slots:
@@ -179,6 +186,7 @@ async def evaluate_scope(
                 decision_cache=cache,
                 frozen_contexts=frozen_contexts,
                 frozen_scenarios=frozen_scenarios,
+                prior_results={r["name"]: r for r in old["results"]} if old else None,
             )
 
     # A lost lease or batch failure must stop siblings, not leave simulations

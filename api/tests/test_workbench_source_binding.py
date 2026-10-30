@@ -494,3 +494,28 @@ async def test_same_file_history_crosses_sessions_but_not_agents_or_tenants(
         )
     with pytest.raises(WorkbenchError):
         await db_session.wb_test_source_context(org + 999, second["id"], job["id"])
+
+
+def test_schema_resource_defaults_preserve_legacy_fixtures_but_real_changes_do_not():
+    from api.schemas.agent_workbench import SimulationCase
+
+    legacy = fixture()
+    for key in ("audio", "initial_business_state", "knowledge_chunks"):
+        legacy.pop(key, None)
+    # Reproduce the original fingerprint algorithm, not the new implementation.
+    legacy["compiled"]["source_fingerprint"] = fingerprint(
+        {k: v for k, v in legacy.items() if k not in {"compiled", "mode"}}
+    )
+    reseal(legacy)
+    original = deepcopy(legacy["compiled"])
+    normalized = SimulationCase.model_validate(legacy).model_dump(mode="json")
+    assert normalized["compiled"] == original
+    compiler.validate_compiled(normalized)
+    for key, value in [
+        ("initial_business_state", {"consent": True}),
+        ("knowledge_chunks", [{"text": "new policy"}]),
+    ]:
+        changed = deepcopy(normalized)
+        changed[key] = value
+        with pytest.raises(WorkbenchError, match="原始用例已变化"):
+            compiler.validate_compiled(changed)

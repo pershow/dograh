@@ -92,6 +92,8 @@ class AgentRuntime:
     recording_router: Any = None
     user_config: Any = None
     runtime_configuration: dict[str, Any] = field(default_factory=dict)
+    workflow_configurations: dict[str, Any] = field(default_factory=dict)
+    business_state: Any = field(default=None, repr=False)
     model_configuration_snapshot: dict[str, Any] = field(default_factory=dict)
     is_realtime: bool = False
     # False for the call-owned runtime, whose worker is the call itself and
@@ -158,6 +160,22 @@ class AgentRuntime:
                     await asyncio.shield(execution.task)
                     if not execution.delivered and engine.agent_can_act(self):
                         execution.delivered = True
+                        state = getattr(engine, "task_state", None)
+                        if (
+                            execution.user_turn is not None
+                            and state is not None
+                            and state.data.get("input_revision", state.data["turn"])
+                            != execution.input_revision
+                        ):
+                            await params.result_callback(
+                                {
+                                    "status": "completed_after_new_input",
+                                    "origin_turn": execution.user_turn,
+                                    "result": execution.result,
+                                },
+                                properties=FunctionCallResultProperties(run_llm=False),
+                            )
+                            return
                         if execution.properties is None:
                             await params.result_callback(execution.result)
                         else:

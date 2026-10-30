@@ -14,6 +14,7 @@ from opentelemetry import trace
 from pipecat.utils.tracing.langfuse_helpers import mark_trace_public
 
 from api.db import db_client
+from api.services.workflow.runtime_profile import digest
 from api.services.gen_ai import build_embedding_service
 from api.services.pipecat.tracing_config import ensure_tracing
 
@@ -251,6 +252,14 @@ async def _perform_retrieval(
                     chunks.append(
                         {
                             "text": doc.full_text,
+                            "document_uuid": doc.document_uuid,
+                            "document_version": digest(
+                                [
+                                    getattr(doc, "file_hash", None),
+                                    str(getattr(doc, "updated_at", None)),
+                                ]
+                            ),
+                            "content_hash": digest(doc.full_text),
                             "filename": doc.filename,
                             "similarity": 1.0,
                             "chunk_index": 0,
@@ -294,6 +303,16 @@ async def _perform_retrieval(
 
             for result in results:
                 chunk_info = {
+                    "document_uuid": result.get("document_uuid"),
+                    "document_version": digest(
+                        [
+                            result.get("file_hash"),
+                            str(result.get("document_updated_at")),
+                        ]
+                    ),
+                    "content_hash": digest(
+                        result.get("contextualized_text") or result.get("chunk_text")
+                    ),
                     "text": result.get("contextualized_text")
                     or result.get("chunk_text"),
                     "filename": result.get("filename"),

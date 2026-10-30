@@ -275,9 +275,18 @@ class DiagnosticSession:
         }
 
     async def packet(self, run_id):
-        return await db_client.wb_diagnostic_run(
+        packet = await db_client.wb_diagnostic_run(
             self.owner.org, self.owner.session_id, run_id
         )
+        if (
+            getattr(self.owner, "tuning", False)
+            or getattr(self.owner, "automatic_repair", None)
+        ) and (packet.get("source") or {}).get("suite_usage") in {
+            "acceptance",
+            "unknown",
+        }:
+            raise WorkbenchError("验收保留集的运行证据不能用于自动调优。", 409)
+        return packet
 
     async def inspect(
         self,

@@ -148,7 +148,8 @@ async def test_policy_invokes_fixture_and_checks_arguments():
     assert policy.invoke("book", {"name": "Bob"}) == {
         "error": "fixture_arguments_mismatch"
     }
-    assert len(policy.calls) == 1 and policy.errors
+    assert len(policy.calls) == 2 and policy.errors
+    assert policy.calls[-1]["result"]["error"] == "fixture_arguments_mismatch"
 
 
 def test_evaluation_cannot_pass_on_user_text_or_accept_regressions():

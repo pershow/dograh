@@ -32,6 +32,11 @@ ENGINE_OWNED_CONTEXT_KEYS = frozenset(
         "nodes_visited",
         "agent_visits",
         "agent_transfers",
+        "task_state",
+        "runtime_profile",
+        "runtime_evidence",
+        "business_actions",
+        "knowledge_evidence",
     }
 )
 

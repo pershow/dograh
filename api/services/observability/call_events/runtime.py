@@ -1,6 +1,7 @@
 """Connect canonical diagnostics to the existing call observation paths."""
 
 import asyncio
+from dataclasses import asdict
 
 from loguru import logger
 
@@ -16,6 +17,9 @@ class CallEventsSession:
         self.organization_id = organization_id
         self.engine = engine
         self.buffer = EventBuffer()
+        self.capture_internal = (getattr(engine, "runtime_config", {}) or {}).get(
+            "runtime_evidence_enabled"
+        ) is True
         self.recorder = CallEventRecorder(
             sink=self.buffer,
             run_id=run_id,
@@ -130,22 +134,52 @@ class CallEventsSession:
                     self.buffer.dropped,
                     self.organization_id,
                 )
-            delivery.submit(
-                self.organization_id,
-                self.settings,
-                self.buffer.seal(),
-                self.buffer.size_bytes,
-            )
+            events = self.buffer.seal()
+            if self.capture_internal:
+                # Keep the local receipt bounded independently of external
+                # export. Omitted observations are explicit, never successes.
+                receipt = {
+                    "version": 1,
+                    "events": [asdict(event) for event in events[-500:]],
+                    "dropped": self.buffer.dropped + max(0, len(events) - 500),
+                    "measurement_boundary": "server_pipeline",
+                }
+                context["runtime_evidence"] = receipt
+                self.engine.record_context({"runtime_evidence": receipt})
+            if self.settings.enabled and self.settings.sink_type:
+                delivery.submit(
+                    self.organization_id, self.settings, events, self.buffer.size_bytes
+                )
 
 
-async def create_session(*, organization_id, run_id, workflow_id, engine):
+async def create_session(
+    *, organization_id, run_id, workflow_id, engine, local_only=False
+):
+    if local_only:
+        from api.schemas.call_events import CallEventsSettings
+
+        session = CallEventsSession(
+            settings=CallEventsSettings(),
+            organization_id=organization_id,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            engine=engine,
+        )
+        session.capture_internal = True
+        return session
+    internal = (getattr(engine, "runtime_config", {}) or {}).get(
+        "runtime_evidence_enabled"
+    ) is True
     try:
         async with asyncio.timeout(2):
             settings = await load_settings(organization_id)
-        if not settings.enabled or not settings.sink_type:
+        if (not settings.enabled or not settings.sink_type) and not internal:
             return None
         # Validate locally; no sink client or network I/O during capture.
-        registration(settings.sink_type).config_model.model_validate(settings.config)
+        if settings.enabled and settings.sink_type:
+            registration(settings.sink_type).config_model.model_validate(
+                settings.config
+            )
         return CallEventsSession(
             settings=settings,
             organization_id=organization_id,
@@ -159,4 +193,14 @@ async def create_session(*, organization_id, run_id, workflow_id, engine):
             organization_id,
             type(exc).__name__,
         )
-        return None
+        if not internal:
+            return None
+        from api.schemas.call_events import CallEventsSettings
+
+        return CallEventsSession(
+            settings=CallEventsSettings(),
+            organization_id=organization_id,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            engine=engine,
+        )

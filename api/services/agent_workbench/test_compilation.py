@@ -212,7 +212,22 @@ more cooperative to obtain a passing test. Unresolvable input remains visible.
 
 
 def case_fingerprint(case):
-    return fingerprint({k: v for k, v in case.items() if k not in {"compiled", "mode"}})
+    # Optional resource fields were added after frozen text fixtures shipped.
+    # Their empty defaults mean "not configured", exactly as an absent field did.
+    # Real resource/state content still changes the fingerprint and rejects reuse.
+    resource_defaults = {
+        "audio": None,
+        "initial_business_state": {},
+        "knowledge_chunks": [],
+    }
+    return fingerprint(
+        {
+            k: v
+            for k, v in case.items()
+            if k not in {"compiled", "mode"}
+            and not (k in resource_defaults and v == resource_defaults[k])
+        }
+    )
 
 
 def validate_rubric(value, records):

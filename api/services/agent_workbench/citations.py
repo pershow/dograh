@@ -141,6 +141,7 @@ class CitationSubmission:
     """Keep business content and accepted evidence immutable during quote repair."""
 
     tool_name = "repair_citations"
+    validates_schema = True
     selection_schema: ClassVar[dict] = {
         "type": "object",
         "additionalProperties": False,
@@ -175,6 +176,13 @@ class CitationSubmission:
         self.schema["properties"][group]["items"]["properties"]["citations"][
             "items"
         ] = self.selection_schema
+        # Stage malformed citation slots for restricted repair while still
+        # validating every business field and the complete citation container.
+        # The model-facing schema and final evidence validation stay strict.
+        self.content_schema = deepcopy(self.schema)
+        self.content_schema["properties"][group]["items"]["properties"]["citations"][
+            "items"
+        ] = {}
         self.group, self.reader, self.validate = group, reader, validate
         self.draft = None
         self.errors = {}
@@ -199,14 +207,19 @@ class CitationSubmission:
         result = deepcopy(value)
         for i, item in enumerate(result[self.group]):
             for j, citation in enumerate(item["citations"]):
-                key = citation["span_id"]
-                if key not in self.reader.spans:
+                valid_shape = jsonschema.Draft202012Validator(
+                    self.selection_schema
+                ).is_valid(citation)
+                key = citation.get("span_id") if isinstance(citation, dict) else None
+                if not valid_shape or key not in self.reader.spans:
                     errors[i, j] = {
                         "path": f"{self.group}[{i}].citations[{j}]",
                         "item_index": i,
                         "citation_index": j,
-                        "reason": "未知的原文片段；请从本任务 citation_spans 选择",
-                        "span_id": key,
+                        "reason": "引用结构无效；必须只包含从 citation_spans 选择的字符串 span_id"
+                        if not valid_shape
+                        else "未知的原文片段；请从本任务 citation_spans 选择",
+                        "span_id": key if isinstance(key, str) else None,
                     }
                 else:
                     item["citations"][j] = deepcopy(self.reader.spans[key])
@@ -216,7 +229,7 @@ class CitationSubmission:
         if self.pending:
             raise CitationErrors(list(self.errors.values()), draft_id=self.draft_id)
         self.reader.require_read()
-        jsonschema.validate(arguments, self.schema)
+        jsonschema.validate(arguments, self.content_schema)
         resolved, errors = self._check(arguments)
         if errors:
             self.draft, self.errors = deepcopy(arguments), errors

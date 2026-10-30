@@ -9,6 +9,7 @@ from api.db import db_client
 from api.schemas.agent_workbench import SimulationSuite
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
+from api.services.agent_workbench.fingerprint import fingerprint
 
 
 def resolve_node_references(case, graph):
@@ -84,8 +85,20 @@ def tuning_evidence(evaluation):
 
 
 def check_assertions(
-    case, transcript, events, context, completed, calls, node_references=None
+    case,
+    transcript,
+    events,
+    context,
+    completed,
+    calls,
+    node_references=None,
+    business_state=None,
 ):
+    from api.services.agent_workbench.assertions import (
+        TOOL_ASSERTIONS,
+        check_tool_assertion,
+    )
+
     replies = [m for m in transcript if m["role"] == "assistant"]
     assistant = "\n".join(m["text"] for m in replies)
     nodes = {
@@ -102,6 +115,9 @@ def check_assertions(
     results = []
     for assertion in case.assertions:
         kind, value = assertion.kind, assertion.value
+        if kind in TOOL_ASSERTIONS:
+            results.append(check_tool_assertion(assertion, calls, business_state or {}))
+            continue
         text = assistant
         if assertion.turn is not None:
             matched = [
@@ -230,6 +246,39 @@ async def evaluate(
     candidate = await db_client.wb_get(org, session_id, "candidates", candidate_id)
     suite_row = await db_client.wb_get(org, session_id, "suites", suite_id)
     suite = SimulationSuite.model_validate(suite_row["payload"])
+    tool_ids = {fixture.tool_uuid for case in suite.cases for fixture in case.fixtures}
+    bound_tools = (
+        await db_client.get_tools_by_uuids(sorted(tool_ids), org) if tool_ids else []
+    )
+    frozen_tools = {
+        tool.tool_uuid: copy.deepcopy(tool.definition) for tool in bound_tools
+    }
+    if tool_ids - set(frozen_tools):
+        raise WorkbenchError(
+            "Evaluation tool resources are missing or no longer accessible"
+        )
+    audio_versions = {}
+    for asset_id in {
+        clip.asset_id for case in suite.cases if case.audio for clip in case.audio.clips
+    }:
+        asset = await db_client.wb_get(org, session_id, "assets", asset_id)
+        audio_versions[asset_id] = asset["sha256"]
+
+    def resources(case):
+        versions = {
+            fixture.tool_uuid: fingerprint(frozen_tools[fixture.tool_uuid])
+            for fixture in case.fixtures
+            if fixture.tool_uuid in frozen_tools
+        }
+        if case.audio:
+            versions.update(
+                {
+                    "audio:" + clip.asset_id: audio_versions[clip.asset_id]
+                    for clip in case.audio.clips
+                }
+            )
+        return versions
+
     context = await db_client.wb_context(org, session_id, session_only=True)
     evaluation = await db_client.wb_evaluation(
         org, session_id, job["id"], job["lease_token"], candidate_id, suite_id
@@ -307,6 +356,7 @@ async def evaluate(
         and c.name in prior_results
         and not prior_results[c.name].get("review_pending")
         and not prior_results[c.name].get("replay_pending")
+        and prior_results[c.name].get("resource_versions", {}) == resources(c)
     }
     semaphore = case_semaphore or asyncio.Semaphore(
         WorkbenchSettings.load().evaluation_concurrency
@@ -383,6 +433,7 @@ async def evaluate(
         policy = EvaluationPolicy(case, model_configuration)
         run_id, transcript, events, turns, checkpoint = None, [], [], [], None
         completed, gathered, usage = False, {}, []
+        audio_evidence = None
         driver = None
         diagnostics = []
 
@@ -441,6 +492,12 @@ async def evaluate(
                 case, candidate["snapshot"]["workflow_json"]
             )
             policy.validate(candidate["snapshot"]["workflow_json"])
+            if case.fixtures:
+                policy.tool_definitions = {
+                    fixture.tool_uuid: copy.deepcopy(frozen_tools[fixture.tool_uuid])
+                    for fixture in case.fixtures
+                    if fixture.tool_uuid in frozen_tools
+                }
             if case.mode != "scripted" or case.reference_turns:
                 from api.services.agent_workbench.simulation import ConversationDriver
 
@@ -552,9 +609,24 @@ async def evaluate(
                         else {}
                     ),
                 },
+                **({"mode": "audio_replay"} if case.audio else {}),
             )
+            if case.audio:
+                from api.services.agent_workbench.audio_replay import replay_case
+
+                audio_result = await replay_case(
+                    org, session_id, context["session"]["workflow_id"], run_id, policy
+                )
+                transcript = audio_result["transcript"]
+                gathered = audio_result["gathered_context"]
+                events = audio_result["events"]
+                usage = [audio_result["usage"]]
+                completed = audio_result["completed"]
+                audio_evidence = audio_result["audio_evidence"]
+                if policy.errors:
+                    raise WorkbenchError("; ".join(policy.errors))
             turn_index = 0
-            while True:
+            while not case.audio:
                 await db_client.wb_heartbeat(
                     org, session_id, job["id"], job["lease_token"]
                 )
@@ -640,10 +712,15 @@ async def evaluate(
                 completed,
                 policy.calls,
                 node_references,
+                business_state=policy.business_state,
             )
             consumed = sum(m["role"] == "user" for m in transcript)
             explicit_assertions_passed = all(a["passed"] for a in assertions)
-            if case.mode == "scripted":
+            if case.audio:
+                from api.services.agent_workbench.audio_replay import audio_assertions
+
+                assertions.extend(audio_assertions(case, transcript, audio_evidence))
+            elif case.mode == "scripted":
                 assertions.append(
                     {
                         "kind": "script_consumed",
@@ -664,6 +741,12 @@ async def evaluate(
                 else "failed"
             )
             if not any(m["text"] for m in transcript if m["role"] == "assistant"):
+                status = "inconclusive"
+            if case.audio and (
+                not audio_evidence
+                or not audio_evidence["output_frames"]
+                or audio_evidence["max_input_lag_ms"] > 250
+            ):
                 status = "inconclusive"
             review = None
             if driver:
@@ -750,6 +833,11 @@ async def evaluate(
                 "events": events,
                 "tool_calls": policy.calls,
                 "usage": usage,
+                "tool_requests": policy.requests,
+                "business_state": copy.deepcopy(policy.business_state),
+                "resource_versions": resources(case),
+                "runtime_profile": gathered.get("runtime_profile"),
+                "audio_evidence": audio_evidence,
                 "diagnostics": diagnostics,
                 "mode": case.mode,
                 "history": [t.model_dump() for t in case.history],

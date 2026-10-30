@@ -584,6 +584,8 @@ class KnowledgeBaseClient(BaseDBClient):
                     c.chunk_index,
                     d.filename,
                     d.document_uuid,
+                    d.file_hash,
+                    d.updated_at as document_updated_at,
                     1 - (c.embedding <=> $1::vector) as similarity
                 FROM knowledge_base_chunks c
                 JOIN knowledge_base_documents d ON c.document_id = d.id
