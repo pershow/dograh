@@ -976,6 +976,8 @@ async def evaluate(
 
 
 def acceptable_improvement(baseline, proposed):
+    from api.services.agent_workbench.contract_review import same_review_contract
+
     old, new = baseline["results"], proposed["results"]
     if len(old) != len(new) or any(
         item["status"] in ("error", "inconclusive") for item in new
@@ -994,10 +996,8 @@ def acceptable_improvement(baseline, proposed):
             a.get("reference_review") or {},
             b.get("reference_review") or {},
         )
-        if old_review.get("version") == 4 and (
-            new_review.get("rubric_fingerprint") != old_review.get("rubric_fingerprint")
-            or new_review.get("compilation_fingerprint")
-            != old_review.get("compilation_fingerprint")
+        if old_review.get("version") == 4 and not same_review_contract(
+            old_review, new_review
         ):
             return False
         if len(prior) != len(later):

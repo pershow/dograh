@@ -529,34 +529,37 @@ def compile_tables(tables, mapping):
 
 def pack_suites(cases, name, instructions=""):
     """Batch all records by transport size, never sample or truncate the dataset."""
+    from api.services.agent_workbench.compiled_artifacts import (
+        MAX_PAYLOAD_BYTES,
+        payload_bytes,
+        split_suite,
+    )
+
     batches, current = [], []
-    for case in cases:
-        proposal = {
-            "name": name,
+
+    def payload(items):
+        return {
+            "usage": "development",
+            "name": f"{name} · {len(batches) + 1}",
             "instructions": instructions,
-            "cases": [*current, case],
+            "cases": items,
         }
+
+    for case in cases:
+        # Include defaults, the actual batch name and UTF-8 bytes in the same
+        # representation used by schema validation and persistence.
+        case = SimulationCase.model_validate(case).model_dump()
+        proposal, _ = split_suite(payload([*current, case]))
         if current and (
-            len(current) >= 20
-            or len(json.dumps(proposal, ensure_ascii=False).encode()) > 250000
+            len(current) >= 20 or payload_bytes(proposal) > MAX_PAYLOAD_BYTES
         ):
             batches.append(
-                SimulationSuite(
-                    name=f"{name} · {len(batches) + 1}",
-                    instructions=instructions,
-                    cases=current,
-                ).model_dump()
+                SimulationSuite.model_validate(payload(current)).model_dump()
             )
             current = []
         current.append(case)
     if current:
-        batches.append(
-            SimulationSuite(
-                name=f"{name} · {len(batches) + 1}",
-                instructions=instructions,
-                cases=current,
-            ).model_dump()
-        )
+        batches.append(SimulationSuite.model_validate(payload(current)).model_dump())
     return batches
 
 
@@ -593,9 +596,35 @@ async def reusable_test_results(
     org, sid, prior_id, candidate, cases, current_request, model_fingerprint
 ):
     from api.services.agent_workbench.evaluation import EVALUATION_VERSION
+    from api.services.agent_workbench.test_compilation import execution_fingerprint
 
     reusable = {}
     if prior_id:
+        current = {
+            case["name"]: SimulationCase.model_validate(case).model_dump()
+            for case in cases
+        }
+        current_ids = {
+            name: execution_fingerprint(case) for name, case in current.items()
+        }
+
+        def retain(result, identity):
+            def rank(item):
+                return (
+                    0
+                    if item.get("replay_pending")
+                    else 1 if item.get("review_pending") else 2
+                )
+
+            name = result["name"]
+            if name not in reusable or rank(result) > rank(reusable[name]):
+                result = deepcopy(result)
+                if (result.get("reference_review") or {}).get("version") == 4:
+                    # Derived from the validated original suite, never from a
+                    # model claim. Keep its original audit fingerprint as well.
+                    result["reference_review"]["execution_fingerprint"] = identity
+                reusable[name] = result
+
         visited = set()
         while prior_id:
             if prior_id in visited:
@@ -613,10 +642,6 @@ async def reusable_test_results(
                     "原测试版本、模型配置或测试要求已变化，不能混合复用结果；请发起新的测试。",
                     409,
                 )
-            current = {
-                case["name"]: SimulationCase.model_validate(case).model_dump()
-                for case in cases
-            }
             for eid in prior["output"].get("evaluation_ids", []):
                 previous = await db_client.wb_get(org, sid, "evaluations", eid)
                 if (
@@ -637,7 +662,17 @@ async def reusable_test_results(
                     case["name"]: SimulationCase.model_validate(case).model_dump()
                     for case in suite["payload"]["cases"]
                 }
+                expected_ids = {
+                    name: execution_fingerprint(case) for name, case in expected.items()
+                }
                 for result in previous["results"]:
+                    name = result["name"]
+                    if (
+                        name not in current_ids
+                        or name not in expected_ids
+                        or current_ids[name] != expected_ids[name]
+                    ):
+                        continue
                     validity = result.get("validity") or {}
                     # Version 8 changes silent customer departures and review
                     # continuity, not delivered valid turns. Preserve only a
@@ -654,29 +689,22 @@ async def reusable_test_results(
                         and not result.get("run_id")
                         and validity.get("stop_reason")
                         in {"context_ambiguous", "replay_context_ambiguous"}
-                        and current.get(result["name"]) == expected.get(result["name"])
                     ):
                         # A completed setup verdict is semantic evidence, not a
                         # transport retry. Keep uncertainty until inputs change.
-                        reusable.setdefault(
-                            result["name"],
+                        retain(
                             {
                                 **result,
                                 "original_evaluation_id": previous["id"],
                                 "review_pending": False,
                             },
+                            expected_ids[name],
                         )
-                    if (
-                        result.get("status") in {"running", "error"}
-                        and (
-                            result.get("validity", {}).get("scenario")
-                            or result.get("validity", {}).get("replay_context")
-                        )
-                        and current.get(result["name"]) == expected.get(result["name"])
+                    if result.get("status") in {"running", "error"} and (
+                        result.get("validity", {}).get("scenario")
+                        or result.get("validity", {}).get("replay_context")
                     ):
-                        reusable.setdefault(
-                            result["name"], {**result, "replay_pending": True}
-                        )
+                        retain({**result, "replay_pending": True}, expected_ids[name])
                     if (
                         result["status"] in {"passed", "failed", "inconclusive"}
                         and result.get("run_id")
@@ -684,10 +712,8 @@ async def reusable_test_results(
                             m["role"] == "assistant" and m["text"]
                             for m in result.get("transcript", [])
                         )
-                        and current.get(result["name"]) == expected.get(result["name"])
                     ):
-                        reusable.setdefault(
-                            result["name"],
+                        retain(
                             {
                                 **result,
                                 "original_evaluation_id": previous["id"],
@@ -702,6 +728,7 @@ async def reusable_test_results(
                                     )
                                 ),
                             },
+                            expected_ids[name],
                         )
             prior_id = prior["input"].get("resume_test_job_id")
     return reusable

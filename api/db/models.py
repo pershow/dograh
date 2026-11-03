@@ -1712,6 +1712,14 @@ class WorkbenchCandidateModel(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
 
+class WorkbenchCompilationArtifactModel(Base):
+    __tablename__ = "workbench_compilation_artifacts"
+    session_id = Column(String(36), ForeignKey("workbench_sessions.id", ondelete="CASCADE"), primary_key=True)
+    fingerprint = Column(String(64), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
 class WorkbenchSuiteModel(Base):
     __tablename__ = "workbench_suites"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

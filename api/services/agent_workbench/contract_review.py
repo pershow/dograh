@@ -222,6 +222,15 @@ def validate_report(value, requirements, records, validity):
             )
 
 
+def same_review_contract(left, right):
+    identity = (
+        "execution_fingerprint"
+        if left.get("execution_fingerprint") and right.get("execution_fingerprint")
+        else "compilation_fingerprint"
+    )
+    return all(left.get(k) == right.get(k) for k in ("rubric_fingerprint", identity))
+
+
 def finalize(value, draft, requirements, evidence, compiled):
     records = {r["id"]: r for r in evidence["records"]}
     validate_report(value, requirements, records, evidence.get("validity") or {})
@@ -374,5 +383,10 @@ async def review_contract(
         draft, verification, requirements, records, evidence.get("validity") or {}
     )
     result = finalize(checked, draft, requirements, evidence, compiled)
+    from api.services.agent_workbench.test_compilation import execution_fingerprint
+
+    result["execution_fingerprint"] = execution_fingerprint(
+        case.model_dump(mode="json")
+    )
     result["criterion_verification"] = verification
     return result

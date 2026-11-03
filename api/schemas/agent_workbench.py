@@ -1,6 +1,5 @@
 """Public, bounded contracts for the agent workbench (never executable test code)."""
 
-import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -362,7 +361,21 @@ class SimulationSuite(StrictModel):
 
     @model_validator(mode="after")
     def bound_payload(self):
-        if len(json.dumps(self.model_dump(), ensure_ascii=False).encode()) > 256000:
+        from api.services.agent_workbench.compiled_artifacts import (
+            MAX_PAYLOAD_BYTES,
+            payload_bytes,
+            split_suite,
+        )
+        from api.services.agent_workbench.errors import WorkbenchError
+
+        # Every case has already passed its full semantic/citation validators.
+        # Measure the exact persisted representation, with shared evidence kept
+        # in separately bounded immutable records, just as wb_save_suite does.
+        try:
+            stored, _ = split_suite(self.model_dump())
+        except WorkbenchError as error:
+            raise ValueError(str(error)) from error
+        if payload_bytes(stored) > MAX_PAYLOAD_BYTES:
             raise ValueError("Simulation suite exceeds 256 KB")
         return self
 

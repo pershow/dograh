@@ -13,6 +13,7 @@ from api.db.models import (
     ToolModel,
     WorkbenchAssetModel,
     WorkbenchCandidateModel,
+    WorkbenchCompilationArtifactModel,
     WorkbenchEvaluationModel,
     WorkbenchEventModel,
     WorkbenchJobModel,
@@ -381,9 +382,15 @@ class AgentWorkbenchClient(BaseDBClient):
                     )
                 ).all()
                 result[name] = [
-                    evaluation_index(row)
-                    if compact and name == "evaluations"
-                    else record(row)
+                    (
+                        evaluation_index(row)
+                        if compact and name == "evaluations"
+                        else (
+                            await self._wb_suite_record(db, row)
+                            if name == "suites" and not compact
+                            else record(row)
+                        )
+                    )
                     for row in rows
                 ]
                 if compact and name == "suites":
@@ -424,6 +431,8 @@ class AgentWorkbenchClient(BaseDBClient):
             await self._wb_session(db, org, session_id)
             row = await self._wb_item(db, table, session_id, item_id)
             result = record(row)
+            if table == "suites":
+                result = await self._wb_suite_record(db, row)
             if table == "candidates":
                 definition = await db.get(WorkflowDefinitionModel, row.definition_id)
                 result["snapshot"] = {
@@ -1413,13 +1422,70 @@ class AgentWorkbenchClient(BaseDBClient):
                 db, session, "test.progress", {"job_id": job_id, **progress}
             )
 
+    async def _wb_suite_record(self, db, row):
+        """Hydrate only after the caller has established session ownership."""
+        from api.services.agent_workbench.compiled_artifacts import (
+            artifact_ids,
+            hydrate_suite,
+        )
+
+        result = record(row)
+        ids = artifact_ids(row.payload)
+        if not ids:  # Legacy suites remain readable without rewriting their receipts.
+            return result
+        artifacts = (
+            await db.scalars(
+                select(WorkbenchCompilationArtifactModel).where(
+                    WorkbenchCompilationArtifactModel.session_id == row.session_id,
+                    WorkbenchCompilationArtifactModel.fingerprint.in_(ids),
+                )
+            )
+        ).all()
+        result["payload"] = hydrate_suite(
+            row.payload, {a.fingerprint: a.payload for a in artifacts}
+        )
+        if fingerprint(result["payload"]) != row.fingerprint:
+            raise WorkbenchError("冻结测试套件完整性校验失败，不能执行。", 409)
+        return result
+
     async def wb_save_suite(self, org, session_id, payload, *, job_id=None, token=None):
+        from api.services.agent_workbench.compiled_artifacts import (
+            MAX_PAYLOAD_BYTES,
+            payload_bytes,
+            split_suite,
+        )
+
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             if job_id:
                 await self._wb_fence(db, session_id, job_id, token)
+            stored, artifacts = split_suite(payload)
+            if payload_bytes(stored) > MAX_PAYLOAD_BYTES:
+                raise WorkbenchError("Simulation suite exceeds 256 KB")
+            if artifacts:
+                existing = (
+                    await db.scalars(
+                        select(WorkbenchCompilationArtifactModel).where(
+                            WorkbenchCompilationArtifactModel.session_id == session_id,
+                            WorkbenchCompilationArtifactModel.fingerprint.in_(
+                                artifacts
+                            ),
+                        )
+                    )
+                ).all()
+                saved = {a.fingerprint: a for a in existing}
+                for digest, value in artifacts.items():
+                    if digest in saved:
+                        if fingerprint(saved[digest].payload) != digest:
+                            raise WorkbenchError("冻结测试依据完整性校验失败。", 409)
+                    else:
+                        db.add(
+                            WorkbenchCompilationArtifactModel(
+                                session_id=session_id, fingerprint=digest, payload=value
+                            )
+                        )
             row = WorkbenchSuiteModel(
-                session_id=session_id, payload=payload, fingerprint=fingerprint(payload)
+                session_id=session_id, payload=stored, fingerprint=fingerprint(payload)
             )
             db.add(row)
             await db.flush()
@@ -1429,7 +1495,7 @@ class AgentWorkbenchClient(BaseDBClient):
                 "suite.created",
                 {"suite_id": row.id, "name": payload["name"]},
             )
-            return record(row)
+            return {**record(row), "payload": copy.deepcopy(payload)}
 
     async def wb_pin_models(
         self, org, session_id, job_id, token, snapshot, *, evaluation=False

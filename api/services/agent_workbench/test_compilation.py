@@ -294,6 +294,26 @@ def verified_plan(draft, verification, turns):
     return result
 
 
+def execution_fingerprint(case):
+    """Identify executable inputs without conflating audit provenance with behavior.
+
+    Validate the complete evidence first. A changed resolution still changes the
+    execution gate; only the evidence/reason used to confirm the same resolution
+    can change without invalidating actual dialogues or frozen checkpoints.
+    """
+    from api.schemas.agent_workbench import SimulationCase
+    from api.services.agent_workbench.preparation_questions import remaining_questions
+
+    normalized = SimulationCase.model_validate(case).model_dump(mode="json")
+    compiled = normalized.get("compiled")
+    if compiled:
+        questions = remaining_questions(compiled)
+        compiled.pop("question_review", None)
+        compiled.pop("fingerprint", None)
+        return fingerprint({"case": normalized, "authority_questions": questions})
+    return fingerprint(normalized)
+
+
 def validate_compiled(case, *, records=None):
     from api.services.agent_workbench.preparation_questions import validate_saved_review
 

@@ -312,10 +312,9 @@ def provisional_progress(baseline, proposed):
             continue
         if left.get("version") != 4 or right.get("version") != 4:
             return False
-        if any(
-            left.get(k) != right.get(k)
-            for k in ("rubric_fingerprint", "compilation_fingerprint")
-        ):
+        from api.services.agent_workbench.contract_review import same_review_contract
+
+        if not same_review_contract(left, right):
             return False
         prior = {c["criterion_id"]: c for c in left["checks"]}
         later = {c["criterion_id"]: c for c in right["checks"]}
