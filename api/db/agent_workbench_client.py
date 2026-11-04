@@ -52,6 +52,12 @@ def record(row):
         result["output"].pop("_requested_target", None)
         result["output"].pop("_task_basis", None)
         result["output"].pop("_submitted_input", None)
+    if isinstance(row, WorkbenchEvaluationModel):
+        # Both the compact index and detail endpoint identify the same evidence.
+        # Session/event revisions also change for unrelated batches and tasks.
+        result["detail_revision"] = fingerprint(
+            {key: result[key] for key in ("status", "summary", "results")}
+        )
     return result
 
 

@@ -22,7 +22,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
-  getWorkbenchEvaluation as getEvaluation,
   getWorkbenchSuite as getSuite,
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
   workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet as getAgentRuns,
@@ -81,8 +80,9 @@ import type {
   WorkbenchSessionListItem,
   WorkbenchState,
 } from "./types";
-import { useWorkbenchVoice } from "./useWorkbenchVoice";
 import { useAttachmentSelection } from "./useAttachmentSelection";
+import { useEvaluationDetail } from "./useEvaluationDetail";
+import { useWorkbenchVoice } from "./useWorkbenchVoice";
 import styles from "./workbench.module.css";
 import { WorkbenchMarkdown } from "./WorkbenchMarkdown";
 
@@ -197,8 +197,6 @@ export function AgentWorkbench({
   const [caseName, setCaseName] = useState("");
   const [evaluationId, setEvaluationId] = useState("");
   const detailSelection = useRef("");
-  const [detailError, setDetailError] = useState("");
-  const [detailRetry, setDetailRetry] = useState(0);
   useEffect(() => { detailSelection.current = evaluationId; }, [evaluationId]);
   const [composerOpen, setComposerOpen] = useState(false);
   const [followingMessages, setFollowingMessages] = useState(true);
@@ -264,7 +262,7 @@ export function AgentWorkbench({
         lastStateSync.current = Date.now();
         if (!snapshot.unchanged) setState(old => ({...snapshot, evaluations: [
           ...snapshot.evaluations,
-          ...(old?.session.id === snapshot.session.id ? old.evaluations.filter(e => e.id === detailSelection.current && !snapshot.evaluations.some(next => next.id === e.id)).map(e => ({...e, summary_only: e.status === "running" || e.summary_only})) : []),
+          ...(old?.session.id === snapshot.session.id ? old.evaluations.filter(e => e.id === detailSelection.current && !snapshot.evaluations.some(next => next.id === e.id)).map(e => e.status === "running" ? {...e, summary_only: true, detail_revision: undefined} : e) : []),
         ]}));
       }
       setSyncError("");
@@ -545,7 +543,10 @@ export function AgentWorkbench({
     state?.evaluations.filter(
       (e) => e.candidate_id === candidateId && e.suite_id === suiteId,
     ) || [];
-  const evaluation = evaluations.find(e => e.id === evaluationId) || evaluations[0];
+  const evaluationIndex = evaluations.find(e => e.id === evaluationId) || evaluations[0];
+  const {evaluation, loading: detailLoading, error: detailError, retry: retryDetail} = useEvaluationDetail(
+    session, evaluationIndex, state?.revision, !!user && !authLoading,
+  );
   const testTask = state?.jobs.find(j => j.id === evaluation?.job_id) || state?.jobs.find(j =>
     (j.output.intent === "test" || j.output.outcome === "test") &&
     j.output.candidate_id === candidateId &&
@@ -560,18 +561,6 @@ export function AgentWorkbench({
     .filter(e => e.job_id === testTask.id)
     .flatMap(e => e.results).filter(r => r.status === "running").length : 0;
   const currentCase = evaluation?.results.find(result => result.name === caseName) || evaluation?.results[0];
-  const evaluationToLoad = evaluation?.summary_only ? evaluation.id : undefined;
-  useEffect(() => {
-    if (!session || !evaluationToLoad) return;
-    const controller = new AbortController();
-    setDetailError("");
-    void getEvaluation({signal: controller.signal, path: {session_id: session, evaluation_id: evaluationToLoad}})
-      .then(response => {
-        const loaded = result<Evaluation>(response);
-        if (!controller.signal.aborted) setState(old => old && ({...old, evaluations: old.evaluations.map(e => e.id === loaded.id ? loaded : e)}));
-      }).catch(e => {if (!controller.signal.aborted) setDetailError(e instanceof Error ? e.message : "结果详情读取失败");});
-    return () => controller.abort();
-  }, [session, evaluationToLoad, state?.revision, detailRetry]);
   const openTestResult = (selected: Evaluation, name: string) => {
     if (evaluationId === selected.id && caseName === name && tab === "tests") {
       scrollToResult();
@@ -1108,8 +1097,8 @@ export function AgentWorkbench({
                 </section>}
                 {evaluation ? (
                   <>
-                    {evaluation.summary_only && <p>正在读取该批次的完整对话与评审…</p>}
-                    {detailError && <p role="alert">{detailError} <button onClick={() => setDetailRetry(n => n + 1)}>重新读取结果</button></p>}
+                    {detailLoading && evaluation.summary_only && <p>正在读取该批次的完整对话与评审…</p>}
+                    {detailError && <p role="alert">{detailError} <button onClick={retryDetail}>重新读取结果</button></p>}
                     <div className={styles.metrics}>
                       <b>
                         {evaluation.summary.passed || 0}

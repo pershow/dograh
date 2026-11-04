@@ -506,6 +506,49 @@ it('keeps the selected case when concurrent results arrive before it in the save
   interval.mockRestore();
 });
 
+it.each(['running', 'completed'])('keeps %s evidence, expanded sections and scroll through compact snapshot polling', async status => {
+  const interval = vi.spyOn(globalThis, 'setInterval');
+  const saved = {name: 'Selected', status: 'passed', transcript: [{role: 'assistant', text: 'Saved reply'}], assertions: [{kind: 'contains', value: 'Required phrase', passed: true}], tool_calls: [], validity: {status: 'valid'}, business_state: {confirmed: true}};
+  const evaluation = {id: 'e', candidate_id: 'candidate', suite_id: 'suite', status, summary: {total: 1, passed: 1}, results: [saved], detail_revision: 'v1'};
+  const compact = {...evaluation, summary_only: true, results: [{...saved, transcript: [], assertions: [], business_state: undefined, validity: undefined}]};
+  const s = {...state, revision: 'r1', suites: [{id: 'suite', payload: {name: 'Batch', cases: []}}], evaluations: [compact]};
+  mocks.session.mockResolvedValue(response(s));
+  mocks.evaluation.mockResolvedValueOnce(response(evaluation));
+  render(<AgentWorkbench workflowId={7} sessionId="existing" onPreviewChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', {name: '文本仿真'}));
+  fireEvent.click(screen.getByRole('button', {name: '查看 Selected 的结果'}));
+  await screen.findByText('Saved reply');
+  const transcript = screen.getByRole('region', {name: '仿真对话与断言'});
+  const expanded = within(transcript).getByText('模拟业务最终状态').closest('details')!;
+  expanded.open = true;
+  transcript.scrollTop = 123;
+  const poll = interval.mock.calls.find(call => call[1] === 2000)![0] as () => void;
+  mocks.session.mockResolvedValue(response({...s, revision: 'r2'}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 1, type: 'evaluation.updated', payload: {evaluation_id: 'other'}, created_at: ''}], after: 1}));
+  await act(async () => { await poll(); });
+  expect(mocks.evaluation).toHaveBeenCalledOnce();
+  expect(screen.queryByText('正在读取该批次的完整对话与评审…')).toBeNull();
+  expect(within(transcript).getByText(/Required phrase/)).toBeTruthy();
+
+  let finish!: (value: unknown) => void;
+  mocks.evaluation.mockReturnValueOnce(new Promise(resolve => {finish = resolve;}));
+  mocks.session.mockResolvedValue(response({...s, revision: 'r3', evaluations: [{...compact, detail_revision: 'v2'}]}));
+  mocks.events.mockResolvedValue(response({events: [{sequence: 2, type: 'evaluation.updated', payload: {evaluation_id: 'e'}, created_at: ''}], after: 2}));
+  await act(async () => { await poll(); });
+  expect(mocks.evaluation).toHaveBeenCalledTimes(2);
+  expect(within(transcript).getByText('Saved reply')).toBeTruthy();
+  expect(within(transcript).getByText(/Required phrase/)).toBeTruthy();
+  expect(expanded.open).toBe(true);
+  expect(expanded.isConnected).toBe(true);
+  expect(transcript.scrollTop).toBe(123);
+  await act(async () => finish(response({...evaluation, detail_revision: 'v2', results: [{...saved, transcript: [{role: 'assistant', text: 'Updated reply'}]}]})));
+  expect(within(transcript).getByText('Updated reply')).toBeTruthy();
+  expect(expanded.open).toBe(true);
+  expect(expanded.isConnected).toBe(true);
+  expect(transcript.scrollTop).toBe(123);
+  interval.mockRestore();
+});
+
 it('preserves the composing session when expanding the workbench', async () => {
   const preview = vi.fn();
   const expand = vi.fn();

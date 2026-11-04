@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+
 import type { RuntimeProfileData } from "./RuntimeProfile";
 
 export type WorkbenchSession = {
@@ -104,6 +105,7 @@ export type CriterionCoverageReceipt = {
 };
 export type Evaluation = {
   summary_only?: boolean;
+  detail_revision?: string;
   id: string;
   job_id?: string;
   candidate_id: string;

@@ -965,6 +965,10 @@ async def test_result_pages_cover_whole_task_and_compact_context_keeps_evidence(
     assert {r["id"] for r in loaded} == {r.id for r in rows}
     full = await db_session.wb_get(org, sid, "evaluations", loaded[0]["id"])
     assert full["results"] == evidence
+    assert full["detail_revision"] == loaded[0]["detail_revision"]
+    assert all(
+        e["detail_revision"] == full["detail_revision"] for e in compact["evaluations"]
+    )
     assert (await db_session.wb_get(org, sid, "suites", suite["id"]))[
         "payload"
     ] == payload

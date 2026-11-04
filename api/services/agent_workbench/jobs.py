@@ -1501,9 +1501,7 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
             if isinstance(error, HTTPException)
             else "并行任务执行失败："
             + "；".join(
-                f"{d['type']}: {d['message']}"
-                for d in details
-                if d["type"] not in {"ExceptionGroup", "BaseExceptionGroup"}
+                f"{d['type']}: {d['message']}" for d in details
             )[:2400]
             if isinstance(error, BaseExceptionGroup)
             else "Task failed; check the worker diagnostics and model connection"

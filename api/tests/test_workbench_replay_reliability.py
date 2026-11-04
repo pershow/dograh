@@ -646,3 +646,67 @@ def test_parallel_failure_diagnostics_retain_nested_causes_without_credentials()
         )
         <= 6
     )
+
+
+def nested_failure(error, depth):
+    for _ in range(depth):
+        error = ExceptionGroup("parallel layer", [error])
+    return error
+
+
+def test_parallel_failure_budget_is_spent_on_leaves_not_taskgroup_wrappers():
+    from api.services.agent_workbench.transport_diagnostics import exception_details
+
+    def fail():
+        raise TimeoutError("pool exhausted; token=private-value")
+
+    try:
+        fail()
+    except TimeoutError as error:
+        timeout = error
+    wrapped = ExceptionGroup(
+        "batches",
+        [nested_failure(timeout, 10)]
+        + [nested_failure(ValueError(f"case {i}"), 3) for i in range(9)],
+    )
+    details = exception_details(wrapped)
+    assert len(details) == 6
+    assert [d["type"] for d in details] == ["TimeoutError"] + ["ValueError"] * 5
+    assert details[0]["frames"][-1]["function"] == "fail"
+    assert "pool exhausted" in details[0]["message"]
+    assert "private-value" not in str(details)
+    assert details[-1]["truncated"]
+
+
+def test_parallel_diagnostics_are_cycle_safe_and_have_a_bounded_nonempty_fallback():
+    from api.services.agent_workbench.transport_diagnostics import exception_details
+
+    error = ValueError("cycle")
+    error.__cause__ = error
+    assert len(exception_details(nested_failure(error, 20))) == 1
+    details = exception_details(nested_failure(error, 600))
+    assert len(details) == 1 and details[0]["message"] and details[0]["truncated"]
+
+
+async def test_parallel_failure_is_recorded_with_real_safe_cause_at_job_boundary(
+    monkeypatch,
+):
+    from api.services.agent_workbench import jobs
+
+    monkeypatch.setattr(
+        jobs.db_client,
+        "wb_claim",
+        AsyncMock(return_value={"id": "job", "lease_token": "lease"}),
+    )
+    failure = ExceptionGroup(
+        "parallel batches",
+        [nested_failure(ValueError(f"case {i}: token=private"), 8) for i in range(5)],
+    )
+    monkeypatch.setattr(jobs, "_perform", AsyncMock(side_effect=failure))
+    finish = AsyncMock()
+    monkeypatch.setattr(jobs.db_client, "wb_finish", finish)
+    await jobs.execute_workbench_job({}, 1, "session", "job")
+    assert finish.call_args.args[4] == "failed"
+    message = finish.call_args.kwargs["error"]
+    assert message.startswith("并行任务执行失败：ValueError: case 0")
+    assert "case 4" in message and "private" not in message
