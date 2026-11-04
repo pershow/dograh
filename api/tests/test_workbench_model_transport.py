@@ -19,6 +19,70 @@ def gateway(url, key="first", **kwargs):
     )
 
 
+@pytest.mark.parametrize("status,retryable", [(503, True), (403, False)])
+async def test_gateway_keeps_retryability_at_sdk_boundary(aiohttp_server, status, retryable):
+    async def upstream(_request):
+        return web.Response(status=status)
+    app = web.Application()
+    app.router.add_post("/v1/responses", upstream)
+    server = await aiohttp_server(app)
+    async with gateway(
+        str(server.make_url("/v1")), protocol="responses", max_retries=0
+    ) as current:
+        async with httpx.AsyncClient(trust_env=False) as client:
+            result = await client.post(
+                current.url + "/responses",
+                headers={"Authorization": "Bearer " + current.token},
+                json={},
+            )
+        assert result.status_code == 502
+        assert current.last_error_retryable is retryable
+        assert current.last_error
+
+
+@pytest.mark.parametrize(
+    "category,eligible",
+    [
+        ("CONNECTIVITY", True),
+        ("SERVER", True),
+        ("RATE_LIMIT", True),
+        ("AUTHENTICATION", False),
+        ("AUTHORIZATION", False),
+        ("QUOTA", False),
+    ],
+)
+async def test_runtime_health_preserves_permanent_vs_transient_category(
+    category, eligible
+):
+    from pipecat.utils.errors import ErrorCategory
+
+    from api.schemas.agent_workbench import SimulationCase
+    from api.services.agent_workbench.errors import WorkbenchError, retryable_task_error
+    from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
+    from api.services.agent_workbench.model_transport import check_model_availability
+
+    config = SimpleNamespace(llm=SimpleNamespace(model="runtime", api_key="secret"))
+    policy = EvaluationPolicy(
+        SimulationCase(
+            name="one",
+            user_messages=["hello"],
+            assertions=[{"kind": "contains", "value": "hello"}],
+        ),
+        config,
+    )
+    async with model_transport_scope():
+        for _ in range(3):
+            policy.record_runtime_error(
+                SimpleNamespace(
+                    category=getattr(ErrorCategory, category),
+                    error="upstream unavailable",
+                )
+            )
+        with pytest.raises(WorkbenchError) as caught:
+            check_model_availability()
+        assert retryable_task_error(caught.value) is eligible
+
+
 async def test_separate_decisions_reuse_upstream_socket_but_not_credentials_or_cookies(
     aiohttp_server,
 ):

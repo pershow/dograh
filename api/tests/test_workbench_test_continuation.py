@@ -450,6 +450,8 @@ async def test_confirmed_import_is_saved_before_compilation_and_not_asked_again(
         tasks, "prepare_models", AsyncMock(return_value=SimpleNamespace(snapshot={}))
     )
     monkeypatch.setattr(tasks.db_client, "wb_pin_models", AsyncMock(return_value={}))
+    imported = AsyncMock(return_value={"id": "frozen-import"})
+    monkeypatch.setattr(tasks.db_client, "wb_save_suite", imported)
     saved = {}
 
     async def progress(org, sid, jid, token, output, _progress):
@@ -491,6 +493,7 @@ async def test_confirmed_import_is_saved_before_compilation_and_not_asked_again(
             )
         assert saved["source_manifest"][0]["dialogue_column"] == "revision_b"
         assert saved["source_manifest"][0]["sha256"] == "bytes"
+        assert saved["import_suite_ids"] == ["frozen-import"]
     assert decide.await_count == 1
     assert decide.call_args.args[0] == "select_test_source"
     execute.assert_not_awaited()

@@ -8,6 +8,19 @@ import {
 } from "../taskProgress";
 import type { Job, WorkbenchEvent } from "../types";
 
+it("shows durable retry state even when the progress event has left the page", () => {
+  const waiting: Job = { ...job, status: "queued", output: {
+    recovery: {state: "waiting", attempt: 2, limit: 3, retry_at: "2026-01-01T00:00:30Z"},
+    summary: {executed: 7, total: 9},
+  }};
+  const text = taskProgress(waiting, []);
+  expect(text).toContain("已保存断点");
+  expect(text).toContain("自动接续（2/3）");
+  expect(text).toContain("可取消");
+  expect(taskProgress({...waiting, output: {}}, [])).toBe("排队中，等待构建服务");
+  expect(taskProgress({...waiting, status: "running"}, [])).not.toContain("等待自动接续");
+});
+
 const job: Job = {
   id: "new",
   kind: "build",

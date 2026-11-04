@@ -49,7 +49,15 @@ class EvaluationPolicy:
             )
 
             record_model_outcome(
-                config, "model_connection_error", detail=self.errors[-1]
+                config,
+                "model_connection_error",
+                detail=self.errors[-1],
+                retryable=frame.category
+                in {
+                    ErrorCategory.RATE_LIMIT,
+                    ErrorCategory.CONNECTIVITY,
+                    ErrorCategory.SERVER,
+                },
             )
 
     def validate(self, graph):

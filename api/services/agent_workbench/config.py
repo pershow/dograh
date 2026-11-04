@@ -22,11 +22,15 @@ class WorkbenchSettings:
     build_repair_rounds: int | None = None
     evaluation_concurrency: int = 3
     model_context_window: int = 131072
+    task_recovery_attempts: int = 3
 
     @classmethod
     def load(cls):
         return cls(
             enabled=os.getenv("AGENT_WORKBENCH_ENABLED", "false").lower() == "true",
+            task_recovery_attempts=max(
+                0, min(10, int(os.getenv("WORKBENCH_TASK_RECOVERY_ATTEMPTS", "3")))
+            ),
             codex_binary=os.getenv("WORKBENCH_CODEX_BINARY") or default_binary(),
             root=Path(
                 os.getenv(

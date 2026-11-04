@@ -607,6 +607,33 @@ async def reusable_test_results(
         current_ids = {
             name: execution_fingerprint(case) for name, case in current.items()
         }
+        tool_ids = {f["tool_uuid"] for c in current.values() for f in c["fixtures"]}
+        tools = (
+            await db_client.get_tools_by_uuids(sorted(tool_ids), org)
+            if tool_ids
+            else []
+        )
+        versions = {t.tool_uuid: fingerprint(t.definition) for t in tools}
+        audio = {}
+        for aid in {
+            clip["asset_id"]
+            for c in current.values()
+            if c.get("audio")
+            for clip in c["audio"]["clips"]
+        }:
+            asset = await db_client.wb_get(org, sid, "assets", aid)
+            audio[aid] = asset["sha256"]
+
+        def resource_versions(case):
+            if any(f["tool_uuid"] not in versions for f in case["fixtures"]):
+                return None
+            return {
+                **{f["tool_uuid"]: versions[f["tool_uuid"]] for f in case["fixtures"]},
+                **{
+                    "audio:" + clip["asset_id"]: audio[clip["asset_id"]]
+                    for clip in (case.get("audio") or {}).get("clips", [])
+                },
+            }
 
         def retain(result, identity):
             def rank(item):
@@ -642,7 +669,12 @@ async def reusable_test_results(
                     "原测试版本、模型配置或测试要求已变化，不能混合复用结果；请发起新的测试。",
                     409,
                 )
-            for eid in prior["output"].get("evaluation_ids", []):
+            for eid in dict.fromkeys(
+                [
+                    *prior["output"].get("evaluation_ids", []),
+                    *prior["output"].get("recovery_evaluation_ids", []),
+                ]
+            ):
                 previous = await db_client.wb_get(org, sid, "evaluations", eid)
                 if (
                     previous["job_id"] != prior["id"]
@@ -671,6 +703,8 @@ async def reusable_test_results(
                         name not in current_ids
                         or name not in expected_ids
                         or current_ids[name] != expected_ids[name]
+                        or result.get("resource_versions", {})
+                        != resource_versions(current[name])
                     ):
                         continue
                     validity = result.get("validity") or {}
@@ -788,15 +822,34 @@ async def reusable_source_mapping(org, sid, payload, tables):
 
 
 async def execute_batches(
-    batches, save_batch, run_batch, progress, initial, concurrency
+    batches,
+    save_batch,
+    run_batch,
+    progress,
+    initial,
+    concurrency,
+    *,
+    initial_snapshots=(),
 ):
     """Keep the global case pool busy; one long batch cannot block later cases."""
     suites = [await save_batch(payload) for payload in batches]
     suite_ids = [suite["id"] for suite in suites]
     semaphore, lock = asyncio.Semaphore(concurrency), asyncio.Lock()
     batch_slots = asyncio.Semaphore(concurrency)
-    snapshots, evaluations = {}, {}
-    counts = dict(initial)
+    snapshots = {i: dict(s) for i, s in enumerate(initial_snapshots)}
+    evaluations = {}
+
+    def aggregate():
+        return {
+            key: (
+                value
+                if key == "total"
+                else value + sum(s.get(key, 0) for s in snapshots.values())
+            )
+            for key, value in initial.items()
+        }
+
+    counts = aggregate()
     await progress(
         "running",
         f"已安排 {len(suites)} 批，共用 {concurrency} 个并发位置。",
@@ -811,12 +864,7 @@ async def execute_batches(
             async with lock:
                 snapshots[index] = {**summary, "executed": executed}
                 evaluations[index] = evaluation_id
-                counts = {
-                    key: initial[key] + sum(s.get(key, 0) for s in snapshots.values())
-                    for key in initial
-                    if key != "total"
-                }
-                counts["total"] = initial["total"]
+                counts = aggregate()
                 await progress(
                     "cases",
                     f"已执行 {counts['executed']}/{counts['total']} 条 · 通过 {counts['passed']} · 未通过 {counts['failed']} · 错误 {counts['error']} · 无法判定 {counts['inconclusive']}。",
@@ -1003,7 +1051,11 @@ async def run_test_task(org, sid, job, builder, protocol, event):
     )
 
     selection = None
-    if not job["input"].get("test_suite_ids"):
+    import_ids = job["output"].get("import_suite_ids", [])
+    if import_ids:
+        automatic_method = False
+        job["input"] = {**job["input"], "test_mode": job["output"]["test_mode"]}
+    if not import_ids and not job["input"].get("test_suite_ids"):
         selection = await resolve_sources(org, sid, job, builder.llm, event, protocol)
         if selection["kind"] == "missing":
             return {
@@ -1035,9 +1087,25 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         "mixed" if job["input"].get("test_suite_ids") else "dynamic"
     )
     selected_turns = job["input"].get("single_step_turns", [])
-    await progress("source", "正在读取本次选中的完整测试附件。")
-    tables, texts = await load_sources(org, sid, job["input"].get("asset_ids", []))
-    if job["input"].get("test_suite_ids"):
+    await progress(
+        "source",
+        (
+            "正在读取已冻结的测试输入。"
+            if import_ids
+            else "正在读取本次选中的完整测试附件。"
+        ),
+    )
+    tables, texts = (
+        ([], [])
+        if import_ids
+        else await load_sources(org, sid, job["input"].get("asset_ids", []))
+    )
+    if import_ids:
+        imported = [await db_client.wb_get(org, sid, "suites", i) for i in import_ids]
+        cases = [c for suite in imported for c in suite["payload"]["cases"]]
+        issues = job["output"].get("import_issues", [])
+        manifest = job["output"]["source_manifest"]
+    elif job["input"].get("test_suite_ids"):
         selected = [
             await db_client.wb_get(org, sid, "suites", suite_id)
             for suite_id in job["input"]["test_suite_ids"]
@@ -1148,12 +1216,18 @@ async def run_test_task(org, sid, job, builder, protocol, event):
                 "input_fingerprint": fingerprint(selection),
             }
         ]
-    mode, cases = prepare_test_cases(
-        cases,
-        requested_mode,
-        automatic_method=automatic_method,
-        selected_turns=selected_turns,
-    )
+    if import_ids:
+        # Frozen imports are already normalized and source-bound. Validate the
+        # receipt without repeating source selection or mode conversion.
+        mode = requested_mode
+        cases = [SimulationCase.model_validate(c).model_dump() for c in cases]
+    else:
+        mode, cases = prepare_test_cases(
+            cases,
+            requested_mode,
+            automatic_method=automatic_method,
+            selected_turns=selected_turns,
+        )
     if mode != requested_mode:
         await progress(
             "method",
@@ -1161,7 +1235,22 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             test_mode=mode,
         )
     # Confirmed import choices survive failures during basis/rubric compilation.
-    await progress("imported", "测试来源已确认并保存。", source_manifest=manifest)
+    if not import_ids:
+        imported = [
+            await db_client.wb_save_suite(
+                org, sid, payload, job_id=job["id"], token=job["lease_token"]
+            )
+            for payload in pack_suites(cases, "已确认的测试输入", job["input"]["text"])
+        ]
+        import_ids = [s["id"] for s in imported]
+    await progress(
+        "imported",
+        "测试来源已确认并保存。",
+        source_manifest=manifest,
+        import_suite_ids=import_ids,
+        import_issues=issues,
+        test_mode=mode,
+    )
     from api.services.agent_workbench.basis import ensure_basis
 
     basis = await ensure_basis(
@@ -1174,15 +1263,22 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         event=event,
         protocol=protocol,
     )
-    if job["input"].get("resume_test_job_id"):
+    resume_id = (
+        job["id"]
+        if job.get("output", {}).get("recovery", {}).get("attempt")
+        else job["input"].get("resume_test_job_id")
+    )
+    preparation_receipts = {}
+    if resume_id:
         from api.services.agent_workbench.recovery import restore_prepared_cases
 
         await restore_prepared_cases(
             org,
             sid,
-            job["input"]["resume_test_job_id"],
+            resume_id,
             cases,
             related_job_ids=job.get("output", {}).get("test_chain_job_ids", []),
+            receipts=preparation_receipts,
         )
     from api.services.agent_workbench.config import WorkbenchSettings
     from api.services.agent_workbench.test_compilation import (
@@ -1203,7 +1299,6 @@ async def run_test_task(org, sid, job, builder, protocol, event):
             **kwargs,
         )
 
-    preparation_receipts = {}
     preparation_cases = {case["name"]: deepcopy(case) for case in cases}
 
     async def save_preparation(case):
@@ -1283,18 +1378,18 @@ async def run_test_task(org, sid, job, builder, protocol, event):
     reusable = await reusable_test_results(
         org,
         sid,
-        job["input"].get("resume_test_job_id"),
+        resume_id,
         candidate,
         cases,
         job["input"]["text"],
         fingerprint(runtime.snapshot),
     )
-    if job["input"].get("resume_test_job_id"):
+    if resume_id:
         retained = [r for r in reusable.values() if not r.get("replay_pending")]
         await progress(
             "resuming",
             f"保留原测试版本和 {len(retained)} 条实际对话；其中 {sum(bool(r.get('review_pending')) for r in retained)} 条只需补齐评审，其余未执行或运行异常用例继续运行。",
-            resumed_from_job_id=job["input"]["resume_test_job_id"],
+            resumed_from_job_id=resume_id,
             reused_cases=len(retained),
         )
     from api.services.agent_workbench.review import COUNT_KEYS
@@ -1323,12 +1418,37 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         "invalid": 0,
         "validity_inconclusive": 0,
     }
+    from api.services.agent_workbench.evaluation_progress import (
+        result_counts,
+        retained_result,
+    )
+
+    initial_snapshots = [
+        result_counts(
+            [
+                retained_result(reusable[c["name"]])
+                for c in batch["cases"]
+                if c["name"] in reusable
+                and not reusable[c["name"]].get("replay_pending")
+            ]
+        )
+        for batch in batches
+    ]
+    cumulative = {
+        key: (
+            value
+            if key == "total"
+            else value + sum(s.get(key, 0) for s in initial_snapshots)
+        )
+        for key, value in counts.items()
+    }
     await progress(
         "compiled",
-        f"已读取 {total} 条样本，准备执行 {len(cases)} 条；{len(issues)} 条需要检查。",
+        f"已读取 {total} 条样本，保留 {cumulative['executed']} 条已执行对话，继续处理未完成项；{len(issues)} 条需要检查。",
         source_manifest=manifest,
         import_issues=issues,
-        summary=counts,
+        summary=cumulative,
+        preparation_receipts=list(preparation_receipts.values()),
         candidate_id=candidate["id"],
         test_mode=mode,
         compilation=compilation,
@@ -1405,6 +1525,7 @@ async def run_test_task(org, sid, job, builder, protocol, event):
         progress,
         counts,
         WorkbenchSettings.load().evaluation_concurrency,
+        initial_snapshots=initial_snapshots,
     )
     from api.services.agent_workbench.contract_review import coverage
 

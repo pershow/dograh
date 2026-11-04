@@ -8,7 +8,7 @@ from contextvars import ContextVar
 
 import httpx
 
-from api.services.agent_workbench.errors import WorkbenchError
+from api.services.agent_workbench.errors import ModelTransportError, WorkbenchError
 
 _clients = ContextVar("workbench_model_clients", default=None)
 _health = ContextVar("workbench_model_health", default=None)
@@ -19,17 +19,20 @@ class ModelHealth:
 
     Count exhausted requests, not their internal retries. A successful request
     resets only its own connection; unrelated models cannot conceal an outage.
-    Once tripped, the task must be resumed explicitly with its saved evidence.
+    Once tripped, stop this attempt; the durable task policy decides continuation.
     """
 
     def __init__(self):
         self.failures = {}
+        self.retryability = {}
         self.unavailable = False
         self.reason = ""
+        self.retryable = False
 
-    def record(self, connection, code=None, detail=None):
+    def record(self, connection, code=None, detail=None, *, retryable=None):
         if code is None:
             self.failures.pop(connection, None)
+            self.retryability.pop(connection, None)
         elif code in {
             "model_connection_error",
             "model_timeout",
@@ -38,13 +41,23 @@ class ModelHealth:
             "provider_client_restricted",
         }:
             self.failures[connection] = self.failures.get(connection, 0) + 1
+            retryable = (
+                code in {"model_connection_error", "model_timeout", "rate_limited"}
+                if retryable is None
+                else retryable
+            )
+            self.retryability[connection] = (
+                self.retryability.get(connection, True) and retryable
+            )
             if self.failures[connection] >= 3 and not self.unavailable:
                 self.unavailable = True
                 self.reason = detail or code
+                self.retryable = self.retryability[connection]
 
     def check(self):
         if self.unavailable:
-            raise WorkbenchError(
+            error_type = ModelTransportError if self.retryable else WorkbenchError
+            raise error_type(
                 "同一模型连接连续三次请求失败，已停止本次测试，"
                 "避免继续消耗剩余用例。已保存实际对话和评审结果；"
                 "恢复连接后可继续原任务，不必重跑已完成的有效结果。"
@@ -53,7 +66,7 @@ class ModelHealth:
             )
 
 
-def record_model_outcome(config, code=None, *, detail=None):
+def record_model_outcome(config, code=None, *, detail=None, retryable=None):
     if (health := _health.get()) is not None:
         from api.services.agent_workbench.transport_diagnostics import safe_message
 
@@ -73,6 +86,7 @@ def record_model_outcome(config, code=None, *, detail=None):
                 f"{getattr(config, 'model', 'unknown')}: {detail or code}",
                 (str(secret),),
             ),
+            retryable=retryable,
         )
 
 

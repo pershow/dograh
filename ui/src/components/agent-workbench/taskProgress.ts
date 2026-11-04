@@ -121,7 +121,14 @@ export function simulationPhase(p: Record<string, unknown>): string {
 }
 
 export function taskProgress(job: Job, events: WorkbenchEvent[]): string {
-  if (job.status === "queued") return "排队中，等待构建服务";
+  if (job.status === "queued") {
+    const recovery = job.output?.recovery as {state?: string; attempt?: number; limit?: number; retry_at?: string} | undefined;
+    if (recovery?.state === "waiting") {
+      const time = recovery.retry_at ? new Date(recovery.retry_at).toLocaleTimeString() : "稍后";
+      return `已保存断点，等待自动接续（${recovery.attempt}/${recovery.limit}）· ${time} · 可取消任务停止接续`;
+    }
+    return "排队中，等待构建服务";
+  }
   const start = events.findLast(
     (e) => e.type === "task.started" && e.payload.job_id === job.id,
   )?.sequence;

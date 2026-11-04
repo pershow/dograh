@@ -1057,6 +1057,9 @@ class AgentWorkbenchClient(BaseDBClient):
             job = await self._wb_item(db, "jobs", session_id, job_id)
             if job.status != "queued":
                 return None
+            recovery = job.output.get("recovery", {})
+            if (recovery.get("retry_at") or "") > datetime.now(UTC).isoformat():
+                return None
             count = await db.scalar(
                 select(func.count())
                 .select_from(WorkbenchJobModel)
@@ -1070,6 +1073,19 @@ class AgentWorkbenchClient(BaseDBClient):
             if count >= 2:
                 return None
             job.status = "running"
+            from api.services.agent_workbench.config import WorkbenchSettings
+
+            job.output = {
+                **job.output,
+                "recovery": {
+                    "attempt": 0,
+                    "limit": WorkbenchSettings.load().task_recovery_attempts,
+                    **recovery,
+                    "state": "running",
+                    "retry_at": None,
+                },
+            }
+            job.error = None
             job.lease_token = str(uuid.uuid4())
             job.lease_until = datetime.now(UTC) + timedelta(seconds=60)
             await self._wb_event(
@@ -1082,6 +1098,64 @@ class AgentWorkbenchClient(BaseDBClient):
             await self._wb_session(db, org, session_id, lock=True)
             job = await self._wb_fence(db, session_id, job_id, token)
             job.lease_until = datetime.now(UTC) + timedelta(seconds=60)
+
+    async def _wb_defer_test(self, db, session, job, reason):
+        from api.services.agent_workbench.task_recovery import (
+            recoverable_test,
+            retry_delay,
+        )
+
+        recovery = job.output.get("recovery", {})
+        if not recoverable_test(job.kind, job.input, job.output) or recovery.get(
+            "attempt", 0
+        ) >= recovery.get("limit", 0):
+            return False
+        attempt = recovery.get("attempt", 0) + 1
+        delay = retry_delay(attempt)
+        retry_at = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
+        # Include evaluations interrupted before their first progress callback.
+        evaluation_ids = list(
+            await db.scalars(
+                select(WorkbenchEvaluationModel.id)
+                .where(
+                    WorkbenchEvaluationModel.session_id == session.id,
+                    WorkbenchEvaluationModel.job_id == job.id,
+                )
+                .order_by(WorkbenchEvaluationModel.created_at.desc())
+            )
+        )
+        job.output = {
+            **job.output,
+            "recovery_evaluation_ids": evaluation_ids,
+            "recovery": {
+                **recovery,
+                "attempt": attempt,
+                "state": "waiting",
+                "retry_at": retry_at,
+                "reason": reason,
+            },
+        }
+        job.status, job.error = "queued", None
+        job.lease_token, job.lease_until = None, None
+        await self._wb_stop_evaluations(db, session.id, job.id, "failed")
+        await self._wb_event(
+            db,
+            session,
+            "test.progress",
+            {
+                "job_id": job.id,
+                "phase": "retry_wait",
+                "recovery": job.output["recovery"],
+                "text": f"执行暂时中断，已保留准备结果和测试断点。{delay} 秒后自动接续（{attempt}/{recovery['limit']}）；可以取消任务停止接续。",
+            },
+        )
+        return True
+
+    async def wb_retry_test(self, org, session_id, job_id, token, reason):
+        async with self.async_session() as db, db.begin():
+            session = await self._wb_session(db, org, session_id, lock=True)
+            job = await self._wb_fence(db, session_id, job_id, token)
+            return await self._wb_defer_test(db, session, job, reason)
 
     async def _wb_stop_evaluations(self, db, session_id, job_id, status):
         rows = (
@@ -1123,6 +1197,15 @@ class AgentWorkbenchClient(BaseDBClient):
                 error,
             )
             job.lease_token, job.lease_until = None, None
+            if job.output.get("recovery"):
+                job.output = {
+                    **job.output,
+                    "recovery": {
+                        **job.output["recovery"],
+                        "state": status,
+                        "retry_at": None,
+                    },
+                }
             if status != "completed":
                 await self._wb_stop_evaluations(
                     db,
@@ -1145,6 +1228,15 @@ class AgentWorkbenchClient(BaseDBClient):
             job = await self._wb_item(db, "jobs", session_id, job_id)
             if job.status in ("queued", "running"):
                 job.status, job.lease_token, job.lease_until = "cancelled", None, None
+                if job.output.get("recovery"):
+                    job.output = {
+                        **job.output,
+                        "recovery": {
+                            **job.output["recovery"],
+                            "state": "cancelled",
+                            "retry_at": None,
+                        },
+                    }
                 await self._wb_stop_evaluations(db, session_id, job_id, "cancelled")
                 await self._wb_event(db, session, "task.cancelled", {"job_id": job.id})
             return record(job)
@@ -1172,12 +1264,31 @@ class AgentWorkbenchClient(BaseDBClient):
                 job = await self._wb_item(db, "jobs", session_id, job_id)
                 if job.status != "running" or job.lease_until >= datetime.now(UTC):
                     continue
+                if await self._wb_defer_test(
+                    db, session, job, "执行进程中断，租约已到期。"
+                ):
+                    continue
                 job.status, job.error, job.lease_token, job.lease_until = (
                     "failed",
                     "Worker stopped; retry the task",
                     None,
                     None,
                 )
+                recovery = job.output.get("recovery", {})
+                if recovery:
+                    job.output = {
+                        **job.output,
+                        "recovery": {
+                            **recovery,
+                            "state": "failed",
+                            "retry_at": None,
+                        },
+                    }
+                    if recovery.get("attempt", 0):
+                        job.error = (
+                            f"执行进程中断，自动接续已达到 {recovery['limit']} 次上限。"
+                            "已有准备结果和测试断点已保留，可手动继续。"
+                        )
                 await self._wb_stop_evaluations(db, session_id, job_id, "failed")
                 await self._wb_event(
                     db, session, "task.failed", {"job_id": job_id, "error": job.error}
@@ -1190,7 +1301,16 @@ class AgentWorkbenchClient(BaseDBClient):
                         WorkbenchJobModel.id,
                     )
                     .join(WorkbenchSessionModel)
-                    .where(WorkbenchJobModel.status == "queued")
+                    .where(
+                        WorkbenchJobModel.status == "queued",
+                        func.coalesce(
+                            WorkbenchJobModel.output["recovery"][
+                                "retry_at"
+                            ].as_string(),
+                            "",
+                        )
+                        <= datetime.now(UTC).isoformat(),
+                    )
                     .limit(100)
                 )
             ).all()

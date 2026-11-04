@@ -194,6 +194,60 @@ async def discover_originals(org, sid, job, target, sources, llm, event, protoco
     return recovered
 
 
+async def continuation_basis(org, sid, job, target_hash, memory, reference_asset_ids):
+    """Keep citation identities when an explicit continuation has identical inputs.
+
+    Task UUIDs and wall-clock times are provenance, not changed business facts.
+    Only walk the authorized chain; unrelated recent conversations are not caches.
+    """
+    from api.services.agent_workbench.test_lineage import parent_ids
+
+    pending, visited = list(parent_ids(job)), set()
+    while pending:
+        source_id = pending.pop(0)
+        if source_id in visited:
+            continue
+        visited.add(source_id)
+        prior = await db_client.wb_get(org, sid, "jobs", source_id)
+        if any(
+            prior["input"].get(key) != job["input"].get(key)
+            for key in ("text", "instruction")
+        ) or set(prior["input"].get("asset_ids", [])) != set(
+            job["input"].get("asset_ids", [])
+        ):
+            continue
+        frozen = await db_client.wb_task_basis(org, sid, source_id)
+        if not frozen:
+            pending.extend(sorted(parent_ids(prior)))
+            continue
+        if (
+            frozen["target_fingerprint"] != target_hash
+            or frozen["memory_revision"] != memory["revision"]
+        ):
+            continue
+        for source in frozen["sources"]:
+            if source["kind"] not in {"material", "reference"}:
+                continue
+            aid = source["source_id"]
+            if (source["kind"] == "reference") != (aid in reference_asset_ids):
+                break
+            # Retrieved originals may predate storage of a byte digest. Verify
+            # their text instead of assuming that missing metadata means equal.
+            asset = await db_client.wb_get(org, source["session_id"], "assets", aid)
+            if source.get("sha256"):
+                if source["sha256"] != asset["sha256"]:
+                    break
+            elif source["kind"] == "material":
+                original = await db_client.wb_memory_source(org, sid, "attachment", aid)
+                if fingerprint(redact(original["content"])) != source["content_hash"]:
+                    break
+            else:
+                break
+        else:
+            return deepcopy(frozen)
+    return None
+
+
 async def ensure_basis(
     org,
     sid,
@@ -213,6 +267,17 @@ async def ensure_basis(
         job["_task_basis"] = cached
         return cached
     target_hash = fingerprint(target)
+    memory = await db_client.wb_memory(org, sid)
+    inherited = await continuation_basis(
+        org, sid, job, target_hash, memory, reference_asset_ids
+    )
+    if inherited:
+        inherited = await db_client.wb_freeze_basis(
+            org, sid, job["id"], job["lease_token"], inherited, summary(inherited)
+        )
+        job["_task_basis"] = inherited
+        job.setdefault("output", {})["task_basis"] = summary(inherited)
+        return inherited
     sources = await db_client.wb_basis_origins(org, sid, job["id"], target_hash)
     if llm is not None:
 
@@ -224,7 +289,6 @@ async def ensure_basis(
                 org, sid, job, target, sources, llm, event or quiet_event, protocol
             )
         )
-    memory = await db_client.wb_memory(org, sid)
     for entry in memory["entries"]:
         sources.append(
             {

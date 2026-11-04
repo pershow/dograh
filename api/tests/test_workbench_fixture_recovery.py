@@ -738,7 +738,11 @@ async def test_preparation_persists_newest_stage_per_case_and_reports_real_count
         and final["compilation"]["preparation_error"] == 1
     )
     assert len(final["preparation_receipts"]) == 2
-    assert [r["suite_id"] for r in final["preparation_receipts"]] == ["2", "4"]
+    # The raw import is frozen before per-case preparation checkpoints.
+    assert next(u for u in updates if u["phase"] == "imported")["import_suite_ids"] == [
+        "1"
+    ]
+    assert [r["suite_id"] for r in final["preparation_receipts"]] == ["3", "5"]
     assert "可执行 1 条" in final["text"] and "准备异常 1 条" in final["text"]
     assert "已准备" not in final["text"] and "Agent 对话尚未执行" in final["text"]
     assert (

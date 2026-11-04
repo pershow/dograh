@@ -6,7 +6,7 @@ from api.services.agent_workbench.errors import WorkbenchError
 
 
 async def restore_prepared_cases(
-    org, session_id, source_job_id, cases, *, related_job_ids=()
+    org, session_id, source_job_id, cases, *, related_job_ids=(), receipts=None
 ):
     """Restore matching checkpoints across retries without changing source rows."""
     from api.db import db_client
@@ -45,6 +45,8 @@ async def restore_prepared_cases(
                 and case_fingerprint(source_case) == case_fingerprint(indexed[name])
             ):
                 indexed[name]["compiled"] = copy.deepcopy(source_case.get("compiled"))
+                if receipts is not None:
+                    receipts[name] = copy.deepcopy(receipt)
                 restored.add(name)
         pending.extend(sorted(parent_ids(previous)))
     return restored

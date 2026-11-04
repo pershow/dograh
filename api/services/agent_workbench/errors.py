@@ -22,9 +22,18 @@ class SDKTurnError(WorkbenchError):
 
 
 class ModelTransportError(SDKTurnError):
-    """A transport failure, eligible for bounded replay of pure decisions only."""
+    """Transport failure; only checkpointed, authorized operations may retry."""
 
     code = "model_stream_interrupted"
+
+
+def retryable_task_error(error):
+    """Require typed transport evidence for every leaf, never exception prose."""
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            retryable_task_error(item) for item in error.exceptions
+        )
+    return isinstance(error, ModelTransportError)
 
 
 def sdk_turn_error(turn):

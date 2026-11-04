@@ -671,6 +671,14 @@ class CodexClient:
                     }
                 except (WorkbenchError, CodexError) as error:
                     if gateway.last_error:
+                        if gateway.last_error_retryable:
+                            from api.services.agent_workbench.errors import (
+                                ModelTransportError,
+                            )
+
+                            raise ModelTransportError(
+                                gateway.last_error, 503
+                            ) from error
                         raise WorkbenchError(gateway.last_error) from error
                     if isinstance(error, CodexError):
                         raise WorkbenchError(str(error), 503) from error

@@ -1130,6 +1130,10 @@ async def _perform(org, session_id, job):
     resolved = (
         await replay_models(org, session_id, job["id"], "build")
         if resuming
+        or (
+            job.get("output", {}).get("recovery", {}).get("attempt")
+            and job["output"].get("model_configuration_snapshot")
+        )
         else await prepare_models(
             org, target, "build" if job["kind"] == "tune" else job["kind"]
         )
@@ -1519,6 +1523,26 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
             details,
         )
         with contextlib.suppress(LeaseLost):
+            from api.services.agent_workbench.errors import retryable_task_error
+
+            # Quiesce all writers before relinquishing the fenced lease.
+            operation.cancel()
+            pulse.cancel()
+            await asyncio.gather(operation, pulse, return_exceptions=True)
+            if retryable_task_error(error) and await db_client.wb_retry_test(
+                org, session_id, job_id, job["lease_token"], message
+            ):
+                return
+            recovery = job.get("output", {}).get("recovery", {})
+            if (
+                retryable_task_error(error)
+                and recovery.get("limit", 0) > 0
+                and recovery.get("attempt", 0) >= recovery["limit"]
+            ):
+                message = (
+                    f"自动接续已达到 {recovery['limit']} 次上限，仍未恢复。"
+                    "已有准备结果和断点已保留，可修复连接后手动继续。" + message
+                )
             await db_client.wb_finish(
                 org, session_id, job_id, job["lease_token"], "failed", error=message
             )

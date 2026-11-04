@@ -360,6 +360,7 @@ class ModelGateway:
         self.runner = None
         self.last_error = None
         self.last_error_code = None
+        self.last_error_retryable = False
         self.invalid_tool_name = None
         # A service may explicitly opt out of environment proxy settings without
         # changing the Agent connection or silently falling back between routes.
@@ -680,6 +681,7 @@ class ModelGateway:
             payload, output_limit = self.payload(body)
         except WorkbenchError as error:
             self.last_error = str(error)
+            self.last_error_retryable = False
             self.last_error_code = getattr(error, "code", "model_error")
             return web.json_response(
                 {
@@ -858,7 +860,10 @@ class ModelGateway:
                         )
                     if exposed or not failure.retryable or attempt > self.max_retries:
                         record_model_outcome(
-                            self.config, failure.code, detail=str(failure)
+                            self.config,
+                            failure.code,
+                            detail=str(failure),
+                            retryable=failure.retryable,
                         )
                         raise failure
                     progress.update(
@@ -884,6 +889,7 @@ class ModelGateway:
                 record_model_outcome(self.config)
                 self.last_error = None
                 self.last_error_code = None
+                self.last_error_retryable = False
                 self.invalid_tool_name = None
                 await notify()
                 # Save the completion receipt before the client closes a finished
@@ -903,6 +909,7 @@ class ModelGateway:
                 )
                 code = getattr(error, "code", "model_error")
             self.last_error = message
+            self.last_error_retryable = bool(getattr(error, "retryable", False))
             self.last_error_code = code
             self.invalid_tool_name = getattr(error, "tool_name", None)
             progress.update(phase="failed", reason=code, message=message)

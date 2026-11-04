@@ -7,7 +7,11 @@ import uuid
 
 from api.db import db_client
 from api.schemas.agent_workbench import SimulationSuite
-from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
+from api.services.agent_workbench.errors import (
+    LeaseLost,
+    ModelTransportError,
+    WorkbenchError,
+)
 from api.services.agent_workbench.evaluation_policy import EvaluationPolicy
 from api.services.agent_workbench.fingerprint import fingerprint
 
@@ -341,28 +345,26 @@ async def evaluate(
     decision_cache = decision_cache or DecisionCache()
 
     started = time.monotonic()
-    results = {
-        i: {
-            **prior_results[c.name],
-            "runtime_responded": bool(prior_results[c.name].get("runtime_responded"))
-            or any(
-                m.get("role") == "assistant" and m.get("text")
-                for m in prior_results[c.name].get("transcript", [])
-            ),
-            "reused_runtime": bool(prior_results[c.name].get("run_id")),
-        }
+    from api.services.agent_workbench.evaluation_progress import (
+        result_counts,
+        retained_result,
+    )
+
+    retained = {
+        i: retained_result(prior_results[c.name])
         for i, c in enumerate(suite.cases)
         if prior_results
         and c.name in prior_results
-        and not prior_results[c.name].get("review_pending")
         and not prior_results[c.name].get("replay_pending")
         and prior_results[c.name].get("resource_versions", {}) == resources(c)
     }
+    results = {i: r for i, r in retained.items() if not r.get("review_pending")}
     semaphore = case_semaphore or asyncio.Semaphore(
         WorkbenchSettings.load().evaluation_concurrency
     )
     persist_lock = asyncio.Lock()
     partial_results = {}
+    transport_errors = {}
 
     def stored_results():
         combined = {**partial_results, **results}
@@ -409,6 +411,8 @@ async def evaluate(
             raise
         except WorkbenchError as error:
             review = {"status": "inconclusive", "reason": str(error)}
+            if isinstance(error, ModelTransportError):
+                transport_errors[case.name] = error
         result = apply_reference_review(outcome, review)
         await db_client.wb_emit(
             org,
@@ -774,6 +778,8 @@ async def evaluate(
                     except LeaseLost:
                         raise
                     except WorkbenchError as error:
+                        if isinstance(error, ModelTransportError):
+                            transport_errors[case.name] = error
                         if status != "failed":
                             status = "inconclusive"
                         review = {"status": "inconclusive", "reason": str(error)}
@@ -804,6 +810,8 @@ async def evaluate(
         except LeaseLost:
             raise
         except (TimeoutError, WorkbenchError, ValueError) as error:
+            if isinstance(error, ModelTransportError):
+                transport_errors[case.name] = error
             if driver and not driver.stop_reason:
                 driver.stop_reason = "execution_error"
             outcome = {
@@ -857,31 +865,12 @@ async def evaluate(
         return outcome
 
     def summary():
-        from api.services.agent_workbench.review import review_counts
-
-        values = list(results.values())
-        result = {
-            status: sum(r["status"] == status for r in values)
-            for status in ("passed", "failed", "error", "inconclusive")
-        }
+        values = list({**retained, **results}.values())
+        result = result_counts(values)
         result.update(
             {
-                **review_counts(values),
-                "valid": sum(
-                    r.get("validity", {}).get("status") == "valid" for r in values
-                ),
-                "invalid": sum(
-                    r.get("validity", {}).get("status") == "invalid" for r in values
-                ),
-                "validity_inconclusive": sum(
-                    r.get("validity", {}).get("status") == "inconclusive"
-                    for r in values
-                ),
                 "total": len(suite.cases),
                 "evaluation_version": EVALUATION_VERSION,
-                "attempted": sum(bool(r.get("run_id")) for r in values),
-                "executed": sum(bool(r.get("runtime_responded")) for r in values),
-                "reused": sum(bool(r.get("reused_runtime")) for r in values),
                 "candidate_fingerprint": candidate["fingerprint"],
                 "suite_fingerprint": suite_row["fingerprint"],
                 "model": model_configuration.llm.model,
@@ -937,10 +926,12 @@ async def evaluate(
                     await on_progress(
                         evaluation["id"],
                         summary(),
-                        sum(bool(r.get("runtime_responded")) for r in results.values()),
+                        summary()["executed"],
                     )
             # Persist before releasing the slot to another case. Infrastructure
             # outages must not be counted as hundreds of Agent defects.
+            if case.name in transport_errors:
+                raise transport_errors[case.name]
             check_model_availability()
 
     async with asyncio.TaskGroup() as group:
@@ -961,7 +952,7 @@ async def evaluate(
             await on_progress(
                 evaluation["id"],
                 summary(),
-                sum(bool(r.get("runtime_responded")) for r in results.values()),
+                summary()["executed"],
             )
         for index, case in enumerate(suite.cases):
             if index not in results:

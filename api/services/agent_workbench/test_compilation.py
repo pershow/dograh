@@ -721,6 +721,7 @@ async def compile_cases(
             )
             return value
 
+        transport_error = None
         async with semaphore:
             try:
                 evidence = {
@@ -774,6 +775,10 @@ async def compile_cases(
                 raise
             except WorkbenchError as error:
                 compiled["status"], compiled["error"] = "preparation_error", str(error)
+                from api.services.agent_workbench.errors import ModelTransportError
+
+                if isinstance(error, ModelTransportError):
+                    transport_error = error
         compiled["fingerprint"] = fingerprint(
             {k: v for k, v in compiled.items() if k != "fingerprint"}
         )
@@ -781,6 +786,8 @@ async def compile_cases(
         async with lock:
             done += 1
             await progress(done, len(selected), case)
+        if transport_error:
+            raise transport_error
 
     async with asyncio.TaskGroup() as group:
         for case in pending:
