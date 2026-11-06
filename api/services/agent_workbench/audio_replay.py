@@ -255,17 +255,26 @@ class AudioReplaySession:
                 engine.begin_initial_agent_startup()
                 if not await engine.wait_for_generation_ready():
                     raise WorkbenchError("Audio Agent did not become ready")
-                engine.call_monitor.activate()
                 self.started = time.monotonic()
-                opening = await engine.queue_node_opening(
-                    node_id=engine.active_agent.workflow.start_node_id,
-                    previous_node_id=None,
-                    generate_if_no_greeting=True,
-                )
-                if engine.opening.input_gate is not None:
-                    engine.opening.prepare(
-                        engine.release_opening_input(opening.playback)
+                if engine.answer_supervisor is not None:
+                    # Cascade calls use the shared opening gate even without
+                    # voicemail detection. Run it alongside the audio timeline
+                    # so delayed openings can hear the caller and release LLM
+                    # inference through the same path as a live call.
+                    engine.answer_supervisor.opening_deadline = engine.opening.deadline
+                    engine.answer_supervisor.arm()
+                    engine.opening.prepare(engine.handle_answer_supervision())
+                else:
+                    engine.call_monitor.activate()
+                    opening = await engine.queue_node_opening(
+                        node_id=engine.active_agent.workflow.start_node_id,
+                        previous_node_id=None,
+                        generate_if_no_greeting=True,
                     )
+                    if engine.opening.input_gate is not None:
+                        engine.opening.prepare(
+                            engine.release_opening_input(opening.playback)
+                        )
                 chunk_bytes = self.rate * 2 // 50
                 for offset in range(0, len(self.pcm), chunk_bytes):
                     if task.has_finished() or engine.is_call_disposed():

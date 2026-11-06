@@ -94,10 +94,20 @@ class QwenTTSService(TTSService):
         return changed
 
     async def _handle_interruption(self, frame, direction):
+        contexts = [
+            self._tts_contexts[identity]
+            for identity in self.get_audio_contexts()
+            if identity in self._tts_contexts
+        ]
+        keep_connection = bool(contexts) and all(
+            not context.interruptible for context in contexts
+        )
         await super()._handle_interruption(frame, direction)
         # Qwen TTS has no response.cancel event. Closing discards any remaining
-        # audio so it cannot leak into the next reply's audio context.
-        await self._disconnect()
+        # audio so it cannot leak into the next reply's audio context. Pipecat
+        # preserves protected speech, so keep its in-flight synthesis alive.
+        if not keep_connection:
+            await self._disconnect()
 
     async def stop(self, frame: EndFrame):
         await super().stop(frame)

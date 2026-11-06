@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from pipecat.frames.frames import BotStartedSpeakingFrame, TranscriptionFrame
-from pipecat.turns.types import ProcessFrameResult
 
 from api.schemas.agent_behavior import AgentBehavior
 from api.services.observability.call_events import runtime
@@ -17,17 +16,14 @@ from api.services.workflow.task_state import TaskState
 
 async def test_short_chinese_interrupts_but_single_ack_does_not():
     strategy = SpeechUnitsUserTurnStartStrategy(min_words=2)
-    strategy.trigger_user_turn_started = AsyncMock()
+    strategy.report_user_turn_started = AsyncMock()
     strategy.trigger_reset_aggregation = AsyncMock()
     await strategy.process_frame(BotStartedSpeakingFrame())
-    assert (
-        await strategy.process_frame(TranscriptionFrame("嗯", "user", ""))
-        == ProcessFrameResult.CONTINUE
-    )
-    assert (
-        await strategy.process_frame(TranscriptionFrame("不是", "user", ""))
-        == ProcessFrameResult.STOP
-    )
+    await strategy.process_frame(TranscriptionFrame("嗯", "user", ""))
+    strategy.report_user_turn_started.assert_not_awaited()
+    strategy.trigger_reset_aggregation.assert_awaited_once()
+    await strategy.process_frame(TranscriptionFrame("不是", "user", ""))
+    strategy.report_user_turn_started.assert_awaited_once()
     assert speech_unit_count("don't stop") == 2
     assert speech_unit_count("X200 手机") == 3
     assert speech_unit_count("，。？！") == 0

@@ -1,5 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
+import posthog from 'posthog-js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { PostHogEvent } from '@/constants/posthog-events';
 
 import WorkflowDetailPage from './page';
 
@@ -145,4 +148,17 @@ it('refetches the entire draft after candidate adoption without losing the sessi
     expect(editorProps().initialTemplateContextVariables).toEqual({company: 'New'});
     expect(mocks.workflow).toHaveBeenCalledTimes(2);
     expect(mocks.versions).not.toHaveBeenCalled();
+});
+
+describe('analytics', () => {
+    it('names the opened workflow by its UUID, not its per-region id', async () => {
+        mocks.workflow.mockResolvedValue({ data: { id: 12, name: 'Agent', workflow_uuid: 'wf-uuid' } });
+        render(<WorkflowDetailPage />);
+        await screen.findByTestId('workflow');
+
+        expect(posthog.capture).toHaveBeenCalledWith(PostHogEvent.WORKFLOW_EDITOR_OPENED, {
+            workflow_uuid: 'wf-uuid',
+            workflow_name: 'Agent',
+        });
+    });
 });

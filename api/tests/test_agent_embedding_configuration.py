@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.schemas.agent_behavior import AgentBehavior
 from api.services.configuration.ai_model_configuration import dograh_embeddings_base_url
 from api.services.configuration.registry import (
     DograhEmbeddingsConfiguration,
     OpenAIEmbeddingsConfiguration,
 )
 from api.services.workflow import pipecat_engine
+from api.services.workflow.task_state import TaskState
 
 
 def agent(configuration):
@@ -35,6 +37,7 @@ def engine_stub():
         _embeddings_provider="openai",
         _embeddings_endpoint=None,
         _embeddings_api_version=None,
+        state_for_agent=lambda _agent: TaskState(AgentBehavior(enabled=False)),
     )
 
 
@@ -68,7 +71,9 @@ async def test_registered_kb_callback_uses_captured_visit_not_active_agent(monke
     assert arguments["embeddings_model"] == "dograh_embedding_v1"
     assert arguments["embeddings_base_url"] == dograh_embeddings_base_url()
     assert arguments["correlation_id"] == "authorized-run"
-    result.assert_awaited_once_with({"chunks": []})
+    result.assert_awaited_once()
+    assert result.await_args.args[0]["chunks"] == []
+    assert result.await_args.args[0]["status"] == "insufficient_evidence"
 
 
 @pytest.mark.asyncio

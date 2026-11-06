@@ -6,7 +6,7 @@ import hashlib
 from loguru import logger
 
 from pipecat.classifiers.base_classifier import ClassifierError
-from pipecat.classifiers.jev.client import JevClient
+from pipecat.classifiers.typesafe.jev.client import JevClient
 
 _IDLE_SECONDS = 240
 _clients = {}

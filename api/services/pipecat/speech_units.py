@@ -2,7 +2,6 @@
 
 import re
 
-from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 
 
@@ -19,7 +18,6 @@ class SpeechUnitsUserTurnStartStrategy(MinWordsUserTurnStartStrategy):
     async def _handle_transcription(self, frame):
         threshold = self._min_words if self._bot_speaking else 1
         if speech_unit_count(frame.text) >= threshold:
-            await self.trigger_user_turn_started()
-            return ProcessFrameResult.STOP
-        await self.trigger_reset_aggregation()
-        return ProcessFrameResult.CONTINUE
+            await self.report_user_turn_started()
+        else:
+            await self.trigger_reset_aggregation()

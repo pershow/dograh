@@ -84,6 +84,9 @@ ENABLE_MANAGED_SERVICE_BOOTSTRAP = (
 )
 if not MPS_ENABLED and DEPLOYMENT_MODE != "oss":
     raise RuntimeError("MPS_ENABLED=false is supported only with DEPLOYMENT_MODE=oss")
+DOGRAH_DEPLOYMENT_ID = os.getenv(
+    "DOGRAH_DEPLOYMENT_ID", "oss" if DEPLOYMENT_MODE == "oss" else "us"
+)
 DOGRAH_DEVOPS_SECRET = os.getenv("DOGRAH_DEVOPS_SECRET") or None
 ENABLE_PROMETHEUS_METRICS = (
     os.getenv("ENABLE_PROMETHEUS_METRICS", "false").lower() == "true"

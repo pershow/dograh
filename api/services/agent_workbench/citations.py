@@ -16,7 +16,7 @@ from api.services.agent_workbench.review import ReviewSourceReader
 from api.services.agent_workbench.simulation import original_quote
 
 GUIDANCE = """
-Select citations using ONLY span_id values from the supplied citation_spans.
+Choose citations using ONLY span_id values from the supplied citation_spans.
 The server binds each selection to its immutable original source and literal text.
 Do not write source IDs or quote text yourself. Read unread source pages as usual.
 Select enough spans to support the complete requirement, including its conditions

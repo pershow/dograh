@@ -133,6 +133,7 @@ class ServiceProviders(str, Enum):
     SMALLEST = "smallest"
     XAI = "xai"
     LMNT = "lmnt"
+    MURF = "murf"
     SPEECHIFY = "speechify"
     SONIOX = "soniox"
     QWEN = "qwen"
@@ -195,6 +196,7 @@ class BaseServiceConfiguration(BaseModel):
         ServiceProviders.SMALLEST,
         ServiceProviders.XAI,
         ServiceProviders.LMNT,
+        ServiceProviders.MURF,
         ServiceProviders.SPEECHIFY,
         ServiceProviders.SONIOX,
         ServiceProviders.QWEN,
@@ -452,6 +454,7 @@ QWEN_PROVIDER = Provider(
     description="Alibaba Cloud Qwen realtime speech recognition and synthesis.",
     provider_docs_url="https://help.aliyun.com/en/model-studio/",
 )
+MURF_PROVIDER = Provider("murf", "Murf")
 SPEECHIFY_PROVIDER = Provider(
     "speechify",
     "Speechify",
@@ -516,11 +519,9 @@ AWS_NOVA_SONIC_PROVIDER = Provider(
 OPENAI_MODELS = [
     "gpt-4.1",
     "gpt-4.1-mini",
-    "gpt-4.1-nano",
     "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",
-    "gpt-3.5-turbo",
 ]
 
 ATLASCLOUD_API_BASE_URL = "https://api.atlascloud.ai/v1"
@@ -722,6 +723,7 @@ class DograhLLMService(BaseChatLLMConfiguration):
         json_schema_extra={
             "examples": DOGRAH_LLM_MODELS,
             "option_labels": {"default": "default (recommended)"},
+            "allow_custom_input": True,
         },
     )
 
@@ -1400,6 +1402,50 @@ class DeepgramTTSConfiguration(BaseServiceConfiguration):
         )
 
 
+MURF_TTS_MODELS = ["falcon-2"]
+
+
+@register_tts(provider=MURF_PROVIDER)
+class MurfTTSConfiguration(BaseTTSConfiguration):
+    provider: Literal[ServiceProviders.MURF] = ServiceProviders.MURF
+    model: str = Field(
+        default="falcon-2",
+        json_schema_extra={"examples": MURF_TTS_MODELS, "allow_custom_input": True},
+    )
+    voice: str = Field(
+        default="Will",
+        description=(
+            "Paste a Murf Voice ID from the Voice Library (ex- Will). Explore Voices"
+        ),
+        json_schema_extra={
+            "allow_custom_input": True,
+            "docs_url": "https://murf.ai/api/dashboard?utm_source=dograh",
+            "docs_label": "here",
+        },
+    )
+    locale: str = Field(
+        default="en-US",
+        description=("Must be a locale your chosen voice supports, see the "),
+        json_schema_extra={
+            "allow_custom_input": True,
+            "docs_url": "https://murf.ai/api/dashboard?utm_source=dograh",
+            "docs_label": "Voice Library",
+        },
+    )
+    base_url: str = Field(
+        default="https://global.api.murf.ai",
+        description=(
+            "Uses the nearest server by default. Use regional endpoint for data residency. "
+        ),
+        json_schema_extra={
+            "docs_url": (
+                "https://murf.ai/api/docs/api-reference/text-to-speech/stream"
+            ),
+            "docs_label": "API Reference",
+        },
+    )
+
+
 ELEVENLABS_DIALOGUE_TTS_MODEL_PATTERN = r"^eleven_v[34]"
 ELEVENLABS_DIALOGUE_TTS_MODELS = [
     "eleven_v3",
@@ -2067,6 +2113,7 @@ class QwenTTSConfiguration(QwenConnectionConfiguration, BaseTTSConfiguration):
 TTSConfig = Annotated[
     Union[
         DeepgramTTSConfiguration,
+        MurfTTSConfiguration,
         GoogleTTSConfiguration,
         OpenAITTSService,
         ElevenlabsTTSConfiguration,

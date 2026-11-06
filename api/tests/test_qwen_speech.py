@@ -330,8 +330,7 @@ async def test_tts_cancellation_closes_pending_generation():
     ws.close.assert_awaited_once()
     assert service._websocket is None
     assert not any(
-        task.get_name().startswith("qwen-tts-context:")
-        for task in asyncio.all_tasks()
+        task.get_name().startswith("qwen-tts-context:") for task in asyncio.all_tasks()
     )
 
 
@@ -447,7 +446,9 @@ async def test_tts_pipeline_delivers_audio_text_and_stop_frames():
     ws.close.assert_awaited_once()
 
 
-@pytest.mark.parametrize("delayed_event", ["session.updated", "first_audio", "second_audio"])
+@pytest.mark.parametrize(
+    "delayed_event", ["session.updated", "first_audio", "second_audio"]
+)
 @pytest.mark.asyncio
 async def test_tts_pending_request_keeps_playback_context_alive(delayed_event):
     from pipecat.frames.frames import (
@@ -494,7 +495,9 @@ async def test_tts_pending_request_keeps_playback_context_alive(delayed_event):
         b"".join(frame.audio for frame in down if isinstance(frame, TTSAudioRawFrame))
         == audio * 2
     )
-    assert [frame.text for frame in down if isinstance(frame, TTSTextFrame)] == ["你好。"]
+    assert [frame.text for frame in down if isinstance(frame, TTSTextFrame)] == [
+        "你好。"
+    ]
     assert sum(isinstance(frame, TTSStartedFrame) for frame in down) == 1
     assert sum(isinstance(frame, TTSStoppedFrame) for frame in down) == 1
     assert service._websocket is None
@@ -523,6 +526,7 @@ async def test_tts_timeout_is_bounded_and_does_not_replay_partial_audio(phase):
     with patch(
         "api.services.pipecat.qwen_tts.connect", new_callable=AsyncMock, return_value=ws
     ) as connect:
+
         async def collect():
             return [frame async for frame in service.run_tts("你好", "timeout")]
 
@@ -536,8 +540,7 @@ async def test_tts_timeout_is_bounded_and_does_not_replay_partial_audio(phase):
     ws.close.assert_awaited_once()
     assert service._websocket is None
     assert not any(
-        task.get_name().startswith("qwen-tts-context:")
-        for task in asyncio.all_tasks()
+        task.get_name().startswith("qwen-tts-context:") for task in asyncio.all_tasks()
     )
 
 
@@ -592,6 +595,51 @@ async def test_stt_pipeline_finishes_session_and_releases_receiver():
     assert ws.sent[-1]["type"] == "session.finish"
     assert service._receive_task is None
     assert service._websocket is None
+    ws.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tts_protected_greeting_survives_pipeline_interruption():
+    from pipecat.frames.frames import InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+    from pipecat.tests.utils import SleepFrame, run_test
+
+    audio = b"\x01\x00" * 2400
+
+    class SlowSocket(FakeWebsocket):
+        async def recv(self):
+            if self.events[0]["type"] == "response.audio.delta":
+                await asyncio.sleep(0.2)
+                if self.state is not State.OPEN:
+                    raise ConnectionError("Protected synthesis was disconnected")
+            return await super().recv()
+
+    ws = SlowSocket(
+        {"type": "session.updated"},
+        {"type": "response.audio.delta", "delta": base64.b64encode(audio).decode()},
+        {"type": "response.done"},
+    )
+    service = QwenTTSService(api_key="key")
+    greeting = TTSSpeakFrame("您好。")
+    greeting.interruptible = False
+    with patch(
+        "api.services.pipecat.qwen_tts.connect", new_callable=AsyncMock, return_value=ws
+    ) as connect:
+        down, up = await asyncio.wait_for(
+            run_test(
+                service,
+                frames_to_send=[greeting, SleepFrame(0.05), InterruptionFrame()],
+            ),
+            timeout=5,
+        )
+    assert not [frame for frame in down + up if isinstance(frame, ErrorFrame)]
+    assert [frame.text for frame in down if isinstance(frame, TTSTextFrame)] == [
+        "您好。"
+    ]
+    assert (
+        b"".join(frame.audio for frame in down if isinstance(frame, TTSAudioRawFrame))
+        == audio
+    )
+    connect.assert_awaited_once()
     ws.close.assert_awaited_once()
 
 

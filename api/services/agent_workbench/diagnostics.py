@@ -78,8 +78,8 @@ def page(value, offset=0, limit=16000):
 
 async def reconstruct_request(packet, turn, request_index=0):
     """Prefer captured request; never invent missing historical tool messages."""
-    from pipecat.adapters.schemas.tools_schema import ToolsSchema
-    from pipecat.adapters.services.open_ai_adapter import OpenAILLMAdapter
+    from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
+    from pipecat.adapters.llm.services.open_ai_adapter import OpenAILLMAdapter
     from pipecat.processors.aggregators.llm_context import LLMContext
 
     from api.services.workflow.dto import ReactFlowDTO
@@ -170,7 +170,7 @@ async def reconstruct_request(packet, turn, request_index=0):
             )
         )
     )
-    params = OpenAILLMAdapter().get_llm_invocation_params(
+    params = await OpenAILLMAdapter().get_llm_invocation_params(
         context, system_instruction=prompt, convert_developer_to_user=True
     )
     # Convert optional provider sentinels into JSON omissions.
@@ -479,7 +479,7 @@ class DiagnosticSession:
                 "Cannot faithfully replay this historical request: "
                 + " ".join(baseline["limitations"])
             )
-        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+        from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
         from pipecat.processors.aggregators.llm_context import LLMContext
 
         from api.services.configuration.model_connections import (
@@ -551,9 +551,9 @@ class DiagnosticSession:
                 )
             )
             # Obtain provider tool conversion without running a pipeline or invoking handlers.
-            from pipecat.adapters.services.open_ai_adapter import OpenAILLMAdapter
+            from pipecat.adapters.llm.services.open_ai_adapter import OpenAILLMAdapter
 
-            converted = OpenAILLMAdapter().get_llm_invocation_params(
+            converted = await OpenAILLMAdapter().get_llm_invocation_params(
                 c, convert_developer_to_user=True
             )
             variant["tools"] = (

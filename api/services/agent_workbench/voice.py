@@ -7,8 +7,8 @@ import time
 import uuid
 
 from fastapi import HTTPException, WebSocketDisconnect
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import TTSSpeakFrame

@@ -22,7 +22,12 @@ from api.enums import (
     WorkflowRunMode,
     WorkflowStatus,
 )
-from api.schemas.workflow import WorkflowRunResponseSchema
+from api.mcp_server.ts_bridge import TsBridgeError
+from api.schemas.workflow import (
+    WorkflowLayoutRequest,
+    WorkflowLayoutResponse,
+    WorkflowRunResponseSchema,
+)
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
@@ -35,7 +40,7 @@ from api.services.configuration.masking import (
     merge_workflow_api_keys,
 )
 from api.services.mps_service_key_client import mps_service_key_client
-from api.services.posthog_client import capture_event
+from api.services.posthog_tenant import capture_tenant_event
 from api.services.reports import generate_workflow_report_csv
 from api.services.storage import storage_fs
 from api.services.workflow.configuration_policy import (
@@ -47,6 +52,7 @@ from api.services.workflow.dto import ReactFlowDTO, sanitize_workflow_definition
 from api.services.workflow.duplicate import duplicate_workflow
 from api.services.workflow.errors import ItemKind, WorkflowError
 from api.services.workflow.greeting_validation import validate_greeting_recordings
+from api.services.workflow.layout import tidy_positions
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
 from api.services.workflow.run_usage_response import (
     format_public_cost_info,
@@ -401,6 +407,24 @@ class CreateWorkflowTemplateRequest(BaseModel):
     activity_description: str
 
 
+@router.post("/layout", response_model=WorkflowLayoutResponse)
+async def layout_workflow(
+    payload: WorkflowLayoutRequest, user: UserModel = Depends(get_user)
+):
+    """Tidy Up positions for an unsaved canvas, using the same layout applied
+    when an agent is first created. Nothing is persisted."""
+    try:
+        positions = await tidy_positions(
+            [node.model_dump() for node in payload.nodes],
+            [edge.model_dump() for edge in payload.edges],
+            rankdir=payload.rankdir,
+        )
+    except TsBridgeError as exc:
+        logger.warning(f"Tidy Up layout failed: {exc}")
+        raise HTTPException(503, "Layout is unavailable right now. Try again.")
+    return WorkflowLayoutResponse(positions=positions)
+
+
 @router.post("/{workflow_id}/validate")
 async def validate_workflow(
     workflow_id: int,
@@ -522,14 +546,14 @@ async def create_workflow(
         draft_only=request.draft_only,
     )
 
-    capture_event(
+    await capture_tenant_event(
         distinct_id=str(user.provider_id),
         event=PostHogEvent.WORKFLOW_CREATED,
+        organization_id=user.selected_organization_id,
         properties={
-            "workflow_id": workflow.id,
+            "workflow_uuid": workflow.workflow_uuid,
             "workflow_name": workflow.name,
             "source": "direct",
-            "organization_id": user.selected_organization_id,
         },
     )
 
@@ -585,6 +609,7 @@ async def create_workflow_from_template(
                 call_type=request.call_type.upper(),
                 use_case=request.use_case,
                 activity_description=request.activity_description,
+                organization_id=user.selected_organization_id,
                 created_by=str(user.provider_id),
             )
         else:
@@ -620,16 +645,16 @@ async def create_workflow_from_template(
             organization_id=user.selected_organization_id,
         )
 
-        capture_event(
+        await capture_tenant_event(
             distinct_id=str(user.provider_id),
             event=PostHogEvent.WORKFLOW_CREATED,
+            organization_id=user.selected_organization_id,
             properties={
-                "workflow_id": workflow.id,
+                "workflow_uuid": workflow.workflow_uuid,
                 "workflow_name": workflow.name,
                 "source": "template",
                 "call_type": request.call_type,
                 "use_case": request.use_case,
-                "organization_id": user.selected_organization_id,
             },
         )
 
@@ -988,13 +1013,13 @@ async def publish_workflow(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    capture_event(
+    await capture_tenant_event(
         distinct_id=str(user.provider_id),
         event=PostHogEvent.WORKFLOW_PUBLISHED,
+        organization_id=user.selected_organization_id,
         properties={
-            "workflow_id": workflow_id,
+            "workflow_uuid": workflow.workflow_uuid,
             "version_number": published.version_number,
-            "organization_id": user.selected_organization_id,
         },
     )
 
@@ -1347,14 +1372,13 @@ async def duplicate_workflow_endpoint(
             user_id=user.id,
         )
 
-        capture_event(
+        await capture_tenant_event(
             distinct_id=str(user.provider_id),
             event=PostHogEvent.WORKFLOW_DUPLICATED,
+            organization_id=user.selected_organization_id,
             properties={
-                "workflow_id": workflow.id,
+                "workflow_uuid": workflow.workflow_uuid,
                 "workflow_name": workflow.name,
-                "source_workflow_id": workflow_id,
-                "organization_id": user.selected_organization_id,
             },
         )
 

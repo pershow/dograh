@@ -20,9 +20,9 @@ from api.services.pipecat.jev_client_pool import (
     acquire_jev_connection,
     release_jev_connection,
 )
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.classifiers.base_classifier import ChoiceQuestion, ClassifierError
-from pipecat.classifiers.jev.classifier import JevClassifier
+from pipecat.classifiers.typesafe.jev.classifier import JevClassifier
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,

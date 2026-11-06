@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.classifiers.base_classifier import ChoiceResult
 from pipecat.frames.frames import LLMContextFrame
 from pipecat.pipeline.pipeline import Pipeline

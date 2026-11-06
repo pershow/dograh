@@ -4,7 +4,7 @@ import asyncio
 import copy
 
 import jsonschema
-from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 from pipecat.utils.errors import ErrorCategory
 
 from api.errors.failure import redact_failure_message

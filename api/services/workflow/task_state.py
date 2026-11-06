@@ -6,7 +6,7 @@ import math
 import re
 import uuid
 
-from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
 from api.schemas.agent_behavior import AgentBehavior
 

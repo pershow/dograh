@@ -101,6 +101,7 @@ export type SavedVersion = { versionNumber?: number; versionStatus?: string };
 
 interface UseWorkflowStateProps {
     readOnly?: boolean;
+    editingDisabled?: boolean;
     /**
      * Called after a settings, variables or dictionary save with the version
      * it landed in: saving a published workflow turns it into a draft.
@@ -131,6 +132,7 @@ export const useWorkflowState = ({
     initialWorkflowConfigurations,
     user,
     onVersionSaved,
+    editingDisabled = false,
 }: UseWorkflowStateProps) => {
     const reportVersion = useCallback((data: { version_number?: number | null; version_status?: string | null } | undefined) => {
         if (!data || !onVersionSaved) return;
@@ -285,7 +287,7 @@ export const useWorkflowState = ({
     // Set up keyboard shortcuts for undo/redo
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (readOnly) return;
+            if (readOnly || editingDisabled) return;
             // Check if we're in an input field
             const target = e.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
@@ -313,7 +315,7 @@ export const useWorkflowState = ({
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, canUndo, canRedo, readOnly]);
+    }, [undo, redo, canUndo, canRedo, readOnly, editingDisabled]);
 
     const handleNodeSelect = useCallback((nodeType: string) => {
         if (!rfInstance.current) return;
@@ -342,10 +344,9 @@ export const useWorkflowState = ({
         rfInstance.current.addNodes([newNode]);
         posthog.capture(PostHogEvent.WORKFLOW_NODE_ADDED, {
             node_type: nodeType,
-            workflow_id: workflowId,
         });
         setIsAddNodePanelOpen(false);
-    }, [nodes, setIsAddNodePanelOpen, workflowId, bySpecName]);
+    }, [nodes, setIsAddNodePanelOpen, bySpecName]);
 
     const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setWorkflowName(e.target.value);
@@ -397,7 +398,7 @@ export const useWorkflowState = ({
 
     // Save workflow function. Returns version info from the API response.
     const saveWorkflow = useCallback(async (updateWorkflowDefinition: boolean = true): Promise<SavedVersion | undefined> => {
-        if (readOnly || !user?.id || !rfInstance.current) return;
+        if (readOnly || editingDisabled || !user?.id || !rfInstance.current) return;
         // Read nodes/edges from the Zustand store (synchronously up-to-date)
         // and viewport from the ReactFlow instance to build the flow object.
         // This avoids a race condition where rfInstance.toObject() may return
@@ -486,6 +487,7 @@ export const useWorkflowState = ({
         setEdges,
         user,
         validateWorkflow,
+        editingDisabled,
         applyWorkflowErrors,
         specs,
         readOnly,

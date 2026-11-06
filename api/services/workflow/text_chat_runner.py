@@ -14,6 +14,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
+    ErrorFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     LLMAssistantPushAggregationFrame,
@@ -40,6 +41,7 @@ from pipecat.utils.run_context import set_current_org_id
 
 from api.db import db_client
 from api.enums import WorkflowRunMode, WorkflowRunState
+from api.errors.failure import classify_error_frame, log_failure
 from api.schemas.workflow_configurations import (
     JevNodeRoutingConfiguration,
     WorkflowConfigurationDefaults,
@@ -60,6 +62,7 @@ from api.services.pipecat.service_factory import (
     create_llm_service,
     get_llm_runtime_configuration,
 )
+from api.services.pipecat.termination_funnel_processor import is_terminal_error
 from api.services.pipecat.tracing_config import (
     build_remote_parent_context,
     get_trace_url,
@@ -812,11 +815,18 @@ async def execute_text_chat_pending_turn(
         conversation_type="text",
         additional_span_attributes=trace_span_attributes,
     )
-    if evaluation_policy is not None:
 
-        @task.event_handler("on_pipeline_error")
-        async def evaluation_error(_worker, _frame):
-            evaluation_policy.record_runtime_error(_frame)
+    @task.event_handler("on_pipeline_error")
+    async def on_pipeline_error(_task, frame):
+        # Voice calls classify errors in RealtimeFeedbackObserver, which text
+        # chat does not attach. Without this, a provider rejecting the
+        # customer's own key shows up only as the worker's untagged
+        # "can no longer do its job".
+        if isinstance(frame, ErrorFrame):
+            log_failure(classify_error_frame(frame), fatal=is_terminal_error(frame))
+
+        if evaluation_policy is not None:
+            evaluation_policy.record_runtime_error(frame)
 
     runner_task = asyncio.create_task(run_pipeline_worker(task))
 
