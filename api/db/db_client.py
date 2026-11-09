@@ -1,5 +1,5 @@
-from api.db.agent_trigger_client import AgentTriggerClient
 from api.db.action_operation_client import ActionOperationClient
+from api.db.agent_trigger_client import AgentTriggerClient
 from api.db.agent_workbench_client import AgentWorkbenchClient
 from api.db.api_key_client import APIKeyClient
 from api.db.builder_run_client import BuilderRunClient
@@ -21,6 +21,7 @@ from api.db.user_client import UserClient
 from api.db.webhook_credential_client import WebhookCredentialClient
 from api.db.webhook_delivery_client import WebhookDeliveryClient
 from api.db.workbench_memory_client import WorkbenchMemoryClient
+from api.db.workbench_orchestration_client import WorkbenchOrchestrationClient
 from api.db.workflow_builder import WorkflowBuilderClient
 from api.db.workflow_client import WorkflowClient
 from api.db.workflow_completion_client import WorkflowCompletionClient
@@ -31,6 +32,7 @@ from api.db.workflow_template_client import WorkflowTemplateClient
 
 
 class DBClient(
+    WorkbenchOrchestrationClient,
     ActionOperationClient,
     WorkbenchMemoryClient,
     AgentWorkbenchClient,

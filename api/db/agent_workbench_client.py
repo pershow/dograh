@@ -24,6 +24,12 @@ from api.db.models import (
     WorkflowRunModel,
     WorkflowRunTextSessionModel,
 )
+from api.db.workbench_reads import (
+    compact_record,
+    compact_select,
+    evaluation_select,
+    mapped_record,
+)
 from api.db.workflow_client import WorkflowClient
 from api.services.agent_workbench.errors import LeaseLost, WorkbenchError
 from api.services.agent_workbench.fingerprint import fingerprint
@@ -52,38 +58,8 @@ def record(row):
         result["output"].pop("_requested_target", None)
         result["output"].pop("_task_basis", None)
         result["output"].pop("_submitted_input", None)
-    if isinstance(row, WorkbenchEvaluationModel):
-        # Both the compact index and detail endpoint identify the same evidence.
-        # Session/event revisions also change for unrelated batches and tasks.
-        result["detail_revision"] = fingerprint(
-            {key: result[key] for key in ("status", "summary", "results")}
-        )
+        result["output"].pop("_orchestration", None)
     return result
-
-
-def evaluation_index(row):
-    item = record(row)
-    item["summary_only"] = True
-    item["results"] = [
-        {
-            **{
-                k: c.get(k)
-                for k in (
-                    "name",
-                    "status",
-                    "run_id",
-                    "source",
-                    "error",
-                    "review_pending",
-                )
-            },
-            "transcript": [],
-            "assertions": [],
-            "tool_calls": [],
-        }
-        for c in item.get("results", [])
-    ]
-    return item
 
 
 def definition_payload(workflow, definition):
@@ -255,6 +231,7 @@ class AgentWorkbenchClient(BaseDBClient):
         name="New Agent",
         model_protocol="chat",
         new_session=False,
+        workflow_configurations=None,
     ):
         async with self.async_session() as db, db.begin():
             if workflow_id is None:
@@ -263,6 +240,7 @@ class AgentWorkbenchClient(BaseDBClient):
                     user_id=user_id,
                     name=name,
                     workflow_definition={"nodes": [], "edges": []},
+                    workflow_configurations=workflow_configurations or {},
                 )
                 db.add(workflow)
                 await db.flush()
@@ -274,7 +252,7 @@ class AgentWorkbenchClient(BaseDBClient):
                         status="draft",
                         version_number=1,
                         workflow_json={"nodes": [], "edges": []},
-                        workflow_configurations={},
+                        workflow_configurations=workflow_configurations or {},
                         template_context_variables={},
                     )
                 )
@@ -352,7 +330,14 @@ class AgentWorkbenchClient(BaseDBClient):
             return record(session)
 
     async def wb_context(
-        self, org, session_id, *, if_revision=None, compact=False, session_only=False
+        self,
+        org,
+        session_id,
+        *,
+        if_revision=None,
+        compact=False,
+        session_only=False,
+        target_only=False,
     ):
         async with self.async_session() as db:
             session = await self._wb_session(db, org, session_id)
@@ -361,6 +346,8 @@ class AgentWorkbenchClient(BaseDBClient):
                 # and transcript. Keep this read scoped without loading archives.
                 return {"session": record(session)}
             _, _, target = await self._wb_target(db, session.workflow_id, org)
+            if target_only:
+                return {"session": record(session), "target": target}
             memory_revision = await self._wb_memory_revision(db, session)
             revision = fingerprint(
                 {
@@ -379,32 +366,35 @@ class AgentWorkbenchClient(BaseDBClient):
                 "memory_revision": memory_revision,
             }
             for name, model in TABLES.items():
-                rows = (
-                    await db.scalars(
-                        select(model)
-                        .where(model.session_id == session_id)
-                        .order_by(model.created_at.desc())
-                        .limit(100)
-                    )
-                ).all()
-                result[name] = [
-                    (
-                        evaluation_index(row)
-                        if compact and name == "evaluations"
-                        else (
-                            await self._wb_suite_record(db, row)
-                            if name == "suites" and not compact
-                            else record(row)
+                if compact:
+                    rows = (
+                        (
+                            await db.execute(
+                                compact_select(model)
+                                .where(model.session_id == session_id)
+                                .order_by(model.created_at.desc(), model.id.desc())
+                                .limit(100)
+                            )
                         )
+                        .mappings()
+                        .all()
                     )
-                    for row in rows
-                ]
-                if compact and name == "suites":
-                    for item in result[name]:
-                        item["summary_only"] = True
-                        item["payload"]["cases"] = [
-                            {"name": c["name"]} for c in item["payload"]["cases"]
-                        ]
+                    result[name] = [compact_record(row, model) for row in rows]
+                else:
+                    rows = (
+                        await db.scalars(
+                            select(model)
+                            .where(model.session_id == session_id)
+                            .order_by(model.created_at.desc(), model.id.desc())
+                            .limit(100)
+                        )
+                    ).all()
+                    result[name] = [
+                        await self._wb_suite_record(db, row)
+                        if name == "suites"
+                        else record(row)
+                        for row in rows
+                    ]
             return result
 
     async def wb_test_result_page(self, org, session_id, job_id, *, offset=0, limit=20):
@@ -414,27 +404,50 @@ class AgentWorkbenchClient(BaseDBClient):
             await self._wb_session(db, org, session_id)
             await self._wb_item(db, "jobs", session_id, job_id)
             rows = (
-                await db.scalars(
-                    select(WorkbenchEvaluationModel)
-                    .where(
-                        WorkbenchEvaluationModel.session_id == session_id,
-                        WorkbenchEvaluationModel.job_id == job_id,
+                (
+                    await db.execute(
+                        evaluation_select(compact=True)
+                        .where(
+                            WorkbenchEvaluationModel.session_id == session_id,
+                            WorkbenchEvaluationModel.job_id == job_id,
+                        )
+                        .order_by(
+                            WorkbenchEvaluationModel.created_at,
+                            WorkbenchEvaluationModel.id,
+                        )
+                        .offset(offset)
+                        .limit(limit + 1)
                     )
-                    .order_by(
-                        WorkbenchEvaluationModel.created_at, WorkbenchEvaluationModel.id
-                    )
-                    .offset(offset)
-                    .limit(limit + 1)
                 )
-            ).all()
+                .mappings()
+                .all()
+            )
             return {
-                "evaluations": [evaluation_index(r) for r in rows[:limit]],
+                "evaluations": [
+                    compact_record(r, WorkbenchEvaluationModel) for r in rows[:limit]
+                ],
                 "next_offset": offset + limit if len(rows) > limit else None,
             }
 
     async def wb_get(self, org, session_id, table, item_id):
         async with self.async_session() as db:
             await self._wb_session(db, org, session_id)
+            if table == "evaluations":
+                row = (
+                    (
+                        await db.execute(
+                            evaluation_select(compact=False).where(
+                                WorkbenchEvaluationModel.session_id == session_id,
+                                WorkbenchEvaluationModel.id == item_id,
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if row is None:
+                    raise WorkbenchError("Item not found", 404)
+                return mapped_record(row)
             row = await self._wb_item(db, table, session_id, item_id)
             result = record(row)
             if table == "suites":
@@ -980,6 +993,7 @@ class AgentWorkbenchClient(BaseDBClient):
                         payload[field],
                     )
             _, _, target = await self._wb_target(db, session.workflow_id, org)
+            draft_fingerprint = fingerprint(target)
             if payload.get("candidate_id"):
                 candidate = await self._wb_item(
                     db, "candidates", target_session_id, payload["candidate_id"]
@@ -1003,6 +1017,7 @@ class AgentWorkbenchClient(BaseDBClient):
                     "memory_revision": await self._wb_memory_revision(db, session),
                     "_requested_target": copy.deepcopy(target),
                     "requested_target_fingerprint": fingerprint(target),
+                    "requested_draft_fingerprint": draft_fingerprint,
                     "model_protocol": session.model_protocol,
                 },
             )
@@ -1105,10 +1120,25 @@ class AgentWorkbenchClient(BaseDBClient):
             retry_delay,
         )
 
+        checkpointed_build = job.kind == "build" and bool(
+            job.output.get("_orchestration")
+        )
+        if (
+            checkpointed_build
+            and (job.output.get("pending_approval") or {}).get("status") == "pending"
+        ):
+            job.status, job.lease_token, job.lease_until = "awaiting_input", None, None
+            await self._wb_event(
+                db,
+                session,
+                "task.awaiting_input",
+                {"job_id": job.id, "output": record(job)["output"]},
+            )
+            return True
         recovery = job.output.get("recovery", {})
-        if not recoverable_test(job.kind, job.input, job.output) or recovery.get(
-            "attempt", 0
-        ) >= recovery.get("limit", 0):
+        if not (
+            checkpointed_build or recoverable_test(job.kind, job.input, job.output)
+        ) or recovery.get("attempt", 0) >= recovery.get("limit", 0):
             return False
         attempt = recovery.get("attempt", 0) + 1
         delay = retry_delay(attempt)
@@ -1430,11 +1460,30 @@ class AgentWorkbenchClient(BaseDBClient):
             return {**record(row), "snapshot": snapshot}
 
     async def wb_save_candidate(
-        self, org, session_id, job_id, token, snapshot, code, summary, base_fingerprint
+        self,
+        org,
+        session_id,
+        job_id,
+        token,
+        snapshot,
+        code,
+        summary,
+        base_fingerprint,
+        *,
+        operation_key=None,
     ):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             job = await self._wb_fence(db, session_id, job_id, token)
+            artifact = (
+                job.output.get("_orchestration", {})
+                .get("artifacts", {})
+                .get(operation_key)
+            )
+            if operation_key and artifact:
+                return record(
+                    await self._wb_item(db, "candidates", session_id, artifact["id"])
+                )
             if job.input.get("mode") == "test" or job.output.get("intent") == "test":
                 raise WorkbenchError(
                     "只运行测试的任务不能修改 Agent 或生成候选版本。", 409
@@ -1467,6 +1516,13 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             db.add(row)
             await db.flush()
+            if operation_key:
+                saved = copy.deepcopy(job.output.get("_orchestration", {"version": 1}))
+                saved.setdefault("artifacts", {})[operation_key] = {
+                    "kind": "candidate",
+                    "id": row.id,
+                }
+                job.output = {**job.output, "_orchestration": saved}
             await self._wb_event(
                 db,
                 session,
@@ -1574,7 +1630,9 @@ class AgentWorkbenchClient(BaseDBClient):
             raise WorkbenchError("冻结测试套件完整性校验失败，不能执行。", 409)
         return result
 
-    async def wb_save_suite(self, org, session_id, payload, *, job_id=None, token=None):
+    async def wb_save_suite(
+        self, org, session_id, payload, *, job_id=None, token=None, operation_key=None
+    ):
         from api.services.agent_workbench.compiled_artifacts import (
             MAX_PAYLOAD_BYTES,
             payload_bytes,
@@ -1584,7 +1642,19 @@ class AgentWorkbenchClient(BaseDBClient):
         async with self.async_session() as db, db.begin():
             session = await self._wb_session(db, org, session_id, lock=True)
             if job_id:
-                await self._wb_fence(db, session_id, job_id, token)
+                job = await self._wb_fence(db, session_id, job_id, token)
+                artifact = (
+                    job.output.get("_orchestration", {})
+                    .get("artifacts", {})
+                    .get(operation_key)
+                )
+                if operation_key and artifact:
+                    return await self._wb_suite_record(
+                        db,
+                        await self._wb_item(db, "suites", session_id, artifact["id"]),
+                    )
+            elif operation_key:
+                raise WorkbenchError("A checkpointed save requires a leased job", 409)
             stored, artifacts = split_suite(payload)
             if payload_bytes(stored) > MAX_PAYLOAD_BYTES:
                 raise WorkbenchError("Simulation suite exceeds 256 KB")
@@ -1615,6 +1685,13 @@ class AgentWorkbenchClient(BaseDBClient):
             )
             db.add(row)
             await db.flush()
+            if operation_key:
+                saved = copy.deepcopy(job.output.get("_orchestration", {"version": 1}))
+                saved.setdefault("artifacts", {})[operation_key] = {
+                    "kind": "suite",
+                    "id": row.id,
+                }
+                job.output = {**job.output, "_orchestration": saved}
             await self._wb_event(
                 db,
                 session,

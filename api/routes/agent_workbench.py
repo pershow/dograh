@@ -30,6 +30,7 @@ from api.schemas.agent_workbench import (
     SimulationSuite,
     TuneRequest,
     VoiceToolRequest,
+    WorkbenchDecision,
     WorkbenchResponse,
 )
 from api.services.agent_workbench.attachments import parse_attachment, upload_attachment
@@ -136,9 +137,19 @@ async def workbench_update_build_model(
 
 @router.post("/sessions", response_model=WorkbenchResponse)
 async def workbench_create_session(body: CreateSession, user: User, _: Enabled):
+    from api.services.workflow.localization import new_agent_configurations
+
+    configurations = (
+        await new_agent_configurations(user.selected_organization_id, body.locale)
+        if body.workflow_id is None
+        else {}
+    )
     return public_data(
         await db_client.wb_create_session(
-            user.selected_organization_id, user.id, **body.model_dump()
+            user.selected_organization_id,
+            user.id,
+            **body.model_dump(exclude={"locale"}),
+            **({"workflow_configurations": configurations} if configurations else {}),
         )
     )
 
@@ -197,7 +208,7 @@ async def workbench_dependencies(
     purpose: Literal["build", "evaluate", "tune", "voice"] = "build",
 ):
     org = user.selected_organization_id
-    context = await db_client.wb_context(org, session_id)
+    context = await db_client.wb_context(org, session_id, target_only=True)
     target = context["target"]
     if candidate_id:
         target = (await db_client.wb_get(org, session_id, "candidates", candidate_id))[
@@ -260,6 +271,41 @@ async def workbench_instruction(
             body.idempotency_key,
         )
     )
+
+
+@router.post(
+    "/sessions/{session_id}/jobs/{job_id}/decision",
+    response_model=WorkbenchResponse,
+    operation_id="decideWorkbenchApproval",
+)
+async def workbench_decision(
+    session_id: str, job_id: str, request: WorkbenchDecision, user: User, _: Enabled
+):
+    from api.services.agent_workbench.orchestration import schedule_continuation
+
+    result = await db_client.wb_decide(
+        user.selected_organization_id, session_id, job_id, user.id, request
+    )
+    await schedule_continuation(user.selected_organization_id, session_id, job_id)
+    return WorkbenchResponse(data=result)
+
+
+@router.post(
+    "/sessions/{session_id}/jobs/{job_id}/resume",
+    response_model=WorkbenchResponse,
+    operation_id="resumeWorkbenchOrchestration",
+)
+async def workbench_resume_orchestration(
+    session_id: str, job_id: str, user: User, _: Enabled
+):
+    from api.services.agent_workbench.orchestration import schedule_continuation
+
+    result = await db_client.wb_resume_orchestration(
+        user.selected_organization_id, session_id, job_id
+    )
+    if result["status"] == "queued":
+        await schedule_continuation(user.selected_organization_id, session_id, job_id)
+    return WorkbenchResponse(data=result)
 
 
 @router.get(

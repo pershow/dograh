@@ -26,6 +26,7 @@ from api.services.agent_workbench.evaluation import (
     acceptable_improvement,
     evaluate,
 )
+from api.services.agent_workbench.orchestration import ApprovalRequired, Orchestration
 from api.services.agent_workbench.recovery import (
     build_checkpoint,
     continued_test_input,
@@ -116,8 +117,12 @@ async def enqueue(org, session_id, kind, payload, key):
         versions = set()
         source_session_id = payload.get("test_target_session_id") or session_id
         if source_session_id != session_id:
-            current_context = await db_client.wb_context(org, session_id)
-            source_context = await db_client.wb_context(org, source_session_id)
+            current_context = await db_client.wb_context(
+                org, session_id, session_only=True
+            )
+            source_context = await db_client.wb_context(
+                org, source_session_id, session_only=True
+            )
             if (
                 current_context["session"]["workflow_id"]
                 != source_context["session"]["workflow_id"]
@@ -174,7 +179,7 @@ async def enqueue(org, session_id, kind, payload, key):
         )
         if not unclassified:
             payload = continued_test_input(prior, payload)
-    context = await db_client.wb_context(org, session_id)
+    context = await db_client.wb_context(org, session_id, target_only=True)
     target = context["target"]
     if payload.get("candidate_id"):
         target = (
@@ -219,6 +224,14 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
 
     tools = WorkbenchTools(org, session_id, job, context, tuning=tuning)
     await tools.load_agent_memory()
+    if not tuning and job.get("kind") == "build":
+        from api.services.agent_workbench.fingerprint import fingerprint
+
+        tools.orchestration = Orchestration(
+            tools, fingerprint({"target": tools.base, "prompt": prompt})
+        )
+        await tools.orchestration.load()
+        await tools.orchestration.apply_approved_tools()
 
     async def event(kind, payload):
         await db_client.wb_emit(
@@ -247,6 +260,9 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
 
     creation_direction = tools.creation_direction
     creation_guidance = ""
+    locale = (tools.base.get("workflow_configurations") or {}).get(
+        "conversation_language"
+    )
     if (
         not tuning
         and tools.mode != "analyze"
@@ -254,8 +270,30 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
     ):
         from api.services.agent_workbench.creation import resolve_direction
 
-        creation_direction = await resolve_direction(
-            job, context, basis, config.llm, event, context["session"]["model_protocol"]
+        async def direction_step():
+            return await resolve_direction(
+                job,
+                context,
+                basis,
+                config.llm,
+                event,
+                context["session"]["model_protocol"],
+            )
+
+        confirmed_direction = getattr(tools, "orchestration", None) and any(
+            a["kind"] == "requirements" and a["status"] == "approved"
+            for a in tools.orchestration.data.get("approvals", {}).values()
+        )
+        creation_direction = (
+            tools.creation_direction
+            if confirmed_direction and tools.creation_direction
+            else (
+                await tools.orchestration.step(
+                    "direction:" + basis["fingerprint"], direction_step
+                )
+                if getattr(tools, "orchestration", None)
+                else await direction_step()
+            )
         )
         if creation_direction["intent"] == "other":
             # The preflight classified a question/cancellation, not permission to
@@ -289,6 +327,18 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
                 "intent": "build",
                 "creation_direction": creation_direction,
             }
+            if getattr(tools, "orchestration", None):
+                brief = await tools.orchestration.requirements(
+                    basis,
+                    creation_direction,
+                    config.llm,
+                    event,
+                    context["session"]["model_protocol"],
+                )
+                prompt += (
+                    "\nHuman-approved requirements (supplement the complete original sources):\n"
+                    + json.dumps(brief, ensure_ascii=False)
+                )
 
     if creation_direction and creation_direction["status"] == "resolved":
         from api.services.agent_workbench.creation import AUTHORING_DIRECTION_GUIDANCE
@@ -346,6 +396,12 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
                 "or confirmations. For existing local edits preserve the topology. "
                 "Save the candidate and requirement-derived tests."
             )
+    if locale in {"zh-CN", "en"} and not tools.base.get("workflow_json", {}).get(
+        "nodes"
+    ):
+        from api.services.workflow.localization import language_instruction
+
+        prompt += "\n" + language_instruction(locale)
     receipts = [
         {
             "id": j["id"],
@@ -434,6 +490,11 @@ async def _build(org, session_id, job, context, config, prompt, *, tuning=False)
         + f"\nTask mode: {tools.mode}.\nCURRENT USER REQUEST:\n"
         + prompt
     )
+    if getattr(tools, "orchestration", None):
+        prompt += (
+            "\nDurable task receipts (do not repeat completed saves or approved tool mutations; rejected changes require a revised proposal):\n"
+            + json.dumps(tools.orchestration.receipts(), ensure_ascii=False)
+        )
     result = await CodexClient(tools, event).run(
         prompt, config.llm, protocol=context["session"]["model_protocol"]
     )
@@ -1116,6 +1177,16 @@ async def _perform(org, session_id, job):
             "model_protocol": job["output"]["model_protocol"],
         }
     payload = job["input"]
+    if job["kind"] == "build" and job.get("output", {}).get(
+        "requested_draft_fingerprint"
+    ):
+        # Both the first attempt and later resumes edit the queued version.
+        # A selected candidate can differ from the draft onto which it is adopted.
+        context = {
+            **context,
+            "target": await db_client.wb_requested_target(org, session_id, job["id"]),
+            "target_fingerprint": job["output"]["requested_draft_fingerprint"],
+        }
     target = context["target"]
     if payload.get("candidate_id"):
         target = (
@@ -1130,6 +1201,10 @@ async def _perform(org, session_id, job):
     resolved = (
         await replay_models(org, session_id, job["id"], "build")
         if resuming
+        or (
+            job.get("output", {}).get("orchestration")
+            and job["output"].get("model_configuration_snapshot")
+        )
         or (
             job.get("output", {}).get("recovery", {}).get("attempt")
             and job["output"].get("model_configuration_snapshot")
@@ -1157,7 +1232,10 @@ async def _perform(org, session_id, job):
         context = {
             **context,
             "target": original,
-            "target_fingerprint": job["output"]["requested_target_fingerprint"],
+            "target_fingerprint": job["output"].get(
+                "requested_draft_fingerprint",
+                job["output"]["requested_target_fingerprint"],
+            ),
         }
         await db_client.wb_emit(
             org,
@@ -1194,6 +1272,36 @@ async def _perform(org, session_id, job):
         if job["kind"] == "build":
             context = {**context, "target": base["snapshot"]}
     if job["kind"] == "build":
+        if job.get("output", {}).get("orchestration"):
+            original = await db_client.wb_requested_target(org, session_id, job["id"])
+            context = {
+                **context,
+                "target": original,
+                "target_fingerprint": job["output"].get(
+                    "requested_draft_fingerprint",
+                    job["output"]["requested_target_fingerprint"],
+                ),
+            }
+            if job["output"].get("build_checkpoint"):
+                return await _complete_build(
+                    org,
+                    session_id,
+                    job,
+                    context,
+                    config,
+                    job["output"]["build_checkpoint"]["built"],
+                )
+            if job["output"].get("outcome") == "build" and job["output"].get(
+                "suite_id"
+            ):
+                return await _complete_build(
+                    org,
+                    session_id,
+                    job,
+                    context,
+                    config,
+                    build_checkpoint(job["output"])["built"],
+                )
         from api.services.agent_workbench.test_tasks import (
             route_test_request,
             run_review_task,
@@ -1490,6 +1598,19 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
             task_result_status(job["kind"], output),
             output=output,
         )
+    except ApprovalRequired as pause:
+        await db_client.wb_finish(
+            org,
+            session_id,
+            job_id,
+            job["lease_token"],
+            "awaiting_input",
+            output={
+                "outcome": "approval",
+                "question": str(pause),
+                "pending_approval": pause.approval,
+            },
+        )
     except LeaseLost:
         pass
     except Exception as error:  # noqa: BLE001 - boundary converts failures to bounded task status
@@ -1504,9 +1625,7 @@ async def execute_workbench_job(_ctx, org, session_id, job_id):
             else json.dumps(error.detail, ensure_ascii=False)[:3000]
             if isinstance(error, HTTPException)
             else "并行任务执行失败："
-            + "；".join(
-                f"{d['type']}: {d['message']}" for d in details
-            )[:2400]
+            + "；".join(f"{d['type']}: {d['message']}" for d in details)[:2400]
             if isinstance(error, BaseExceptionGroup)
             else "Task failed; check the worker diagnostics and model connection"
         )

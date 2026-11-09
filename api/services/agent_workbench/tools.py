@@ -38,6 +38,10 @@ from api.services.agent_workbench.graph_edits import (
     update_fields,
 )
 from api.services.agent_workbench.memory import source_index
+from api.services.agent_workbench.organization_tools import (
+    OrganizationTools,
+    organization_specs,
+)
 from api.services.agent_workbench.repair import (
     REPAIR_PLAN_SCHEMA,
     compile_execution_contracts,
@@ -102,7 +106,7 @@ def edit_code(code, edits):
     return code
 
 
-class WorkbenchTools:
+class WorkbenchTools(OrganizationTools):
     def __init__(self, org, session_id, job, context, *, tuning=False):
         self.org, self.session_id, self.job, self.context = (
             org,
@@ -693,6 +697,21 @@ class WorkbenchTools:
         candidate_spec = next((s for s in specs if s["name"] == "save_candidate"), None)
         if candidate_spec is not None:
             candidate_spec["inputSchema"]["$defs"] = behavior_definitions
+        if not self.tuning and (for_thread or self.mode not in {"analyze", "test"}):
+            # Existing durable Codex threads retain tool names. Extend the stable
+            # node reader, whose authoritative schema is refreshed by the gateway.
+            context_spec = next(s for s in specs if s["name"] == "read_node")
+            catalog = organization_specs(tool)
+            context_spec["inputSchema"]["properties"]["organization_action"] = {
+                "enum": [s["name"] for s in catalog]
+            }
+            for spec in catalog:
+                context_spec["inputSchema"]["properties"].update(
+                    spec["inputSchema"]["properties"]
+                )
+                context_spec["description"] += (
+                    f" organization_action={spec['name']}: {spec['description']}"
+                )
         return [s for s in specs if s["name"] not in actions]
 
     def thread_specs(self):
@@ -700,6 +719,13 @@ class WorkbenchTools:
         return self.specs(for_thread=True)
 
     async def call(self, name, arguments):
+        if getattr(self, "orchestration", None):
+            return await self.orchestration.call(
+                name, arguments, lambda: self._call(name, arguments)
+            )
+        return await self._call(name, arguments)
+
+    async def _call(self, name, arguments):
         specs = {item["name"]: item for item in self.specs()}
         if name not in specs:
             raise WorkbenchError("Unknown or unavailable workbench tool")
@@ -934,7 +960,31 @@ class WorkbenchTools:
     async def list_node_types(self):
         return [{"name": s.name, "description": s.description} for s in all_specs()]
 
-    async def read_node(self, name=None, offset=0, limit=24000):
+    async def read_node(
+        self,
+        name=None,
+        offset=0,
+        limit=24000,
+        organization_action=None,
+        **organization_args,
+    ):
+        if organization_action:
+            if self.tuning or self.mode in {"analyze", "test"}:
+                raise WorkbenchError(
+                    "Organization tool authoring is unavailable in this task", 409
+                )
+            spec = next(
+                (
+                    s
+                    for s in organization_specs(tool)
+                    if s["name"] == organization_action
+                ),
+                None,
+            )
+            if spec is None:
+                raise WorkbenchError("Unknown organization tool action", 422)
+            jsonschema.validate(organization_args, spec["inputSchema"])
+            return await getattr(self, organization_action)(**organization_args)
         if name is None:
             return await self.get_context(section="editing", offset=offset, limit=limit)
         code = self.last_submission["code"] if self.last_submission else self.base_code
@@ -1895,6 +1945,11 @@ class WorkbenchTools:
             code,
             summary,
             self.base_fingerprint,
+            **(
+                {"operation_key": self.operation_key}
+                if getattr(self, "operation_key", None)
+                else {}
+            ),
         )
         self.candidate_ids.append(candidate["id"])
         self.base_code = await generate_code(
@@ -2043,6 +2098,11 @@ class WorkbenchTools:
             parsed.model_dump(),
             job_id=self.job["id"],
             token=self.job["lease_token"],
+            **(
+                {"operation_key": self.operation_key}
+                if getattr(self, "operation_key", None)
+                else {}
+            ),
         )
         self.suite_ids.append(saved["id"])
         return {"suite_id": saved["id"], "fingerprint": saved["fingerprint"]}

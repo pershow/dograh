@@ -132,7 +132,7 @@ def task_receipt(job):
 
 
 async def voice_command(org, session_id, request: VoiceToolRequest):
-    context = await db_client.wb_context(org, session_id)
+    context = await db_client.wb_context(org, session_id, compact=True)
     if request.name == "get_status":
         await validate_voice_selection(org, session_id, request)
         assets = [

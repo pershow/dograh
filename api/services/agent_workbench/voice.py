@@ -70,7 +70,7 @@ def voice_error_event(frame):
 async def serve_voice(ws, user, session_id):
     org = user.selected_organization_id
     try:
-        state = await db_client.wb_context(org, session_id)
+        state = await db_client.wb_context(org, session_id, target_only=True)
     except WorkbenchError:
         await ws.close(code=1008)
         return

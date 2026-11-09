@@ -13,6 +13,7 @@ class StrictModel(BaseModel):
 
 
 class CreateSession(StrictModel):
+    locale: Literal["zh-CN", "en"] | None = None
     new_session: bool = False
     model_protocol: Literal["chat", "responses"] = "chat"
     workflow_id: int | None = None
@@ -135,6 +136,22 @@ class Instruction(StrictModel):
             )
         if self.continue_test_job_id and self.rerun_test_job_id:
             raise ValueError("Choose either resume or fresh rerun, not both")
+        return self
+
+
+class WorkbenchDecision(StrictModel):
+    approval_id: str = Field(min_length=1, max_length=64)
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    decision: Literal["approve", "revise", "deny"]
+    feedback: str = Field(default="", max_length=12000)
+
+    @model_validator(mode="after")
+    def feedback_matches_decision(self):
+        self.feedback = self.feedback.strip()
+        if self.decision == "revise" and not self.feedback:
+            raise ValueError("Describe the requested changes")
+        if self.decision == "approve" and self.feedback:
+            raise ValueError("Approve the displayed proposal or request changes")
         return self
 
 

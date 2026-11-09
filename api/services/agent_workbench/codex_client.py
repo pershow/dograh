@@ -317,6 +317,20 @@ class CodexClient:
                 self.done.set_result({"status": "completed"})
             return {"success": True, "contentItems": tool_content(result)}
         except Exception as error:  # noqa: BLE001 - sanitize tool failures at the adapter boundary
+            from api.services.agent_workbench.orchestration import ApprovalRequired
+
+            if isinstance(error, ApprovalRequired):
+                if not self.done.done():
+                    self.done.set_exception(error)
+                return {
+                    "success": True,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": "Paused for human approval. Do not continue or assume approval.",
+                        }
+                    ],
+                }
             import traceback
 
             from loguru import logger

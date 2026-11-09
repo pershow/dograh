@@ -235,7 +235,7 @@ class PrivateAssetStore:
 
 
 async def upload_attachment(org, session_id, upload):
-    await db_client.wb_context(org, session_id)
+    await db_client.wb_context(org, session_id, session_only=True)
     name = Path((upload.filename or "attachment").replace("\\", "/")).name[:255]
     if Path(name).suffix.lower() not in ALLOWED:
         raise WorkbenchError("Unsupported attachment format", 415)

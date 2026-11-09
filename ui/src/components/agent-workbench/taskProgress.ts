@@ -161,6 +161,7 @@ export function taskProgress(job: Job, events: WorkbenchEvent[]): string {
 }
 
 export function taskCompletionText(output: Record<string, unknown> = {}): string {
+  if (output.outcome === "approval") return String(output.question || "请确认下方提案后继续。");
   if (output.outcome === "needs_input" && output.task_mode === "build")
     return `需要补充信息：${String(output.question || "请补充创建 Agent 所需的信息。")} 确认后继续创建 Agent。`;
   if (Array.isArray(output.pending_questions) && output.pending_questions.length)

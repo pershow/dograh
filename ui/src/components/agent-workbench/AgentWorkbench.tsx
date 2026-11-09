@@ -22,6 +22,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
+  decideWorkbenchApproval,
+  resumeWorkbenchOrchestration,
   getWorkbenchSuite as getSuite,
   workbenchAdoptApiV1AgentWorkbenchSessionsSessionIdCandidatesCandidateIdAdoptPost as adopt,
   workbenchAgentRunsApiV1AgentWorkbenchSessionsSessionIdAgentRunsGet as getAgentRuns,
@@ -51,6 +53,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
+import { T, useI18n } from "@/lib/i18n/LocaleProvider";
 import { referencedVariables } from "@/lib/workflowVariables";
 
 import { conversationRows } from "./activity";
@@ -65,6 +68,7 @@ import { type RuntimeMetricGroup,RuntimeMetrics } from "./RuntimeMetrics";
 import { RuntimeProfile } from "./RuntimeProfile";
 import { SimulationEvidence } from "./SimulationEvidence";
 import { TaskActivity } from "./TaskActivity";
+import { ApprovalCard, type WorkbenchApproval } from "./ApprovalCard";
 import { type BasisSummary,RequirementCoverage, TaskBasis } from "./TaskBasis";
 import { modelProgressText, taskCompletionText, taskProgress, testTaskSuperseded, workbenchErrorText } from "./taskProgress";
 import { TestPreparation } from "./TestPreparation";
@@ -142,6 +146,7 @@ export function AgentWorkbench({
   onExpandedChange?: (expanded: boolean) => void;
   adoptDisabledReason?: string;
 }) {
+    const { t, locale } = useI18n();
   const {
     user,
     loading: authLoading,
@@ -346,7 +351,8 @@ export function AgentWorkbench({
               await createSession({
                 body: {
                   workflow_id: workflowId,
-                  name: "New Agent",
+                  name: t("New Agent"),
+                  locale,
                   model_protocol: "chat",
                 },
               }),
@@ -370,16 +376,7 @@ export function AgentWorkbench({
     return () => {
       disposed = true;
     };
-  }, [
-    authLoading,
-    user,
-    workflowId,
-    sessionId,
-    redirectToLogin,
-    router,
-    onPreviewChange,
-    onSessionReady,
-  ]);
+  }, [authLoading, user, workflowId, sessionId, redirectToLogin, router, onPreviewChange, onSessionReady, t, locale]);
   useEffect(() => {
     if (authLoading || !user || !session) return;
     void reload();
@@ -578,7 +575,7 @@ export function AgentWorkbench({
   const addFiles = async (files: File[]) => {
     if (!session || locked) return;
     if (files.length + selectedAssets.length > 5) {
-      setError("每条指令最多引用 5 个附件。");
+      setError(t("每条指令最多引用 5 个附件。"));
       return;
     }
     await action(async () => {
@@ -667,15 +664,13 @@ export function AgentWorkbench({
         ) : (
           <>
             <Loader2 className="animate-spin" />
-            <p>正在准备工作台…</p>
+            <p><T text={"正在准备工作台…"} /></p>
           </>
         )}
         {onClose && (
-          <Button variant="ghost" onClick={onClose}>
-            关闭工作台
-          </Button>
+          <Button variant="ghost" onClick={onClose}><T text={"关闭工作台"} /></Button>
         )}
-        <Link href="/workflow">返回 Agents</Link>
+        <Link href="/workflow"><T text={"返回 Agents"} /></Link>
       </div>
     );
   return (
@@ -683,21 +678,21 @@ export function AgentWorkbench({
       <header className={styles.header}>
         <div className={styles.headerTitle}>
           <Sparkles size={18} />
-          <strong>Agent 工作台</strong>
+          <strong><T text={"Agent 工作台"} /></strong>
         </div>
         <div className={styles.headerActions}>
           <Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" className={styles.headerIconButton} aria-label="工作台会话" title="工作台会话">
+              <Button variant="ghost" size="icon" className={styles.headerIconButton} aria-label={t("工作台会话")} title={t("工作台会话")}>
                 <MessageSquare size={16} />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className={styles.popover} aria-label="工作台会话">
-              <h3>此 Agent 的会话</h3>
-              <p className={styles.subtle}>共用 Agent 草稿和长期记忆，聊天分别保留，历史用户原文与资料可跨会话查回。切换前请发送或清空输入。</p>
-              {sessionsLoading && <p>正在加载会话…</p>}
+            <PopoverContent align="end" className={styles.popover} aria-label={t("工作台会话")}>
+              <h3><T text={"此 Agent 的会话"} /></h3>
+              <p className={styles.subtle}><T text={"共用 Agent 草稿和长期记忆，聊天分别保留，历史用户原文与资料可跨会话查回。切换前请发送或清空输入。"} /></p>
+              {sessionsLoading && <p><T text={"正在加载会话…"} /></p>}
               {sessionsError && <p role="alert">{sessionsError}</p>}
-              {!!sessions.length && <p className={styles.subtle}>运行中 {sessions.filter(item => item.active_job_status === "running").length} · 排队中 {sessions.filter(item => item.active_job_status === "queued").length}</p>}
+              {!!sessions.length && <p className={styles.subtle}><T text={"运行中"} /> {sessions.filter(item => item.active_job_status === "running").length} <T text={"· 排队中"} /> {sessions.filter(item => item.active_job_status === "queued").length}</p>}
               <div className={styles.sessionList}>
                 {sessions.map(item => <Button key={item.id} variant={item.id === session ? "secondary" : "ghost"}
                   className={styles.sessionRow}
@@ -710,12 +705,12 @@ export function AgentWorkbench({
                     }
                   }}>
                   <span className={styles.sessionLabel}>
-                    <span>{item.id === session ? "当前 · " : ""}{new Date(item.created_at).toLocaleString("zh-CN")}</span>
+                    <span>{item.id === session ? t("当前 · ") : ""}{new Date(item.created_at).toLocaleString(locale)}</span>
                     <span className={styles.sessionMeta}>{item.id.slice(0, 6)}</span>
                   </span>
                   <span className={styles.sessionStatus} data-status={item.active_job_status || "idle"}>
                     {item.active_job_status === "running" && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
-                    {item.active_job_status === "running" ? "运行中" : item.active_job_status === "queued" ? "排队中" : "未运行"}
+                    {item.active_job_status === "running" ? t("运行中") : item.active_job_status === "queued" ? t("排队中") : t("未运行")}
                   </span>
                 </Button>)}
               </div>
@@ -725,15 +720,15 @@ export function AgentWorkbench({
                 }}));
                 onPreviewChange?.(undefined);
                 router.replace(`/workflow/${state.session.workflow_id}?workbench=1&session=${next.id}`);
-              })}>新建会话</Button>
+              })}><T text={"新建会话"} /></Button>
             </PopoverContent>
           </Popover>
           <AgentMemory key={session} session={session} revision={state.memory_revision} onChanged={() => void reload()} />
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm">能力配置</Button>
+              <Button variant="ghost" size="sm"><T text={"能力配置"} /></Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className={styles.capabilityPopover} aria-label="能力配置">
+            <PopoverContent align="end" className={styles.capabilityPopover} aria-label={t("能力配置")}>
               <CapabilityEditor
                 key={`${session}:${candidateId}:${state.target_fingerprint}`}
                 session={session}
@@ -751,8 +746,8 @@ export function AgentWorkbench({
                 variant="ghost"
                 size="icon"
                 className={styles.headerIconButton}
-                aria-label="工作台设置"
-                title="工作台设置"
+                aria-label={t("工作台设置")}
+                title={t("工作台设置")}
               >
                 <Settings2 size={16} />
                 {dependencies && !dependencies.ready && (
@@ -763,12 +758,12 @@ export function AgentWorkbench({
             <PopoverContent
               align="end"
               className={styles.popover}
-              aria-label="工作台设置"
+              aria-label={t("工作台设置")}
             >
-              <h3>工作台设置</h3>
+              <h3><T text={"工作台设置"} /></h3>
               <BuildModelSettings disabled={locked} onSaved={() => setBuildModelRevision(revision => revision + 1)} />
               <div className={styles.protocol}>
-                <label htmlFor="model-protocol">构建模型协议</label>
+                <label htmlFor="model-protocol"><T text={"构建模型协议"} /></label>
                 <select
                   id="model-protocol"
                   value={state.session.model_protocol}
@@ -795,7 +790,7 @@ export function AgentWorkbench({
               {dependencies && (
                 <details className={styles.protocol}>
                   <summary>
-                    {dependencies.ready ? "模型连接已检查" : "模型配置需要处理"}
+                    {dependencies.ready ? t("模型连接已检查") : t("模型配置需要处理")}
                   </summary>
                   {dependencies.services.map((service) => (
                     <p key={service.role}>
@@ -814,7 +809,7 @@ export function AgentWorkbench({
                       ))}
                     </p>
                   ))}
-                  <Link href="/model-configurations">管理模型连接</Link>
+                  <Link href="/model-configurations"><T text={"管理模型连接"} /></Link>
                   {dependencies.runtime_profiles?.map(profile => <RuntimeProfile key={profile.channel} profile={profile}/>)}
                 </details>
               )}
@@ -836,8 +831,8 @@ export function AgentWorkbench({
             variant="ghost"
             size="icon"
             className={styles.headerIconButton}
-            aria-label="关闭工作台"
-            title="关闭工作台"
+            aria-label={t("关闭工作台")}
+            title={t("关闭工作台")}
             onClick={onClose}
           >
             <X size={18} />
@@ -845,7 +840,7 @@ export function AgentWorkbench({
         </div>
       </header>
       <div className={styles.toolbar}>
-        <nav aria-label="工作台功能">
+        <nav aria-label={t("工作台功能")}>
           {[
             ["canvas", "构建"],
             ["tests", "文本仿真"],
@@ -862,14 +857,12 @@ export function AgentWorkbench({
         </nav>
       </div>
       <div className={styles.versionbar}>
-        <label>
-          画布版本
-          <select
+        <label><T text={"画布版本"} /><select
             value={candidateId}
-            aria-label="候选版本"
+            aria-label={t("候选版本")}
             onChange={(e) => { setCandidateId(e.target.value); setEvaluationId(""); setCaseName(""); }}
           >
-            <option value="">当前草稿</option>
+            <option value=""><T text={"当前草稿"} /></option>
             {state.candidates.map((c, i) => (
               <option key={c.id} value={c.id}>
                 {state.candidates.length - i} · {c.name}
@@ -883,8 +876,8 @@ export function AgentWorkbench({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="候选版本说明"
-                title="候选版本说明 · 只读预览"
+                aria-label={t("候选版本说明")}
+                title={t("候选版本说明 · 只读预览")}
               >
                 <Info size={16} />
               </Button>
@@ -892,16 +885,14 @@ export function AgentWorkbench({
             <PopoverContent
               align="end"
               className={`${styles.popover} ${styles.candidateSummary}`}
-              aria-label="候选版本说明"
+              aria-label={t("候选版本说明")}
             >
-              <h3>候选版本说明 · 只读预览</h3>
+              <h3><T text={"候选版本说明 · 只读预览"} /></h3>
               <p>{candidate.summary}</p>
               {candidate.snapshot && (
                 <details>
-                  <summary>Variables · 应用时随候选写入草稿</summary>
-                  <p>
-                    默认值用于仿真和编辑器测试；空值需要补充，或在每次通话中传入。
-                  </p>
+                  <summary><T text={"Variables · 应用时随候选写入草稿"} /></summary>
+                  <p><T text={"默认值用于仿真和编辑器测试；空值需要补充，或在每次通话中传入。"} /></p>
                   <dl>
                     {Object.entries({
                       ...Object.fromEntries(
@@ -916,7 +907,7 @@ export function AgentWorkbench({
                         <dt className="font-mono">{name}</dt>
                         <dd className="whitespace-pre-wrap break-words">
                           {String(value ?? "").trim() ||
-                            "待填写 / 每次通话传入"}
+                            t("待填写 / 每次通话传入")}
                         </dd>
                       </div>
                     ))}
@@ -924,7 +915,7 @@ export function AgentWorkbench({
                 </details>
               )}
               <details>
-                <summary>查看代码</summary>
+                <summary><T text={"查看代码"} /></summary>
                 <pre>{candidate.code}</pre>
               </details>
             </PopoverContent>
@@ -956,9 +947,7 @@ export function AgentWorkbench({
             })
           }
         >
-          <Check size={14} />
-          应用到草稿
-        </Button>
+          <Check size={14} /><T text={"应用到草稿"} /></Button>
       </div>
       {adoptDisabledReason && (
         <p className={styles.testHelp}>{adoptDisabledReason}</p>
@@ -970,7 +959,7 @@ export function AgentWorkbench({
           {!!state.evaluations.length && <button onClick={() => {
             setTab("tests");
             if (resultsPane.current) resultsPane.current.scrollTop = 0;
-          }}>查看已保存结果</button>}
+          }}><T text={"查看已保存结果"} /></button>}
           <button
             onClick={() =>
               action(async () => {
@@ -981,9 +970,7 @@ export function AgentWorkbench({
                 );
               })
             }
-          >
-            取消任务
-          </button>
+          ><T text={"取消任务"} /></button>
         </div>
       )}
       {!!active?.output.compilation && <TestPreparation receipt={active.output.compilation as PreparationReceipt} />}
@@ -998,43 +985,38 @@ export function AgentWorkbench({
             <div className={styles.runActions}>
               <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={() => void action(async () => {
                 result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: "dynamic", prepare_only: true, ...(tuningTask ? {rerun_test_job_id: tuningTask.id} : {test_suite_ids: [suiteId], candidate_id: candidateId}), text: "将所选完整测试集转换为可执行客户场景与冻结的业务断言，保留全部原始用例和测试意图，列出真实缺失信息。本次只准备测试，不运行或修改 Agent。", idempotency_key: crypto.randomUUID()}}));
-              })}>准备完整场景测试</Button>
+              })}><T text={"准备完整场景测试"} /></Button>
               <Button
                 size="sm"
                 variant="outline"
                 disabled={locked || !candidateId || !suiteId}
                 onClick={runTests}
               >
-                <FlaskConical size={14} />
-                运行文本仿真
-              </Button>
+                <FlaskConical size={14} /><T text={"运行文本仿真"} /></Button>
               <Button
                 size="sm"
                 variant="outline"
                 disabled={locked || !candidateId || !suiteId}
                 onClick={runTune}
               >
-                <Sparkles size={14} />
-                开始调优
-              </Button>
-              <span className={styles.subtle}>调优范围：{tuningSuiteIds ? `完整测试任务 · ${tuningSuiteIds.length} 批 / ${tuningCaseCount} 条` : `所选测试集 · ${selectedSuite?.payload.cases.length || 0} 条`}。仅生成候选，应用前不会修改 Agent。</span>
-              <select aria-label="重跑测试方式" className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
-                <option value="dynamic">动态客户仿真</option>
-                <option value="single_step">真实上下文单步</option>
-                <option value="scripted">固定脚本与错位检查</option>
+                <Sparkles size={14} /><T text={"开始调优"} /></Button>
+              <span className={styles.subtle}><T text={"调优范围："} />{tuningSuiteIds ? `完整测试任务 · ${tuningSuiteIds.length} 批 / ${tuningCaseCount} 条` : `所选测试集 · ${selectedSuite?.payload.cases.length || 0} 条`}<T text={"。仅生成候选，应用前不会修改 Agent。"} /></span>
+              <select aria-label={t("重跑测试方式")} className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
+                <option value="dynamic"><T text={"动态客户仿真"} /></option>
+                <option value="single_step"><T text={"真实上下文单步"} /></option>
+                <option value="scripted"><T text={"固定脚本与错位检查"} /></option>
               </select>
               <Button size="sm" variant="outline" disabled={locked || !candidateId || !suiteId} onClick={() => void action(async () => {
                 result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: testMode, test_suite_ids: [suiteId], candidate_id: candidateId, text: "使用所选测试方式重新执行此测试集，检查对话有效性，按原始资料评审。保留 Agent 和对话模型。", idempotency_key: crypto.randomUUID()}}));
-              })}>按所选方式重跑</Button>
+              })}><T text={"按所选方式重跑"} /></Button>
               {(!candidateId || !suiteId) && (
-                <p className={styles.subtle}>请先选择候选版本和测试集。</p>
+                <p className={styles.subtle}><T text={"请先选择候选版本和测试集。"} /></p>
               )}
             </div>
             <div className={styles.suitebar}>
-              <label>
-                测试集{" "}
+              <label><T text={"测试集"} />{" "}
                 <select
-                  aria-label="测试集"
+                  aria-label={t("测试集")}
                   value={suiteId}
                   onChange={(e) => {
                     setSuiteId(e.target.value);
@@ -1042,7 +1024,7 @@ export function AgentWorkbench({
                   }}
                 >
                   {!state.suites.length && (
-                    <option value="">等待生成测试集</option>
+                    <option value=""><T text={"等待生成测试集"} /></option>
                   )}
                   {state.suites.map((s, index) => (
                     <option key={s.id} value={s.id}>
@@ -1077,47 +1059,40 @@ export function AgentWorkbench({
                     ),
                   );
                 })}
-              >
-                编辑测试集
-              </Button>
+              ><T text={"编辑测试集"} /></Button>
             </div>
             {tab === "tests" && (
               <div className={styles.tests}>
-                <p className={styles.testHelp}>
-                  真实文本引擎 · 动态客户 / 原始上下文单步 / 固定脚本 · 独立对话有效性检查
-                </p>
-                {testTaskSummary && <section className={styles.candidateResult} aria-label="本次测试汇总">
-                  <strong>{testTask?.output.resumed_from_job_id ? "恢复任务：已汇总" : "本次任务：已汇总实际运行"} {testTaskSummary.executed}/{testTaskSummary.total} 条</strong>
-                  {inFlightTests > 0 && <p>另有 {inFlightTests} 条正在对话或评审，完成后纳入上方汇总。</p>}
-                  <p>通过 {testTaskSummary.passed} · 未通过 {testTaskSummary.failed} · 执行错误 {testTaskSummary.error} · 无法判定 {testTaskSummary.inconclusive}</p>
-                  {testTaskSummary.valid !== undefined && <p>对话有效 {testTaskSummary.valid} · 无效 {testTaskSummary.invalid || 0} · 有效性未确定 {testTaskSummary.validity_inconclusive || 0}。无效测试不计入正常流程通过率。</p>}
-                  {Number(testTaskSummary.reused) > 0 && <p>其中 {testTaskSummary.reused} 条保留原实际对话；补评不重复运行 Agent。</p>}
+                <p className={styles.testHelp}><T text={"真实文本引擎 · 动态客户 / 原始上下文单步 / 固定脚本 · 独立对话有效性检查"} /></p>
+                {testTaskSummary && <section className={styles.candidateResult} aria-label={t("本次测试汇总")}>
+                  <strong>{testTask?.output.resumed_from_job_id ? t("恢复任务：已汇总") : t("本次任务：已汇总实际运行")} {testTaskSummary.executed}/{testTaskSummary.total} <T text={"条"} /></strong>
+                  {inFlightTests > 0 && <p><T text={"另有"} /> {inFlightTests} <T text={"条正在对话或评审，完成后纳入上方汇总。"} /></p>}
+                  <p><T text={"通过"} /> {testTaskSummary.passed} <T text={"· 未通过"} /> {testTaskSummary.failed} <T text={"· 执行错误"} /> {testTaskSummary.error} <T text={"· 无法判定"} /> {testTaskSummary.inconclusive}</p>
+                  {testTaskSummary.valid !== undefined && <p><T text={"对话有效"} /> {testTaskSummary.valid} <T text={"· 无效"} /> {testTaskSummary.invalid || 0} <T text={"· 有效性未确定"} /> {testTaskSummary.validity_inconclusive || 0}<T text={"。无效测试不计入正常流程通过率。"} /></p>}
+                  {Number(testTaskSummary.reused) > 0 && <p><T text={"其中"} /> {testTaskSummary.reused} <T text={"条保留原实际对话；补评不重复运行 Agent。"} /></p>}
                   <ReviewCounts summary={testTaskSummary} />
-                  <p className={styles.subtle}>下方显示当前批次的实际回复与检查依据。参考对话由模型逐项评审，保留原文供核对。</p>
+                  <p className={styles.subtle}><T text={"下方显示当前批次的实际回复与检查依据。参考对话由模型逐项评审，保留原文供核对。"} /></p>
                 </section>}
                 {evaluation ? (
                   <>
-                    {detailLoading && evaluation.summary_only && <p>正在读取该批次的完整对话与评审…</p>}
-                    {detailError && <p role="alert">{detailError} <button onClick={retryDetail}>重新读取结果</button></p>}
+                    {detailLoading && evaluation.summary_only && <p><T text={"正在读取该批次的完整对话与评审…"} /></p>}
+                    {detailError && <p role="alert">{detailError} <button onClick={retryDetail}><T text={"重新读取结果"} /></button></p>}
                     <div className={styles.metrics}>
                       <b>
                         {evaluation.summary.passed || 0}
-                        <small> / {evaluation.summary.valid ?? evaluation.summary.total ?? 0} {evaluation.summary.valid !== undefined ? "有效测试通过" : "通过"}</small>
+                        <small> / {evaluation.summary.valid ?? evaluation.summary.total ?? 0} {evaluation.summary.valid !== undefined ? t("有效测试通过") : t("通过")}</small>
                       </b>
                       <span>
                         {statusText[evaluation.status] || evaluation.status}
                       </span>
-                      <span>
-                        当前批次：失败 {evaluation.summary.failed || 0} · 错误{" "}
-                        {evaluation.summary.error || 0} · 无法判定 {evaluation.summary.inconclusive || 0}
+                      <span><T text={"当前批次：失败"} /> {evaluation.summary.failed || 0} <T text={"· 错误"} />{" "}
+                        {evaluation.summary.error || 0} <T text={"· 无法判定"} /> {evaluation.summary.inconclusive || 0}
                       </span>
                     </div>
-                    <div className={styles.results} ref={resultDetail} tabIndex={-1} role="region" aria-label="测试用例详情">
-                      <p className={styles.testHelp}>当前详情：{selectedSuite?.payload.name} · 测试记录 {evaluation.id.slice(0, 8)}</p>
-                      <label className={styles.caseSelector}>
-                        测试场景
-                        <select
-                          aria-label="测试场景"
+                    <div className={styles.results} ref={resultDetail} tabIndex={-1} role="region" aria-label={t("测试用例详情")}>
+                      <p className={styles.testHelp}><T text={"当前详情："} />{selectedSuite?.payload.name} <T text={"· 测试记录"} /> {evaluation.id.slice(0, 8)}</p>
+                      <label className={styles.caseSelector}><T text={"测试场景"} /><select
+                          aria-label={t("测试场景")}
                           value={currentCase ? evaluation.results.indexOf(currentCase) : ""}
                           onChange={(e) => setCaseName(evaluation.results[Number(e.target.value)]?.name || "")}
                         >
@@ -1132,17 +1107,17 @@ export function AgentWorkbench({
                       <div
                         className={styles.transcript}
                         role="region"
-                        aria-label="仿真对话与断言"
+                        aria-label={t("仿真对话与断言")}
                         tabIndex={0}
                       >
                         {currentCase?.error && (
                           <p role="alert">{workbenchErrorText(currentCase.error)}</p>
                         )}
-                        {currentCase?.run_id && <p className={styles.subtle}>运行记录 #{currentCase.run_id}{currentCase.source?.row ? ` · ${currentCase.source.sheet} 第 ${currentCase.source.row} 行 · ${currentCase.source.column}` : ""}</p>}
-                        {currentCase?.trace_url && /^https?:\/\//i.test(currentCase.trace_url) && <p className={styles.subtle}><a href={currentCase.trace_url} target="_blank" rel="noreferrer">查看 Langfuse 调用链</a></p>}
-                        {currentCase?.run_id && <p className={styles.subtle}>测试运行单独保存在这里，不计入普通通话记录和业务统计。</p>}
+                        {currentCase?.run_id && <p className={styles.subtle}><T text={"运行记录 #"} />{currentCase.run_id}{currentCase.source?.row ? ` · ${currentCase.source.sheet} 第 ${currentCase.source.row} 行 · ${currentCase.source.column}` : ""}</p>}
+                        {currentCase?.trace_url && /^https?:\/\//i.test(currentCase.trace_url) && <p className={styles.subtle}><a href={currentCase.trace_url} target="_blank" rel="noreferrer"><T text={"查看 Langfuse 调用链"} /></a></p>}
+                        {currentCase?.run_id && <p className={styles.subtle}><T text={"测试运行单独保存在这里，不计入普通通话记录和业务统计。"} /></p>}
                         {currentCase && <SimulationEvidence result={currentCase} session={session} />}
-                        {currentCase?.reference_review && <p className={styles.subtle}>参考对话检查：{/no data for|timed out|I\/O timeout/.test(currentCase.reference_review.reason) ? "评审模型响应超时，实际对话已保留，本条暂无法判定。" : /app-server exited|connection is closed/i.test(currentCase.reference_review.reason) ? "评审连接中断，实际对话已保留，本条暂无法判定。" : workbenchErrorText(currentCase.reference_review.reason)}</p>}
+                        {currentCase?.reference_review && <p className={styles.subtle}><T text={"参考对话检查："} />{/no data for|timed out|I\/O timeout/.test(currentCase.reference_review.reason) ? t("评审模型响应超时，实际对话已保留，本条暂无法判定。") : /app-server exited|connection is closed/i.test(currentCase.reference_review.reason) ? t("评审连接中断，实际对话已保留，本条暂无法判定。") : workbenchErrorText(currentCase.reference_review.reason)}</p>}
                         <ReviewCounts summary={evaluation.summary} />
                         <ReviewFindings review={currentCase?.reference_review} />
                         {currentCase?.transcript.map((m, i) => (
@@ -1155,9 +1130,9 @@ export function AgentWorkbench({
                             }
                           >
                             <small>
-                              {m.role === "user" ? "模拟用户" : "Agent"}
+                              {m.role === "user" ? t("模拟用户") : t("Agent")}
                             </small>
-                            <p>{m.text || "（无文本回复）"}</p>
+                            <p>{m.text || t("（无文本回复）")}</p>
                           </div>
                         ))}
                         <div className={styles.assertions}>
@@ -1172,8 +1147,8 @@ export function AgentWorkbench({
                                 ? `已执行用户轮次 · ${a.actual}/${String(a.value)}`
                                 : `${a.criterion_id ? "业务断言" : a.kind === "reference" ? "参考对话" : a.kind}${a.turn != null ? ` · ${a.turn === 0 ? "开场" : `第 ${a.turn} 轮回复`}` : ""} · ${String(a.value ?? "")}`}
                               {a.reason && <span> · {workbenchErrorText(a.reason)}</span>}
-                              {a.reference_quote && <span> · 参考：“{a.reference_quote}”</span>}
-                              {a.actual_quote && <span> · 实际：“{a.actual_quote}”</span>}
+                              {a.reference_quote && <span> <T text={"· 参考：“"} />{a.reference_quote}”</span>}
+                              {a.actual_quote && <span> <T text={"· 实际：“"} />{a.actual_quote}”</span>}
                             </p>
                           ))}
                         </div>
@@ -1183,28 +1158,26 @@ export function AgentWorkbench({
                 ) : (
                   <div className={styles.empty}>
                     <FlaskConical size={32} />
-                    <h2>{state.evaluations.length ? "当前版本与测试集没有匹配结果" : "验证 Agent 的实际表现"}</h2>
-                    <p>{state.evaluations.length ? "已有结果保留在上方列表，点击“查看对话与评审”打开对应测试记录。" : "选择候选版本和测试集，运行后可查看逐轮对话与断言结果。"}</p>
+                    <h2>{state.evaluations.length ? t("当前版本与测试集没有匹配结果") : t("验证 Agent 的实际表现")}</h2>
+                    <p>{state.evaluations.length ? t("已有结果保留在上方列表，点击“查看对话与评审”打开对应测试记录。") : t("选择候选版本和测试集，运行后可查看逐轮对话与断言结果。")}</p>
                   </div>
                 )}
               </div>
             )}
             {tab === "tuning" && (
               <div className={styles.tuning}>
-                <h2>每次调优都有依据</h2>
-                <p className={styles.subtle}>
-                  保留测试集，用相同场景比较修改前后；不会自动发布。
-                </p>
+                <h2><T text={"每次调优都有依据"} /></h2>
+                <p className={styles.subtle}><T text={"保留测试集，用相同场景比较修改前后；不会自动发布。"} /></p>
                 {state.jobs
                   .filter((j) => j.kind === "tune")
                   .map((j, index, jobs) => (
                     <article key={j.id}>
                       <div>
-                        <strong>调优任务 {jobs.length - index}</strong>
+                        <strong><T text={"调优任务"} /> {jobs.length - index}</strong>
                         <span>{statusText[j.status] || j.status}</span>
                       </div>
-                      {!!j.output.tuning_scope && <p>完整范围：{String((j.output.tuning_scope as Record<string, unknown>).suite_count)} 批 / {String((j.output.tuning_scope as Record<string, unknown>).case_count)} 条</p>}
-                      {typeof j.output.provisional_candidate_id === "string" && <p>已保存局部改善的候选，仍有未完成验收项；尚未推荐应用。</p>}
+                      {!!j.output.tuning_scope && <p><T text={"完整范围："} />{String((j.output.tuning_scope as Record<string, unknown>).suite_count)} <T text={"批 /"} /> {String((j.output.tuning_scope as Record<string, unknown>).case_count)} <T text={"条"} /></p>}
+                      {typeof j.output.provisional_candidate_id === "string" && <p><T text={"已保存局部改善的候选，仍有未完成验收项；尚未推荐应用。"} /></p>}
                       <CriterionCoverage receipt={j.output.criterion_coverage as CriterionCoverageReceipt | undefined} />
                       {typeof j.output.provisional_candidate_id === "string" && <Button variant="outline" size="sm" onClick={() => {
                         setCandidateId(String(j.output.provisional_candidate_id));
@@ -1212,15 +1185,15 @@ export function AgentWorkbench({
                         const evaluated = state.evaluations.find(e => ids.includes(e.id));
                         if (evaluated) openTestResult(evaluated, "");
                         else setTab("canvas");
-                      }}>查看待验收候选与结果</Button>}
+                      }}><T text={"查看待验收候选与结果"} /></Button>}
                       <p>
                         {(j.error && workbenchErrorText(j.error)) ||
                           (typeof j.output.verification_issue === "string" && j.output.verification_issue) ||
                           (j.output.improved
-                            ? "已找到通过更多用例且无回退的候选版本。"
+                            ? t("已找到通过更多用例且无回退的候选版本。")
                             : j.status === "completed"
-                              ? "本轮没有找到更好的候选版本，保留原结果。"
-                              : "正在分析失败案例并验证修改。")}
+                              ? t("本轮没有找到更好的候选版本，保留原结果。")
+                              : t("正在分析失败案例并验证修改。"))}
                       </p>
                       {typeof j.output.candidate_id === "string" && (
                         <Button
@@ -1243,7 +1216,7 @@ export function AgentWorkbench({
                             setTab("tests");
                           }}
                         >
-                          {j.output.improved ? "查看推荐版本" : "查看基线结果"}
+                          {j.output.improved ? t("查看推荐版本") : t("查看基线结果")}
                         </Button>
                       )}
                     </article>
@@ -1251,7 +1224,7 @@ export function AgentWorkbench({
                 {!state.jobs.some((j) => j.kind === "tune") && (
                   <div className={styles.empty}>
                     <Sparkles size={30} />
-                    <p>先完成一次文本仿真，再根据失败案例调优。</p>
+                    <p><T text={"先完成一次文本仿真，再根据失败案例调优。"} /></p>
                   </div>
                 )}
               </div>
@@ -1271,7 +1244,7 @@ export function AgentWorkbench({
             className={styles.messages}
             hidden={tab !== "canvas"}
             role="region"
-            aria-label="构建对话"
+            aria-label={t("构建对话")}
             tabIndex={0}
             onScroll={(e) => {
               const el = e.currentTarget;
@@ -1284,33 +1257,27 @@ export function AgentWorkbench({
           >
             {historyBefore !== null && (
               <button className={styles.historyMore} disabled={historyLoading} onClick={() => void loadOlder()}>
-                {historyLoading ? "正在加载更早消息…" : "加载更早消息"}
+                {historyLoading ? t("正在加载更早消息…") : t("加载更早消息")}
               </button>
             )}
             {historyError && <p role="alert">{workbenchErrorText(historyError)}</p>}
             {messages.length > 0 && (
-              <p className={styles.conversationLabel}>
-                构建对话
-              </p>
+              <p className={styles.conversationLabel}><T text={"构建对话"} /></p>
             )}
-            {!messages.length && historyBefore !== null && <p className={styles.subtle}>当前页是任务进度，向前加载可查看之前的对话。</p>}
+            {!messages.length && historyBefore !== null && <p className={styles.subtle}><T text={"当前页是任务进度，向前加载可查看之前的对话。"} /></p>}
             {!messages.length && historyBefore === null && (
               <div className={styles.welcome}>
-                <h2>你想构建什么 Agent？</h2>
-                <p>
-                  告诉我它服务谁、需要完成什么任务。已有资料也可以直接添加。
-                </p>
+                <h2><T text={"你想构建什么 Agent？"} /></h2>
+                <p><T text={"告诉我它服务谁、需要完成什么任务。已有资料也可以直接添加。"} /></p>
                 <button
                   onClick={() =>
                     setText(
-                      "帮我构建一个中文预约助手，先了解需求，再确认方便的时间。",
+                      t("帮我构建一个中文预约助手，先了解需求，再确认方便的时间。"),
                     )
                   }
-                >
-                  构建预约助手 <ArrowUp size={14} />
+                ><T text={"构建预约助手"} /> <ArrowUp size={14} />
                 </button>
-                <button onClick={() => fileInput.current?.click()}>
-                  根据附件中的话术构建 <Paperclip size={14} />
+                <button onClick={() => fileInput.current?.click()}><T text={"根据附件中的话术构建"} /> <Paperclip size={14} />
                 </button>
               </div>
             )}
@@ -1332,6 +1299,7 @@ export function AgentWorkbench({
               const supersededTest = testTaskSuperseded(String(e.payload.job_id), state.jobs, events);
               const resumableOutput = associatedJob?.output;
               const resumableBuild = ["task.failed", "task.cancelled"].includes(e.type)
+                && !resumableOutput?.orchestration
                 && associatedJob?.kind === "build" && resumableOutput?.outcome === "build"
                 && !!resumableOutput?.candidate_id && !!resumableOutput?.suite_id
                 && !state.jobs.some(j => j.input.resume_build_job_id === associatedJob?.id);
@@ -1383,87 +1351,87 @@ export function AgentWorkbench({
                   className={isUser ? styles.userBubble : styles.botBubble}
                 >
                   <small>
-                    {isUser ? "你" : "构建助手"}
-                    {e.type === "voice.transcript" ? " · 语音" : ""}
-                    {e.payload.phase === "commentary" ? " · 进展" : ""}
-                    {e.type === "assistant.message.progress" ? (e.running ? " · 正在输出" : " · 输出未完成") : ""}
+                    {isUser ? "你" : t("构建助手")}
+                    {e.type === "voice.transcript" ? t(" · 语音") : ""}
+                    {e.payload.phase === "commentary" ? t(" · 进展") : ""}
+                    {e.type === "assistant.message.progress" ? (e.running ? t(" · 正在输出") : t(" · 输出未完成")) : ""}
                   </small>
                   {isUser ? <p>{content}</p> : <WorkbenchMarkdown>{content}</WorkbenchMarkdown>}
+                  {e.type === "approval.decided" && <details>
+                    <summary><T text="查看已处理的提案" /></summary>
+                    <ApprovalCard approval={e.payload.approval as WorkbenchApproval} disabled onDecision={async () => {}} />
+                  </details>}
                   <RequirementCoverage report={output?.requirement_review as Parameters<typeof RequirementCoverage>[0]["report"]} />
                   {resumableBuild && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "build", text: "从已保存的候选和断点继续需求审查与调优，不从头构建，不自动应用到 Agent。", resume_build_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
-                  })}>从断点继续调优</Button>}
+                  })}><T text={"从断点继续调优"} /></Button>}
                   {output?.task_basis ? <TaskBasis session={session} jobId={String(e.payload.job_id)} basis={output.task_basis as BasisSummary} /> : null}
                   {output && Array.isArray(output.evaluation_ids) && output.evaluation_ids.length > 0 && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", text: "基于原始业务资料、用户明确要求和已确认约束，重新复核已有实际对话。区分业务问题、配置执行不一致、脚本不匹配、资料冲突和体验建议；不要重新运行对话，不修改 Agent。", review_evaluation_ids: (output.evaluation_ids as string[]), idempotency_key: crypto.randomUUID()}}));
-                  })}>仅重新评审已有对话</Button>}
+                  })}><T text={"仅重新评审已有对话"} /></Button>}
                   {associatedJob?.output.outcome === "review" && ["task.cancelled", "task.failed"].includes(e.type) && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", text: "继续未完成的评审，保留已有结果，不重跑或修改 Agent。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
-                  })}>继续未完成评审</Button>}
+                  })}><T text={"继续未完成评审"} /></Button>}
                   {resumableTest && !supersededTest && <Button disabled={locked} variant="outline" size="sm" onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", text: preparingTest ? "继续准备未完成的测试集，保留已确认信息和准备断点，不执行 Agent 对话。" : "继续原测试，只重试未完成或异常的用例，保留已完成结果。", continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
-                  })}>{preparingTest ? "继续准备测试集" : "继续未完成或异常测试"}</Button>}
+                  })}>{preparingTest ? t("继续准备测试集") : t("继续未完成或异常测试")}</Button>}
                   {output?.outcome === "needs_input" && output.task_mode === "test" && !supersededTest && (
-                    <section className={styles.candidateResult} aria-label="补充测试信息">
-                      <input aria-label="补充回答" value={testClarification} onChange={event => setTestClarification(event.target.value)} placeholder="填写补充信息，继续本次测试" />
+                    <section className={styles.candidateResult} aria-label={t("补充测试信息")}>
+                      <input aria-label={t("补充回答")} value={testClarification} onChange={event => setTestClarification(event.target.value)} placeholder={t("填写补充信息，继续本次测试")} />
                       <Button disabled={locked || !testClarification.trim()} onClick={() => void action(async () => {
                         result(await instruct({path: {session_id: session}, body: {mode: "test", text: testClarification, continue_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
                         setTestClarification("");
-                      })}>补充并继续</Button>
+                      })}><T text={"补充并继续"} /></Button>
                     </section>
                   )}
                   {["test", "review"].includes(String(output?.outcome)) && output && (
-                    <section className={styles.candidateResult} aria-label="只运行测试结果">
-                      <strong>{output.outcome === "review" ? "已有对话复核" : "测试结果"} · {testCounts}</strong>
+                    <section className={styles.candidateResult} aria-label={t("只运行测试结果")}>
+                      <strong>{output.outcome === "review" ? t("已有对话复核") : t("测试结果")} · {testCounts}</strong>
                       <ReviewCounts summary={testSummary} />
                       {output.outcome === "test" && <Button variant="outline" size="sm" disabled={locked} onClick={() => void action(async () => {
                         result(await instruct({path: {session_id: session}, body: {mode: "test", text: "重新执行全部用例，沿用原测试版本和对话模型，评审使用当前工作台模型，不复用运行结果，不修改 Agent。", rerun_test_job_id: String(e.payload.job_id), idempotency_key: crypto.randomUUID()}}));
-                      })}>全部重新运行</Button>}
-                      <p>使用固定版本，未修改 Agent。可按批次查看实际对话和检查依据。</p>
-                      {Number(testSummary?.reused) > 0 && <p>其中 {Number(testSummary?.reused)} 条复用此前已完成的真实运行结果，其余为本次执行。</p>}
-                      {Array.isArray(output.source_manifest) && output.source_manifest.map((source: {suite_id?: string; asset_id?: string; sheet?: string; name?: string; dialogue_column?: string; rows: number}, index: number) => <p className={styles.subtle} key={source.suite_id || `${source.asset_id}:${source.sheet}:${index}`}>来源：{[source.name || (source.suite_id ? "保存的测试集" : "附件"), source.sheet, source.dialogue_column].filter(Boolean).join(" · ")} · {source.rows} 条</p>)}
+                      })}><T text={"全部重新运行"} /></Button>}
+                      <p><T text={"使用固定版本，未修改 Agent。可按批次查看实际对话和检查依据。"} /></p>
+                      {Number(testSummary?.reused) > 0 && <p><T text={"其中"} /> {Number(testSummary?.reused)} <T text={"条复用此前已完成的真实运行结果，其余为本次执行。"} /></p>}
+                      {Array.isArray(output.source_manifest) && output.source_manifest.map((source: {suite_id?: string; asset_id?: string; sheet?: string; name?: string; dialogue_column?: string; rows: number}, index: number) => <p className={styles.subtle} key={source.suite_id || `${source.asset_id}:${source.sheet}:${index}`}><T text={"来源："} />{[source.name || (source.suite_id ? "保存的测试集" : "附件"), source.sheet, source.dialogue_column].filter(Boolean).join(" · ")} · {source.rows} <T text={"条"} /></p>)}
                       <div className={styles.candidateResultActions}>
                         {(Array.isArray(output.suite_ids) ? output.suite_ids : []).map((id, index) => (
                           <Button key={String(id)} variant="outline" size="sm" onClick={() => {
                             setCandidateId(String(resultCandidateId)); setSuiteId(String(id)); setCaseName(""); setEvaluationId(""); setTab("tests");
-                          }}>第 {index + 1} 批结果</Button>
+                          }}><T text={"第"} /> {index + 1} <T text={"批结果"} /></Button>
                         ))}
                       </div>
-                      {Array.isArray(output.import_issues) && output.import_issues.length > 0 && <p>有 {output.import_issues.length} 条样本未能执行：{output.import_issues.map((issue: { name?: string; error?: string }) => `${issue.name}：${issue.error}`).join("；")}</p>}
+                      {Array.isArray(output.import_issues) && output.import_issues.length > 0 && <p><T text={"有"} /> {output.import_issues.length} <T text={"条样本未能执行："} />{output.import_issues.map((issue: { name?: string; error?: string }) => `${issue.name}：${issue.error}`).join("；")}</p>}
                     </section>
                   )}
                   {!!preparation && <TestPreparation receipt={preparation as PreparationReceipt} />}
                   {!!output?.criterion_coverage && <CriterionCoverage receipt={output.criterion_coverage as CriterionCoverageReceipt} />}
                   {output?.outcome === "test_preparation" && Array.isArray(output.suite_ids) && <Button variant="outline" size="sm" disabled={locked} onClick={() => void action(async () => {
                     result(await instruct({path: {session_id: session}, body: {mode: "test", test_mode: "dynamic", prepared_test_job_id: String(e.payload.job_id), text: "执行已准备的完整测试集，保留冻结场景、断言及所有待处理样本，按实际证据逐项评审；不修改 Agent。", idempotency_key: crypto.randomUUID()}}));
-                  })}>运行已准备的完整测试集</Button>}
+                  })}><T text={"运行已准备的完整测试集"} /></Button>}
                   {resultCandidate && !["test", "review", "test_preparation", "needs_input"].includes(String(output?.outcome)) && (
                     <section
                       className={styles.candidateResult}
                       aria-label={`候选版本 ${resultVersion} · ${resultCandidate.name}`}
                     >
-                      <strong>候选版本 {resultVersion} · {resultCandidate.name}</strong>
+                      <strong><T text={"候选版本"} /> {resultVersion} · {resultCandidate.name}</strong>
                       <p>{resultCandidate.summary}</p>
                       <span className={styles.subtle}>
-                        {testCounts ? `自动测试：${testCounts}` : "尚未验证"}
-                        {verification?.status === "inconclusive" ? " · 调优未完成" : ""}
+                        {testCounts ? `自动测试：${testCounts}` : t("尚未验证")}
+                        {verification?.status === "inconclusive" ? t(" · 调优未完成") : ""}
                       </span>
                       <div className={styles.candidateResultActions}>
                         <Button variant="outline" size="sm" onClick={() => {
                           setCandidateId(resultCandidate.id);
                           setTab("canvas");
-                        }}>
-                          查看候选
-                        </Button>
+                        }}><T text={"查看候选"} /></Button>
                         {resultEvaluation && resultSuiteId && (
                           <Button variant="ghost" size="sm" onClick={() => {
                             setCandidateId(resultCandidate.id);
                             setSuiteId(resultSuiteId);
                             setCaseName(""); setEvaluationId("");
                             setTab("tests");
-                          }}>
-                            查看测试结果
-                          </Button>
+                          }}><T text={"查看测试结果"} /></Button>
                         )}
                       </div>
                     </section>
@@ -1478,6 +1446,20 @@ export function AgentWorkbench({
                 </div>
               );
             })}
+            {state.jobs.filter(job => job.status === "awaiting_input" && (job.output.pending_approval as WorkbenchApproval | undefined)?.status === "pending").map(job => {
+              const approval = job.output.pending_approval as WorkbenchApproval;
+              return <ApprovalCard key={approval.id} approval={approval} disabled={locked} onDecision={decision => action(async () => {
+                result(await decideWorkbenchApproval({path: {session_id: session, job_id: job.id}, body: decision}));
+              })} />;
+            })}
+            {state.jobs.filter(job => ["failed", "cancelled"].includes(job.status) && job.output.orchestration).map(job =>
+              <section key={`resume-${job.id}`} className="space-y-2 rounded-lg border p-3">
+              <p className="line-clamp-2 text-sm">{String(job.input.text || job.input.instruction || "")}</p>
+              <Button disabled={locked} variant="outline" onClick={() => void action(async () => {
+                result(await resumeWorkbenchOrchestration({path: {session_id: session, job_id: job.id}}));
+              })}><T text="从已保存的步骤继续" /></Button>
+              </section>
+            )}
             <div ref={bottom} />
           </div>
           <div className={styles.composer}>
@@ -1493,9 +1475,7 @@ export function AgentWorkbench({
                   });
                 }}
               >
-                <ChevronDown size={14} />
-                回到最新消息
-              </button>
+                <ChevronDown size={14} /><T text={"回到最新消息"} /></button>
             )}
             {(error || syncError) && (
               <div role="alert" className={styles.error}>
@@ -1505,7 +1485,7 @@ export function AgentWorkbench({
                     setError("");
                     setSyncError("");
                   }}
-                  aria-label="关闭错误"
+                  aria-label={t("关闭错误")}
                 >
                   <X size={14} />
                 </button>
@@ -1524,27 +1504,25 @@ export function AgentWorkbench({
             <div className={styles.composerContext}>
               <Popover open={runsOpen} onOpenChange={(open) => void openRuns(open)}>
                 <PopoverTrigger asChild>
-                  <button className={styles.attachmentButton} aria-label="Agent Runs 运行记录">
-                    <FileText size={14} /> Agent Runs <ChevronUp size={12} />
+                  <button className={styles.attachmentButton} aria-label={t("Agent Runs 运行记录")}>
+                    <FileText size={14} /> <T text={"Agent Runs"} /> <ChevronUp size={12} />
                   </button>
                 </PopoverTrigger>
                 <PopoverContent side="top" align="start" className={styles.popover}>
-                  <h3>Agent Runs · 最近运行</h3>
+                  <h3><T text={"Agent Runs · 最近运行"} /></h3>
                   <RuntimeMetrics groups={runtimeMetrics}/>
-                  <p className={styles.subtle}>读取这个 Agent 的实际对话、变量和日志，分析后可继续提出修改要求。</p>
+                  <p className={styles.subtle}><T text={"读取这个 Agent 的实际对话、变量和日志，分析后可继续提出修改要求。"} /></p>
                   <Button size="sm" disabled={locked || runsLoading || !agentRuns.length}
-                    onClick={() => void sendInstruction("请分析 Agent Runs 中最新一次运行，按需查看相关证据，指出问题、依据和调优建议。先只分析，不修改 Agent。", "analyze")}>
-                    分析最新运行
-                  </Button>
-                  {runsLoading ? <p>正在读取…</p> : !agentRuns.length ? <p>这个 Agent 还没有运行记录。</p> :
+                    onClick={() => void sendInstruction(t("请分析 Agent Runs 中最新一次运行，按需查看相关证据，指出问题、依据和调优建议。先只分析，不修改 Agent。"), "analyze")}><T text={"分析最新运行"} /></Button>
+                  {runsLoading ? <p><T text={"正在读取…"} /></p> : !agentRuns.length ? <p><T text={"这个 Agent 还没有运行记录。"} /></p> :
                     agentRuns.map((run) => (
                       <div className={styles.runRow} key={run.id}>
                         <Link href={`/workflow/${state.session.workflow_id}/run/${run.id}`} target="_blank">
-                          <strong>#{run.id}</strong> · {new Date(run.created_at).toLocaleString()}
-                          <small>{run.state} · {run.has_transcript ? "有对话记录" : "暂无已保存对话"}</small>
+                          <strong>#{run.id}</strong> · {new Date(run.created_at).toLocaleString(locale)}
+                          <small>{run.state} · {run.has_transcript ? t("有对话记录") : t("暂无已保存对话")}</small>
                         </Link>
                         <Button size="sm" variant="outline" disabled={locked}
-                          onClick={() => void sendInstruction(`请分析 Agent Runs 运行 #${run.id}，按需查看相关证据，给出问题依据和调优建议。先只分析，不修改 Agent。`, "analyze")}>分析</Button>
+                          onClick={() => void sendInstruction(t("请分析 Agent Runs 运行 #{id}，按需查看相关证据，给出问题依据和调优建议。先只分析，不修改 Agent。", { id: run.id }), "analyze")}><T text={"分析"} /></Button>
                       </div>
                     ))}
                 </PopoverContent>
@@ -1555,8 +1533,7 @@ export function AgentWorkbench({
                     className={styles.attachmentButton}
                     aria-label={`资料附件，已选择 ${selectedAssets.length} 个`}
                   >
-                    <Paperclip size={14} />
-                    资料 <b>{state.assets.length}</b>
+                    <Paperclip size={14} /><T text={"资料"} /> <b>{state.assets.length}</b>
                     <ChevronUp size={12} />
                   </button>
                 </PopoverTrigger>
@@ -1564,16 +1541,12 @@ export function AgentWorkbench({
                   side="top"
                   align="start"
                   className={`${styles.popover} ${styles.assets}`}
-                  aria-label="资料附件"
+                  aria-label={t("资料附件")}
                 >
-                  <h3>会话资料 · 本次重点 {selectedAssets.length}/5</h3>
-                  <p className={styles.subtle}>
-                    上传后保留在本会话，文字和语音都可按需读取。勾选仅标记本次重点，不会每轮附上全文。单个文件最大 20 MiB。
-                  </p>
+                  <h3><T text={"会话资料 · 本次重点"} /> {selectedAssets.length}/5</h3>
+                  <p className={styles.subtle}><T text={"上传后保留在本会话，文字和语音都可按需读取。勾选仅标记本次重点，不会每轮附上全文。单个文件最大 20 MiB。"} /></p>
                   {!state.assets.length && (
-                    <p className={styles.subtle}>
-                      还没有附件，上传话术或业务资料即可开始。
-                    </p>
+                    <p className={styles.subtle}><T text={"还没有附件，上传话术或业务资料即可开始。"} /></p>
                   )}
                   {state.assets.map((a) => (
                     <div key={a.id}>
@@ -1587,7 +1560,7 @@ export function AgentWorkbench({
                               e.target.checked &&
                               selectedAssets.length >= 5
                             ) {
-                              setError("最多引用 5 个附件");
+                              setError(t("最多引用 5 个附件"));
                               return;
                             }
                             setSelectedAssets((old) =>
@@ -1613,12 +1586,10 @@ export function AgentWorkbench({
                               );
                             })
                           }
-                        >
-                          解析失败 · 重试
-                        </button>
+                        ><T text={"解析失败 · 重试"} /></button>
                       ) : (
                         <small>
-                          {a.status === "ready" ? "可引用" : "解析中"}
+                          {a.status === "ready" ? t("可引用") : t("解析中")}
                         </small>
                       )}
                     </div>
@@ -1629,9 +1600,7 @@ export function AgentWorkbench({
                     disabled={locked}
                     onClick={() => fileInput.current?.click()}
                   >
-                    <Paperclip size={14} />
-                    上传文件
-                  </Button>
+                    <Paperclip size={14} /><T text={"上传文件"} /></Button>
                 </PopoverContent>
               </Popover>
               <span
@@ -1644,14 +1613,14 @@ export function AgentWorkbench({
                   ? selectedAssets
                       .map((id) => state.assets.find((a) => a.id === id)?.name)
                       .join(" · ")
-                  : "会话记录 · 自动整理上下文"}
+                  : t("会话记录 · 自动整理上下文")}
               </span>
               {tab !== "canvas" &&
                 composerExpanded &&
                 !text &&
                 voice.status === "off" && (
                   <button
-                    aria-label="收起输入框"
+                    aria-label={t("收起输入框")}
                     onClick={() => setComposerOpen(false)}
                   >
                     <ChevronDown size={15} />
@@ -1666,17 +1635,15 @@ export function AgentWorkbench({
                   requestAnimationFrame(() => composerInput.current?.focus());
                 }}
               >
-                <MessageSquare size={15} />
-                向助手提出修改，或补充调优要求…
-              </button>
+                <MessageSquare size={15} /><T text={"向助手提出修改，或补充调优要求…"} /></button>
             )}
             <div className={styles.inputBox} data-collapsed={!composerExpanded}>
               <Textarea
                 ref={composerInput}
-                aria-label="构建需求"
+                aria-label={t("构建需求")}
                 hidden={!composerExpanded}
                 rows={2}
-                placeholder="描述需求、修改意见，或拖入文件…"
+                placeholder={t("描述需求、修改意见，或拖入文件…")}
                 value={text}
                 disabled={busy}
                 onChange={(e) => setText(e.target.value)}
@@ -1700,24 +1667,24 @@ export function AgentWorkbench({
                   }}
                 />
                 <button
-                  aria-label="添加附件"
+                  aria-label={t("添加附件")}
                   disabled={locked}
                   onClick={() => fileInput.current?.click()}
                 >
                   <Paperclip size={18} />
                 </button>
-                <select aria-label="助手任务模式" className={styles.intentSelect}
+                <select aria-label={t("助手任务模式")} className={styles.intentSelect}
                   value={instructionMode} disabled={locked}
                   onChange={(e) => setInstructionMode(e.target.value as typeof instructionMode)}>
-                  <option value="auto">自动判断</option>
-                  <option value="analyze">仅分析</option>
-                  <option value="test">只运行测试</option>
-                  <option value="build">构建修改</option>
+                  <option value="auto"><T text={"自动判断"} /></option>
+                  <option value="analyze"><T text={"仅分析"} /></option>
+                  <option value="test"><T text={"只运行测试"} /></option>
+                  <option value="build"><T text={"构建修改"} /></option>
                 </select>
-                {instructionMode === "test" && <select aria-label="测试方式" className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
-                  <option value="dynamic">动态客户仿真</option>
-                  <option value="single_step">真实上下文单步</option>
-                  <option value="scripted">固定脚本与错位检查</option>
+                {instructionMode === "test" && <select aria-label={t("测试方式")} className={styles.intentSelect} value={testMode} disabled={locked} onChange={e => setTestMode(e.target.value as typeof testMode)}>
+                  <option value="dynamic"><T text={"动态客户仿真"} /></option>
+                  <option value="single_step"><T text={"真实上下文单步"} /></option>
+                  <option value="scripted"><T text={"固定脚本与错位检查"} /></option>
                 </select>}
                 <button
                   className={voice.status !== "off" ? styles.voiceActive : ""}
@@ -1727,15 +1694,15 @@ export function AgentWorkbench({
                 >
                   <Mic size={16} />
                   {voice.status === "off"
-                    ? "实时语音"
+                    ? t("实时语音")
                     : voice.status === "connecting"
-                      ? "连接中…"
-                      : "结束语音"}
+                      ? t("连接中…")
+                      : t("结束语音")}
                 </button>
                 <Button
                   size="sm"
                   disabled={locked || !text.trim()}
-                  aria-label="发送构建需求"
+                  aria-label={t("发送构建需求")}
                   onClick={() => void sendInstruction(text.trim())}
                 >
                   {busy ? (
@@ -1750,7 +1717,7 @@ export function AgentWorkbench({
               <small role="status" className={styles.composerHint}>
                 {voice.contextSynced
                   ? `正在使用麦克风 · 会话资料可按需读取`
-                  : "正在同步附件和版本选择，请稍候…"}
+                  : t("正在同步附件和版本选择，请稍候…")}
               </small>
             )}
           </div>
@@ -1761,21 +1728,19 @@ export function AgentWorkbench({
           <section
             role="dialog"
             aria-modal="true"
-            aria-label="编辑测试集"
+            aria-label={t("编辑测试集")}
             className={styles.modal}
           >
-            <h2>编辑测试集</h2>
-            <p>保存为新版本；历史评测使用的测试集保持不变。</p>
-            <p>语音回放：上传单声道 PCM WAV，在用例的 audio 中配置 channel、clips（asset_id、offset_ms）和 duration_ms。browser 使用 16 kHz，phone 使用 8 kHz；user_messages 填对应音频的预期识别文本。结果测量服务端音频管线。</p>
+            <h2><T text={"编辑测试集"} /></h2>
+            <p><T text={"保存为新版本；历史评测使用的测试集保持不变。"} /></p>
+            <p><T text={"语音回放：上传单声道 PCM WAV，在用例的 audio 中配置 channel、clips（asset_id、offset_ms）和 duration_ms。browser 使用 16 kHz，phone 使用 8 kHz；user_messages 填对应音频的预期识别文本。结果测量服务端音频管线。"} /></p>
             <Textarea
-              aria-label="测试集 JSON"
+              aria-label={t("测试集 JSON")}
               value={suiteEditor}
               onChange={(e) => setSuiteEditor(e.target.value)}
             />
             <div>
-              <Button variant="outline" onClick={() => setSuiteEditor(null)}>
-                取消
-              </Button>
+              <Button variant="outline" onClick={() => setSuiteEditor(null)}><T text={"取消"} /></Button>
               <Button
                 disabled={busy}
                 onClick={() =>
@@ -1790,9 +1755,7 @@ export function AgentWorkbench({
                     setSuiteEditor(null);
                   })
                 }
-              >
-                保存新版本
-              </Button>
+              ><T text={"保存新版本"} /></Button>
             </div>
           </section>
         </div>

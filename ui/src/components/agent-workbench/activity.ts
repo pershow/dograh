@@ -23,6 +23,7 @@ const visibleMessages = new Set([
   "task.queued", "assistant.message", "assistant.message.progress", "voice.transcript",
   "task.completed", "task.failed", "task.cancelled", "candidate.adopted", "evidence.read",
   "task.needs_attention", "task.awaiting_input", "basis.frozen",
+  "approval.decided",
 ]);
 const terminal = new Set(["task.completed", "task.failed", "task.cancelled", "task.needs_attention", "task.awaiting_input"]);
 
@@ -30,8 +31,12 @@ const terminal = new Set(["task.completed", "task.failed", "task.cancelled", "ta
 export function conversationRows(events: WorkbenchEvent[], jobs: Job[]): ConversationRow[] {
   const rows: ConversationRow[] = [];
   const statuses = new Map(jobs.map(job => [job.id, job.status]));
-  for (const e of events) if (terminal.has(e.type) && e.payload.job_id)
-    statuses.set(String(e.payload.job_id), e.type.slice(5));
+  for (const e of events) {
+    if (terminal.has(e.type) && e.payload.job_id) statuses.set(String(e.payload.job_id), e.type.slice(5));
+    else if (e.type === "task.started") statuses.set(String(e.payload.job_id), "running");
+    else if (e.type === "approval.decided") statuses.set(String(e.payload.job_id), "queued");
+    else if (e.type === "checkpoint.resumed") statuses.set(String(e.payload.job_id), String(e.payload.status));
+  }
   const isRunning = (id?: string) => !!id && ["queued", "running"].includes(statuses.get(id) || "");
   // Older records lack job_id. Recover it only inside task boundaries, including
   // a paginated tail whose terminal event is present but whose start is not.

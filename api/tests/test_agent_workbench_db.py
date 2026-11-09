@@ -966,9 +966,18 @@ async def test_result_pages_cover_whole_task_and_compact_context_keeps_evidence(
     full = await db_session.wb_get(org, sid, "evaluations", loaded[0]["id"])
     assert full["results"] == evidence
     assert full["detail_revision"] == loaded[0]["detail_revision"]
-    assert all(
-        e["detail_revision"] == full["detail_revision"] for e in compact["evaluations"]
-    )
+    versions = {e["id"]: e["detail_revision"] for e in loaded}
+    assert all(e["detail_revision"] == versions[e["id"]] for e in compact["evaluations"])
+    # A transcript-only update must invalidate detail even if status/summary
+    # are unchanged; unrelated session events must not invalidate every batch.
+    changed = next(row for row in rows if row.id == loaded[0]["id"])
+    changed.results = [{**evidence[0], "transcript": [{"text": "new evidence"}]}]
+    await async_session.flush()
+    refreshed = await db_session.wb_get(org, sid, "evaluations", changed.id)
+    assert refreshed["detail_revision"] != full["detail_revision"]
+    page = await db_session.wb_test_result_page(org, sid, job["id"], limit=50)
+    assert page["evaluations"][0]["detail_revision"] == refreshed["detail_revision"]
+    assert page["evaluations"][1]["detail_revision"] == versions[page["evaluations"][1]["id"]]
     assert (await db_session.wb_get(org, sid, "suites", suite["id"]))[
         "payload"
     ] == payload
@@ -1193,3 +1202,63 @@ async def test_test_chain_restores_latest_confirmation_and_all_matching_checkpoi
         )
         latest = current
     assert (await db_session.wb_context(org, sid))["target"] == before["target"]
+
+
+async def test_language_defaults_are_saved_only_for_new_agents(db_session, wb):
+    org, user, _sid = wb
+    configurations = {"conversation_language": "zh-CN", "turn_start_strategy": "default"}
+    created = await db_session.wb_create_session(
+        org, user, name="中文助手", workflow_configurations=configurations
+    )
+    context = await db_session.wb_context(org, created["id"])
+    assert context["target"]["workflow_configurations"] == configurations
+    reopened = await db_session.wb_create_session(
+        org, user, workflow_id=created["workflow_id"],
+        workflow_configurations={"conversation_language": "en"},
+    )
+    assert reopened["id"] == created["id"]
+    assert (await db_session.wb_context(org, reopened["id"]))["target"]["workflow_configurations"] == configurations
+
+
+async def test_target_checks_do_not_load_archives(db_session, wb, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    org, _, sid = wb
+    full = await db_session.wb_context(org, sid)
+    monkeypatch.setattr(db_session, '_wb_memory_revision', AsyncMock(
+        side_effect=AssertionError('unnecessary archive revision read')
+    ))
+    assert await db_session.wb_context(org, sid, target_only=True) == {
+        'session': full['session'], 'target': full['target']
+    }
+    with pytest.raises(WorkbenchError):
+        await db_session.wb_context(org + 999, sid, target_only=True)
+
+
+async def test_compact_context_projects_private_job_evidence_before_copying(
+    db_session, async_session, wb, monkeypatch
+):
+    from api.db.models import WorkbenchJobModel, WorkbenchAssetModel
+    import api.db.agent_workbench_client as client
+
+    org, _, sid = wb
+    job = await db_session.wb_enqueue(org, sid, 'build', {'text': 'test'}, 'compact')
+    row = await async_session.get(WorkbenchJobModel, job['id'])
+    private = {'large_evidence_marker': 'x' * 500_000}
+    row.output = {'answer': 'keep', **{key: private for key in (
+        '_run_evidence', '_requested_target', '_task_basis', '_submitted_input'
+    )}}
+    asset = WorkbenchAssetModel(session_id=sid, name='notes.txt', content_type='text/plain',
+        byte_size=500_000, sha256='a'*64, object_key='private/key', status='ready',
+        parsed={'kind': 'text', 'text': private})
+    async_session.add(asset)
+    await async_session.flush()
+    original = copy.deepcopy
+    def guarded_copy(value):
+        if isinstance(value, dict) and ('_run_evidence' in value or 'large_evidence_marker' in value):
+            raise AssertionError('private evidence reached Python deepcopy')
+        return original(value)
+    monkeypatch.setattr(client.copy, 'deepcopy', guarded_copy)
+    compact = await db_session.wb_context(org, sid, compact=True)
+    assert compact['jobs'][0]['output'] == {'answer': 'keep'}
+    assert compact['assets'][0]['parsed'] == {'kind': 'text'}

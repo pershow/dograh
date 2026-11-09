@@ -1634,6 +1634,10 @@ export type CreateServiceKeyResponse = {
  */
 export type CreateSession = {
     /**
+     * Locale
+     */
+    locale?: 'zh-CN' | 'en' | null;
+    /**
      * New Session
      */
     new_session?: boolean;
@@ -7703,6 +7707,28 @@ export type WidgetTexts = {
      * Voiceconnectionlostsubtext
      */
     voiceConnectionLostSubtext?: string;
+};
+
+/**
+ * WorkbenchDecision
+ */
+export type WorkbenchDecision = {
+    /**
+     * Approval Id
+     */
+    approval_id: string;
+    /**
+     * Revision
+     */
+    revision: string;
+    /**
+     * Decision
+     */
+    decision: 'approve' | 'revise' | 'deny';
+    /**
+     * Feedback
+     */
+    feedback?: string;
 };
 
 /**
@@ -18292,6 +18318,102 @@ export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructions
 };
 
 export type WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponse = WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses[keyof WorkbenchInstructionApiV1AgentWorkbenchSessionsSessionIdInstructionsPostResponses];
+
+export type DecideWorkbenchApprovalData = {
+    body: WorkbenchDecision;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/jobs/{job_id}/decision';
+};
+
+export type DecideWorkbenchApprovalErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DecideWorkbenchApprovalError = DecideWorkbenchApprovalErrors[keyof DecideWorkbenchApprovalErrors];
+
+export type DecideWorkbenchApprovalResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type DecideWorkbenchApprovalResponse = DecideWorkbenchApprovalResponses[keyof DecideWorkbenchApprovalResponses];
+
+export type ResumeWorkbenchOrchestrationData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Session Id
+         */
+        session_id: string;
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/v1/agent-workbench/sessions/{session_id}/jobs/{job_id}/resume';
+};
+
+export type ResumeWorkbenchOrchestrationErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type ResumeWorkbenchOrchestrationError = ResumeWorkbenchOrchestrationErrors[keyof ResumeWorkbenchOrchestrationErrors];
+
+export type ResumeWorkbenchOrchestrationResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkbenchResponse;
+};
+
+export type ResumeWorkbenchOrchestrationResponse = ResumeWorkbenchOrchestrationResponses[keyof ResumeWorkbenchOrchestrationResponses];
 
 export type WorkbenchTaskBasisApiV1AgentWorkbenchSessionsSessionIdJobsJobIdBasisGetData = {
     body?: never;

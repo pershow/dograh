@@ -201,6 +201,7 @@ async def create_tool_for_user(
     *,
     source: str = "api",
     operation_id: str | None = None,
+    workbench_authorization: dict | None = None,
 ) -> ToolResponse:
     """Create a reusable tool for the authenticated user's selected org."""
     if not user.selected_organization_id:
@@ -236,6 +237,11 @@ async def create_tool_for_user(
         icon=request.icon,
         icon_color=request.icon_color,
         **({"operation_id": operation_id} if operation_id is not None else {}),
+        **(
+            {"workbench_authorization": workbench_authorization}
+            if workbench_authorization is not None
+            else {}
+        ),
     )
 
     await capture_tenant_event(
@@ -282,6 +288,8 @@ async def update_tool_for_user(
     *,
     source: str = "api",
     operation_id: str | None = None,
+    expected_revision: str | None = None,
+    workbench_authorization: dict | None = None,
 ) -> ToolResponse:
     """Apply a partial update to a tool in the user's selected org.
 
@@ -350,6 +358,16 @@ async def update_tool_for_user(
         icon_color=request.icon_color,
         status=request.status,
         **({"operation_id": operation_id} if operation_id is not None else {}),
+        **(
+            {"workbench_authorization": workbench_authorization}
+            if workbench_authorization is not None
+            else {}
+        ),
+        **(
+            {"expected_revision": expected_revision}
+            if expected_revision is not None
+            else {}
+        ),
     )
     if not tool:
         raise ToolManagementError("tool_not_found", "Tool not found", status_code=404)

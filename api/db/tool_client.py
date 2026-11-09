@@ -53,6 +53,29 @@ def _save_receipt(session, operation_id, tool):
 class ToolClient(BaseDBClient):
     """Client for managing tools (organization-scoped, UUID-referenced)."""
 
+    async def _authorize_workbench_tool(self, db, org, operation_id, authorization):
+        if authorization is None:
+            return
+        await self._wb_session(db, org, authorization["session_id"], lock=True)
+        job = await self._wb_fence(
+            db,
+            authorization["session_id"],
+            authorization["job_id"],
+            authorization["token"],
+        )
+        approval = (
+            job.output.get("_orchestration", {})
+            .get("approvals", {})
+            .get(authorization["revision"])
+        )
+        if (
+            not approval
+            or approval["kind"] != "tool_change"
+            or approval["status"] != "approved"
+            or operation_id != "workbench:" + approval["id"]
+        ):
+            raise ValueError("A matching human-approved tool operation is required")
+
     async def get_tool_mutation_receipt(self, operation_id: str, organization_id: int):
         """Return an already committed result before rechecking external references."""
         async with self.async_session() as session:
@@ -69,6 +92,7 @@ class ToolClient(BaseDBClient):
         icon: Optional[str] = None,
         icon_color: Optional[str] = None,
         operation_id: str | None = None,
+        workbench_authorization: dict | None = None,
     ) -> ToolModel:
         """Create a new tool.
 
@@ -90,6 +114,9 @@ class ToolClient(BaseDBClient):
                 session, operation_id, organization_id
             ):
                 return previous
+            await self._authorize_workbench_tool(
+                session, organization_id, operation_id, workbench_authorization
+            )
             tool = ToolModel(
                 organization_id=organization_id,
                 created_by=user_id,
@@ -198,6 +225,8 @@ class ToolClient(BaseDBClient):
         icon_color: Optional[str] = None,
         status: Optional[str] = None,
         operation_id: str | None = None,
+        expected_revision: str | None = None,
+        workbench_authorization: dict | None = None,
     ) -> Optional[ToolModel]:
         """Update a tool by UUID.
 
@@ -220,11 +249,32 @@ class ToolClient(BaseDBClient):
             ):
                 return previous
             # First check if tool exists and belongs to organization
-            tool = await self.get_tool_by_uuid(
-                tool_uuid, organization_id, include_archived=True
+            await self._authorize_workbench_tool(
+                session, organization_id, operation_id, workbench_authorization
+            )
+            tool = await session.scalar(
+                select(ToolModel)
+                .where(
+                    ToolModel.tool_uuid == tool_uuid,
+                    ToolModel.organization_id == organization_id,
+                )
+                .with_for_update()
             )
             if not tool:
                 return None
+            if expected_revision is not None:
+                from api.services.agent_workbench.organization_tools import (
+                    tool_revision,
+                )
+
+                if tool_revision(tool) != expected_revision:
+                    from api.services.tool_management import ToolManagementError
+
+                    raise ToolManagementError(
+                        "stale_tool",
+                        "工具已变更，请重新生成并批准最新提案。",
+                        status_code=409,
+                    )
 
             # Build update values
             update_values = {"updated_at": datetime.now(UTC)}
